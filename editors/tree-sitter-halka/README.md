@@ -1,6 +1,6 @@
 # tree-sitter-halka
 
-Tree-sitter grammar for [Halka](https://github.com/halka-lang/halka), used by
+Tree-sitter grammar for [Halka](https://github.com/Nulfied/halka), used by
 Neovim, Helix and Zed for highlighting, folding, indentation and text objects.
 
 `src/scanner.c` is the external scanner. It mirrors the reference lexer's layout

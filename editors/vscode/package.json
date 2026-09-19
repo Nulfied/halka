@@ -8,7 +8,7 @@
   "engines": { "vscode": "^1.75.0" },
   "categories": ["Programming Languages", "Formatters", "Linters"],
   "keywords": ["halka", "hk", "language"],
-  "repository": { "type": "git", "url": "https://github.com/halka-lang/halka.git", "directory": "editors/vscode" },
+  "repository": { "type": "git", "url": "https://github.com/Nulfied/halka.git", "directory": "editors/vscode" },
   "main": "./src/extension.js",
   "activationEvents": ["onLanguage:halka"],
   "contributes": {

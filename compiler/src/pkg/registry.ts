@@ -18,7 +18,7 @@ import { type Req, type Version, formatVersion, parseReq, parseVersion } from ".
 import type { PackageSource } from "./resolve.ts";
 import { extractTo, readTarGz, stripRootDir } from "./archive.ts";
 
-export const DEFAULT_REGISTRY = "https://halka-lang.github.io/registry";
+export const DEFAULT_REGISTRY = "https://nulfied.github.io/halka-registry";
 
 export interface IndexVersion {
   version: Version;

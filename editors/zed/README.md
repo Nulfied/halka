@@ -11,14 +11,14 @@ description = "Halka language support"
 version = "0.1.0"
 schema_version = 1
 authors = ["The Halka Project"]
-repository = "https://github.com/halka-lang/halka"
+repository = "https://github.com/Nulfied/halka"
 
 [language_servers.halka]
 name = "Halka Language Server"
 languages = ["Halka"]
 
 [grammars.halka]
-repository = "https://github.com/halka-lang/halka"
+repository = "https://github.com/Nulfied/halka"
 commit = "main"
 path = "editors/tree-sitter-halka"
 ```

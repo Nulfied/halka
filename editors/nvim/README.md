@@ -60,7 +60,7 @@ The grammar lives in [`../tree-sitter-halka`](../tree-sitter-halka).
 local parsers = require("nvim-treesitter.parsers").get_parser_configs()
 parsers.halka = {
   install_info = {
-    url = "https://github.com/halka-lang/halka",
+    url = "https://github.com/Nulfied/halka",
     location = "editors/tree-sitter-halka",
     files = { "src/parser.c" },
     branch = "main",

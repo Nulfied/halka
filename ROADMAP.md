@@ -168,17 +168,33 @@ The locked syntax already reserves what this needs: `kernel`, `launch`, `device`
 | Need | Choice | Cost |
 |---|---|---|
 | Source hosting, issues, reviews | GitHub | $0 |
-| CI across Linux / macOS / Windows | GitHub Actions (free for public repos) | $0 |
+| CI across Linux / macOS / Windows | GitHub Actions | $0 |
 | Release binaries | GitHub Releases | $0 |
-| Website and docs | GitHub Pages | $0 |
+| Website and docs | GitHub Pages (needs a public repo) | $0 |
 | Toolchain distribution | npm (`halka-lang`), later Homebrew, Scoop, AUR | $0 |
 | Editor extension | VS Code Marketplace, Open VSX | $0 |
 | Playground | Static page; the toolchain is already JavaScript | $0 |
 | Community | GitHub Discussions, Discord, Matrix | $0 |
-| Package registry | Static index on GitHub Pages first | $0 |
+| Package registry | Static index on GitHub Pages, in its own public repo | $0 |
 
-The only optional spend is a domain name (~$12/year). `halka-lang.github.io`
+The only optional spend is a domain name (~$12/year). `nulfied.github.io`
 works until then.
+
+### Two things the free tier actually requires
+
+Both of these are about repository *visibility*, and neither costs money as
+long as it is planned for:
+
+- **GitHub Pages needs a public repository** on GitHub Free; it is a paid
+  feature for private ones. The site and the package registry therefore live
+  in their own public repository, which is why `DEFAULT_REGISTRY` points at
+  `nulfied.github.io/halka-registry` rather than at this repo. The compiler
+  itself can stay private for as long as it wants to.
+- **Actions minutes are metered on private repositories** (2,000/month on
+  Free) and unmetered on public ones. Every job here runs on
+  `ubuntu-latest`, which bills at 1x — Windows would be 2x and macOS 10x —
+  so the current workflow is cheap either way, but a private repo does spend
+  from a budget where a public one does not.
 
 ---
 

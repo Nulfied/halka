@@ -21,7 +21,7 @@ roots = ["package.hk", ".git"]
 
 [[grammar]]
 name = "halka"
-source = { git = "https://github.com/halka-lang/halka", subpath = "editors/tree-sitter-halka", rev = "main" }
+source = { git = "https://github.com/Nulfied/halka", subpath = "editors/tree-sitter-halka", rev = "main" }
 ```
 
 Then:

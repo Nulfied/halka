@@ -50,7 +50,7 @@ Halka's reference toolchain runs on Node 22.6 or newer and has **no runtime
 dependencies**.
 
 ```bash
-git clone https://github.com/halka-lang/halka.git
+git clone https://github.com/Nulfied/halka.git
 cd halka/compiler
 node bin/halka.mjs run ../examples/hello.hk
 ```
