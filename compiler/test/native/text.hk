@@ -1,0 +1,12 @@
+# Strings, interpolation, and printing every scalar kind.
+let name: "HALKA"
+let version: 49
+let ratio: 1.5
+let flag: true
+let initial: 'H'
+say "{name} v{version}"
+say "ratio {ratio}, flag {flag}, initial {initial}"
+say "concat: " + name
+say name == "HALKA"
+say name < "ZEBRA"
+say "escaped: \"quoted\" and a tab:\tdone"

@@ -1,0 +1,58 @@
+### gil.hk — the same work as gil.py, to show what no-GIL parallelism buys.
+
+Identical Mandelbrot workload (300x300, 200 iterations), run single-threaded
+and then across 8 real OS threads.
+###
+
+escapes(cr: float, ci: float, limit: int): int,
+    let zr: 0.0,
+    let zi: 0.0,
+    let i: 0,
+    while i < limit,
+        let zr2: zr * zr,
+        let zi2: zi * zi,
+        if zr2 + zi2 > 4.0,
+            give i,
+        zi: 2.0 * zr * zi + ci,
+        zr: zr2 - zi2 + cr,
+        i: i + 1,
+    give limit
+
+band(y0: int, y1: int): int,
+    let acc: 0,
+    for y in y0..y1,
+        for x in 0..300,
+            let cr: -2.0 + 3.0 * x as float / 300.0,
+            let ci: -1.2 + 2.4 * y as float / 300.0,
+            acc: acc + escapes(cr, ci, 200),
+    give acc
+
+let t0: now_ms()
+let single: band(0, 300)
+let t1: now_ms()
+
+let b0: 0
+let b1: 0
+let b2: 0
+let b3: 0
+let b4: 0
+let b5: 0
+let b6: 0
+let b7: 0
+
+parallel:
+    b0: band(0, 38),
+    b1: band(38, 76),
+    b2: band(76, 114),
+    b3: band(114, 152),
+    b4: band(152, 190),
+    b5: band(190, 228),
+    b6: band(228, 266),
+    b7: band(266, 300)
+let t2: now_ms()
+let eight: b0 + b1 + b2 + b3 + b4 + b5 + b6 + b7
+
+say "halka  1 thread : {round(t1 - t0)} ms"
+say "halka  8 threads: {round(t2 - t1)} ms   speedup {round_to((t1 - t0) / (t2 - t1), 2)}x   <- real cores"
+say "result = {single}"
+assert(single == eight, "the two paths must agree")

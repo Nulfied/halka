@@ -1,0 +1,50 @@
+### parallel.hk — the same Mandelbrot work, split across real OS threads.
+
+Python cannot do this: the GIL serialises pure-Python threads onto one core.
+Halka has no interpreter lock, so each branch below runs on its own thread.
+###
+
+escapes(cr: float, ci: float, limit: int): int,
+    let zr: 0.0,
+    let zi: 0.0,
+    let i: 0,
+    while i < limit,
+        let zr2: zr * zr,
+        let zi2: zi * zi,
+        if zr2 + zi2 > 4.0,
+            give i,
+        zi: 2.0 * zr * zi + ci,
+        zr: zr2 - zi2 + cr,
+        i: i + 1,
+    give limit
+
+# Rows [y0, y1) of a 900x900 image at 500 iterations.
+band(y0: int, y1: int): int,
+    let acc: 0,
+    for y in y0..y1,
+        for x in 0..900,
+            let cr: -2.0 + 3.0 * x as float / 900.0,
+            let ci: -1.2 + 2.4 * y as float / 900.0,
+            acc: acc + escapes(cr, ci, 500),
+    give acc
+
+# Branches assign to outer bindings (#32), so the results outlive the block.
+let b0: 0
+let b1: 0
+let b2: 0
+let b3: 0
+let b4: 0
+let b5: 0
+let b6: 0
+let b7: 0
+
+parallel:
+    b0: band(0, 113),
+    b1: band(113, 225),
+    b2: band(225, 338),
+    b3: band(338, 450),
+    b4: band(450, 563),
+    b5: band(563, 675),
+    b6: band(675, 788),
+    b7: band(788, 900)
+say "mandel = {b0 + b1 + b2 + b3 + b4 + b5 + b6 + b7}"

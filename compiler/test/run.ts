@@ -5,6 +5,7 @@
 //   reject   — invalid programs must produce the documented diagnostic code
 //   run      — test/cases/*.hk must print exactly test/cases/*.out
 //   fmt      — formatting is idempotent and never changes what a program prints
+//   native   — R23: the compiled binary prints exactly what the interpreter does
 
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
@@ -16,6 +17,10 @@ import { inferTypes } from "../src/sema/infer.ts";
 import { format } from "../src/fmt/format.ts";
 import { Interpreter, HalkaRuntimeError } from "../src/interp/interpreter.ts";
 import { renderAll } from "../src/util/diagnostics.ts";
+import { emitC } from "../src/backend/c/emit.ts";
+import { buildNative, findToolchain } from "../src/backend/c/build.ts";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..", "..");
@@ -220,11 +225,68 @@ function suiteFmt(): void {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * R23: `halka build` and `halka run` are two implementations of one language.
+ * Every program the backend accepts must print exactly what the interpreter
+ * prints. Skipped when the machine has no C compiler.
+ */
+function suiteNative(): void {
+  const dir = join(HERE, "native");
+  if (!existsSync(dir)) return;
+  const tc = findToolchain();
+  if (!tc) {
+    process.stdout.write("note: no C compiler found — the `native` suite was skipped\n");
+    return;
+  }
+
+  for (const f of readdirSync(dir).filter((x) => x.endsWith(".hk")).sort()) {
+    const name = basename(f, ".hk");
+    const src = readFileSync(join(dir, f), "utf8");
+
+    const { module, diags } = parse(src, f);
+    const sema = check(module);
+    if (diags.hasErrors || sema.hasErrors) {
+      bad("native", name, renderAll([...diags.items, ...sema.items].slice(0, 2), { source: src }));
+      continue;
+    }
+    const inferred = inferTypes(module);
+    if (inferred.diags.hasErrors) {
+      bad("native", name, renderAll(inferred.diags.items.slice(0, 2), { source: src }));
+      continue;
+    }
+
+    const { c, diags: emitDiags } = emitC(module, inferred.types, { release: false, file: f });
+    if (emitDiags.hasErrors) {
+      bad("native", name, renderAll(emitDiags.items.slice(0, 2), { source: src }));
+      continue;
+    }
+
+    const exe = join(tmpdir(), `halka-test-${name}-${process.pid}${process.platform === "win32" ? ".exe" : ""}`);
+    const outcome = buildNative(c, f, { out: exe, release: false, keepC: false, emitOnly: false, quiet: true });
+    if (!outcome.ok) { bad("native", name, outcome.message ?? "build failed"); continue; }
+
+    const r = spawnSync(exe, [], { encoding: "utf8" });
+    if (r.status !== 0) {
+      bad("native", name, `the binary exited with ${r.status}
+${r.stdout ?? ""}${r.stderr ?? ""}`);
+      continue;
+    }
+    const nativeOut = (r.stdout ?? "").split("\r\n").join("\n").replace(/\s+$/, "");
+    const interp = runProgram(src, f);
+    if (interp.error) { bad("native", name, `the interpreter failed: ${interp.error}`); continue; }
+    const interpOut = interp.out.replace(/\s+$/, "");
+
+    if (nativeOut === interpOut) ok("native", name);
+    else bad("native", `${name} (interpreter vs native)`, diffText(interpOut, nativeOut));
+  }
+}
+
 const t0 = Date.now();
 suiteSpec();
 suiteReject();
 suiteRun();
 suiteFmt();
+suiteNative();
 const ms = Date.now() - t0;
 
 if (failures.length) {

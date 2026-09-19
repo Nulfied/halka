@@ -6,3 +6,19 @@ dist/
 *.log
 editors/vscode/*.vsix
 editors/tree-sitter-halka/tree-sitter.exe
+
+# benchmark build products
+bench/*.exe
+bench/*.obj
+bench/*.pdb
+bench/*.ilk
+bench/*_c
+bench/fib
+bench/loop
+bench/mandel
+bench/gil
+bench/parallel
+bench/*.c
+!bench/fib.c
+!bench/loop.c
+!bench/mandel.c

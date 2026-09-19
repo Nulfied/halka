@@ -1,0 +1,40 @@
+# Functions, recursion, loops, and early give.
+fib(n: int): int,
+    if n < 2,
+        give n,
+    else,
+        give fib(n - 1) + fib(n - 2)
+
+classify(n: int): string,
+    if n < 0,
+        give "negative",
+    else if n == 0,
+        give "zero",
+    else,
+        give "positive"
+
+first_multiple(n: int, of: int): int,
+    let i: n,
+    while i < n + 100,
+        if i % of == 0,
+            give i,
+        i: i + 1,
+    give -1
+
+say fib(20)
+say classify(-3)
+say classify(0)
+say classify(9)
+say first_multiple(10, 7)
+
+let total: 0
+for i in 1..=10,
+    if i % 2 == 0,
+        continue,
+    total: total + i
+say total
+
+let countdown: 5
+while countdown > 0,
+    countdown: countdown - 1
+say countdown

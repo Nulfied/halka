@@ -469,6 +469,56 @@ fresh scope unless they came from the macro's arguments (#40).
 
 ---
 
+## R21 — Division always yields a float
+
+`/` on two `int`s yields a `float`: `7 / 2` is `3.5`, not `3`. This removes the
+single most common beginner bug in C and Python 2 without adding an operator.
+
+Truncating division is the prelude function `div(a, b)`, and `%` on two `int`s
+yields an `int` with **floored** semantics (the sign follows the divisor), so
+`div` and `%` agree: `a == div(a, b) * b + a % b` holds for every sign.
+
+---
+
+## R22 — `int` is 64-bit
+
+Rule #11 lists `int` as a primitive and defers exact widths to "the formal
+type-system specification". This is that specification.
+
+- **`int` is a signed 64-bit two's-complement integer.** `uint` is its unsigned
+  counterpart. `byte` is `uint8`. The sized names `int8`…`int64` and
+  `uint8`…`uint64` are exact.
+- **`float` is IEEE-754 binary64.** `float32` is binary32.
+- Overflow **traps** in a debug build (`halka build`) and **wraps** in a release
+  build (`halka build --release`), matching Rust. Wrapping is never silent in
+  development, and never a branch in production.
+- Arbitrary-precision arithmetic is a library type, `bigint`, not the default.
+
+The reason is the whole point of the language: a value the native backend
+compiles to a machine register cannot also be an arbitrary-precision heap
+object. Python chose unbounded `int` and pays for it on every arithmetic
+operation; a language claiming C-level performance cannot make that choice for
+its default integer.
+
+The reference interpreter applies the same 64-bit wrapping, so a program
+produces identical results under `halka run` and `halka build`.
+
+---
+
+## R23 — What the native backend must guarantee
+
+`halka build` and `halka run` are two implementations of one language. Where
+they can differ, this is the contract:
+
+1. **Identical observable behaviour** for any program both accept. The test
+   suite runs golden-output cases under both and diffs them.
+2. The native backend may **reject** programs the interpreter accepts, when a
+   value's type is not concrete enough to compile without boxing. The error
+   names the expression and suggests an annotation.
+3. The native backend may not **accept** a program the checker rejects.
+
+---
+
 ## Diagnostic numbering
 
 | Range | Area |
@@ -480,4 +530,5 @@ fresh scope unless they came from the macro's arguments (#40).
 | `E0400`–`E0499` | types |
 | `E0500`–`E0599` | ownership / borrow / capability |
 | `E0600`–`E0699` | compile-time tier |
+| `E0700`–`E0799` | native backend / codegen |
 | `W1000`+ | warnings |

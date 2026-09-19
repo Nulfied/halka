@@ -84,7 +84,7 @@ export interface Token {
  * (R10). They are lexed as identifiers so that `let [a, b, c]` and a variable
  * named `error` keep working; the parser recognises them positionally.
  */
-export const CONTEXTUAL = new Set(["c", "cpp", "py", "ok", "error", "range", "apply", "acquire", "struct", "class"]);
+export const CONTEXTUAL = new Set(["c", "cpp", "py", "ok", "error", "range", "apply", "acquire", "struct", "class", "step"]);
 
 /** Reserved words — spec/RESOLUTIONS.md R17. */
 export const KEYWORDS = new Set([
@@ -95,7 +95,7 @@ export const KEYWORDS = new Set([
   "kernel", "launch", "let", "load", "macro", "make", "match", "move",
   "mut", "not", "nothing", "null", "or", "parallel",
   "raw", "receive", "reflect", "register", "release", "requires", "revoke", "say",
-  "send", "specialize", "start", "step", "store", "to", "trait", "true",
+  "send", "specialize", "start", "store", "to", "trait", "true",
   "type", "unsafe", "while", "with",
 ]);
 

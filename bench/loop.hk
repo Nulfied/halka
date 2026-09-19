@@ -1,0 +1,8 @@
+# loop.hk — tight integer loop; measures raw arithmetic throughput.
+sum_to(n: int): int,
+    let total: 0,
+    for i in 0..n,
+        total: total + i % 7,
+    give total
+
+say "sum = {sum_to(200000000)}"

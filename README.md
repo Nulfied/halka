@@ -4,11 +4,12 @@
 
 **One assignment operator. One separator. One way to write things.**
 
-A general-purpose language with a syntax small enough to learn in an afternoon
-and a semantics deep enough for systems work, concurrency, and AI/ML.
+A general-purpose language with a syntax small enough to learn in an afternoon,
+that compiles to native code **as fast as hand-written C** — with memory safety,
+no lifetime annotations, and real multicore parallelism.
 
-[Quick start](#quick-start) · [Tour](#a-sixty-second-tour) · [Why Halka](#why-halka) ·
-[Spec](spec/V49-LOCKED.md) · [Roadmap](ROADMAP.md) · [Editors](#editor-support)
+[Quick start](#quick-start) · [Tour](#a-sixty-second-tour) · [Performance](#performance) ·
+[Why Halka](#why-halka) · [Spec](spec/V49-LOCKED.md) · [Roadmap](ROADMAP.md) · [Editors](#editor-support)
 
 </div>
 
@@ -71,8 +72,9 @@ halka repl
 
 | Command | What it does |
 |---|---|
-| `halka run <file.hk>` | Run a program |
-| `halka check [paths]` | Parse and check without running |
+| `halka run <file.hk>` | Run a program (reference interpreter) |
+| `halka build <file.hk>` | **Compile to a native binary** via C99 — no LLVM, no runtime |
+| `halka check [paths]` | Parse and type-check without running |
 | `halka fmt --write [paths]` | Format to the canonical style (rule #48) |
 | `halka test [dir]` | Run `test_*.hk` / `*_test.hk` files |
 | `halka repl` | Interactive session |
@@ -160,6 +162,48 @@ parallel:
 
 Run [`examples/tour.hk`](examples/tour.hk) to see all of this execute.
 
+## Performance
+
+Halka compiles to C99 and hands it to whatever C compiler the machine already
+has. No LLVM dependency, no bundled toolchain, no runtime to ship.
+
+Measured on Windows 11 x86-64. Halka and C were compiled by the **same compiler
+with the same flags**, so this measures the code Halka *generates*, not the
+compiler underneath. Best of 5, all three producing identical output.
+
+| kernel | measures | Halka | C `/O2` | Python | vs C |
+|---|---|---|---|---|---|
+| `fib` | recursive calls, `fib(35)` | **158 ms** | 157 ms | 9 660 ms | **1.01x** |
+| `loop` | integer arithmetic, 200M iterations | **452 ms** | 389 ms | 27 906 ms | **1.16x** |
+| `mandel` | floating point, 900×900×500 | **660 ms** | 702 ms | 40 423 ms | **0.94x** |
+
+The `loop` gap is a correctness cost, not an inefficiency: Halka's `%` is
+floored, so `-7 % 3` is `2` and `div(a,b)*b + a%b == a` holds for every sign.
+C truncates and does not. We emit the sign correction C skips.
+
+### Parallelism: what the GIL costs
+
+The same Mandelbrot workload, single-threaded and then across 8 threads:
+
+```
+halka  1 thread :   45 ms
+halka  8 threads:   14 ms   speedup 3.20x   <- real cores
+
+python 1 thread : 1863 ms
+python 8 threads: 3681 ms   speedup 0.51x   <- the GIL
+```
+
+Adding threads made Python **twice as slow**. Pure-Python threads cannot run
+bytecode concurrently, so the GIL hand-off is pure overhead. Halka's
+`parallel:` (#32) lowers to real OS threads and there is no interpreter lock
+anywhere in the runtime.
+
+End to end: **41x** faster single-threaded, **263x** with 8 threads.
+
+Reproduce all of it with `node bench/run.mjs`. The harness refuses to print
+timings unless every implementation agrees on the answer.
+[Full methodology and caveats →](bench/README.md)
+
 ## Why Halka
 
 Halka takes one idea from each language it admires and refuses the parts that
@@ -168,11 +212,13 @@ made those languages hard to learn.
 | Strength | From | How Halka does it |
 |---|---|---|
 | Deterministic cleanup, no GC pauses in the design | C++/Rust | `defer`, ownership, `move`/`borrow` (#24, #25) |
-| Memory safety by default | Rust | `borrow` / `borrow mut`; raw pointers only inside `unsafe:` (#14, #46) |
-| Arbitrary-precision integers | Python | `int` is unbounded; `float` is IEEE-754 |
+| Memory safety **without lifetime annotations** | — | one owner per value; borrows are lexical and non-escaping ([the model](spec/MEMORY-MODEL.md)) |
+| A single static binary, no runtime | Go/Rust | `halka build` emits C99 and links it; nothing to install on the target |
 | Readable, indentation-structured code | Python | Indentation defines blocks (#3, #49) |
+| One build tool, no headers | Cargo/Go | `halka build`, `halka test`, `halka fmt` — no CMake, no venv, no header/source split |
 | Errors as values | Go/Rust | `Result<T>` with `Ok`/`Error`; **no exceptions** (#22, #23) |
 | Lightweight concurrency + channels | Go | `start` / `await`, `make channel(T)`, `send`/`receive` (#26–#28) |
+| True multicore parallelism, no GIL | — | `parallel:` lowers to real OS threads (#32) |
 | Traits, generics, pattern matching | Rust/ML | `trait`, `f<T>(...)`, `match` with guards (#10, #16) |
 | Compile-time execution and macros | Zig/Lisp | `compile`, `macro`, `generate`, `reflect` (#39–#42) |
 | Direct C / C++ / Python interop | Zig/Cython | `c`, `cpp`, `py` boundary markers (#35–#37) |
@@ -260,19 +306,28 @@ docs/            the documentation site
 
 ## Status
 
-**v0.1 — the language runs.** The locked spec is implemented end to end: every
-executable example in the specification parses, and `examples/tour.hk` exercises
-30 of the 54 rules and produces correct output.
+**v0.2 — it compiles.** The locked spec is implemented end to end by a
+reference interpreter, a static type checker, and a native backend that
+produces real binaries at C-level speed.
 
-What works today: the full surface syntax, type inference at runtime, structs,
-traits, generics, enums and pattern matching, `Result`, optionals, destructuring,
-slices and ranges, `defer`, ownership markers, tasks, channels, mutexes, atomics,
-cancellation, `parallel:`, capabilities, macros, `reflect`, the formatter, the
-REPL, and the language server.
+What works today:
 
-What is next, in order: a static type checker with full inference, a bytecode
-VM, then a native backend that emits C99 so Halka compiles to a real binary with
-any C compiler and no LLVM dependency. See [ROADMAP.md](ROADMAP.md).
+- **The full surface syntax.** Every executable example in the specification
+  parses; `examples/tour.hk` exercises 30 of the 54 rules.
+- **Static type inference** (#11, #13) — annotations optional, optionals
+  tracked and narrowed, match exhaustiveness checked.
+- **The reference interpreter** — the whole language, including tasks,
+  channels, mutexes, atomics, cancellation, macros and `reflect`.
+- **The native backend** — scalars, strings, lists, structs, functions,
+  control flow, `defer`, and `parallel:` on real threads. Anything it cannot
+  compile yet produces an `E07xx` diagnostic naming the expression, never a
+  silently slow binary.
+- **Tooling** — formatter, REPL, language server, VS Code extension,
+  Tree-sitter grammar, package-free module resolution.
+
+What is next, in order: ownership and borrow checking as a static pass, then
+enums/match and maps in the backend, then C/C++/Python FFI, then self-hosting.
+See [ROADMAP.md](ROADMAP.md).
 
 Halka is pre-1.0. The **syntax** is locked; library APIs are not yet stable.
 
@@ -285,7 +340,8 @@ support, documentation, examples — is open.
 
 ```bash
 cd compiler
-npm test          # 77 tests: spec conformance, rejections, golden output, formatter
+npm test          # 98 tests: spec conformance, rejections, golden output,
+                  #            formatter, and native-vs-interpreter equivalence
 npm run typecheck
 ```
 

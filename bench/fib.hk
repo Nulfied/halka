@@ -1,0 +1,8 @@
+# fib.hk — recursive Fibonacci, the classic call-overhead benchmark.
+fib(n: int): int,
+    if n < 2,
+        give n,
+    else,
+        give fib(n - 1) + fib(n - 2)
+
+say "fib(35) = {fib(35)}"

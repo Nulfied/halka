@@ -823,10 +823,12 @@ export class Interpreter {
     if ((a.t === "int" || a.t === "float") && (b.t === "int" || b.t === "float")) {
       if (bothInt) {
         const x = (a as { v: bigint }).v, y = (b as { v: bigint }).v;
+        // R22: `int` is 64-bit, so the interpreter wraps exactly as the
+        // native backend's `int64_t` does.
         switch (op) {
-          case "+": return int(x + y);
-          case "-": return int(x - y);
-          case "*": return int(x * y);
+          case "+": return int(BigInt.asIntN(64, x + y));
+          case "-": return int(BigInt.asIntN(64, x - y));
+          case "*": return int(BigInt.asIntN(64, x * y));
           case "%":
             if (y === 0n) this.fail("modulo by zero", span, "R0002");
             return int(((x % y) + y) % y); // floored, matching the `//`-free design

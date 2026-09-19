@@ -144,6 +144,7 @@
     <nav class="nav-links">
       <a href="#start">Get started</a>
       <a href="#tour">Tour</a>
+      <a href="#perf">Performance</a>
       <a href="#why">Why</a>
       <a href="#editors">Editors</a>
       <a href="https://github.com/halka-lang/halka/blob/main/spec/V49-LOCKED.md">Spec</a>
@@ -155,13 +156,14 @@
 <main id="top">
 
 <div class="wrap hero">
-  <span class="badge">v0.1 · syntax locked · pre-1.0</span>
+  <span class="badge">v0.2 · compiles to native · pre-1.0</span>
   <h1>One assignment operator.<br><span class="grad">One separator.</span><br>One way to write things.</h1>
   <p class="lead">
     Halka is a general-purpose language whose entire surface grammar rests on two
     rules: <code>:</code> associates, <code>,</code> separates. Everything else follows.
-    Small enough to learn in an afternoon, deep enough for systems work,
-    concurrency, and AI/ML.
+    Small enough to learn in an afternoon — and it compiles to native code
+    <strong>as fast as hand-written C</strong>, with memory safety, no lifetime
+    annotations, and real multicore parallelism.
   </p>
   <div class="cta">
     <a class="btn primary" href="#start">Get started</a>
@@ -239,12 +241,44 @@ halka run ../examples/hello.hk
 halka repl</code></pre>
     <div class="grid cols-3" style="margin-top:20px">
       <div class="card"><h3>halka run</h3><p>Run a program.</p></div>
+      <div class="card"><h3>halka build</h3><p>Compile to a native binary.</p></div>
       <div class="card"><h3>halka check</h3><p>Parse and check without running.</p></div>
       <div class="card"><h3>halka fmt</h3><p>Format to the one canonical style.</p></div>
       <div class="card"><h3>halka test</h3><p>Run <code>test_*.hk</code> files.</p></div>
       <div class="card"><h3>halka repl</h3><p>An interactive session.</p></div>
       <div class="card"><h3>halka lsp</h3><p>The language server, over stdio.</p></div>
     </div>
+  </div>
+</section>
+
+<section id="perf">
+  <div class="wrap">
+    <h2>As fast as hand-written C</h2>
+    <p class="note">
+      Halka compiles to C99 and hands it to whatever C compiler the machine
+      already has. Halka and C below were built by the <strong>same compiler with
+      the same flags</strong>, so this measures the code Halka generates.
+      Best of 5; all three produce identical output.
+    </p>
+    <table style="margin-top:14px">
+      <tr><th>kernel</th><th>Halka</th><th>C /O2</th><th>Python</th><th>vs C</th></tr>
+      <tr><td>recursive calls, fib(35)</td><td><strong>158 ms</strong></td><td>157 ms</td><td>9 660 ms</td><td><strong>1.01x</strong></td></tr>
+      <tr><td>integer arithmetic, 200M</td><td><strong>452 ms</strong></td><td>389 ms</td><td>27 906 ms</td><td><strong>1.16x</strong></td></tr>
+      <tr><td>floating point, 900&times;900</td><td><strong>660 ms</strong></td><td>702 ms</td><td>40 423 ms</td><td><strong>0.94x</strong></td></tr>
+    </table>
+    <h3 style="margin-top:26px">What the GIL costs</h3>
+    <p class="note">The same workload, single-threaded and then across 8 threads.</p>
+<pre style="margin-top:10px"><code>halka  1 thread :   45 ms
+halka  8 threads:   14 ms   <span class="c">speedup 3.20x   &lt;- real cores</span>
+
+python 1 thread : 1863 ms
+python 8 threads: 3681 ms   <span class="c">speedup 0.51x   &lt;- the GIL</span></code></pre>
+    <p class="note" style="margin-top:12px">
+      Adding threads made Python twice as slow — pure-Python threads cannot run
+      bytecode concurrently. Halka's <code>parallel:</code> lowers to real OS
+      threads and the runtime has no interpreter lock.
+      <a href="https://github.com/halka-lang/halka/blob/main/bench/README.md">Methodology and caveats &rarr;</a>
+    </p>
   </div>
 </section>
 
@@ -349,10 +383,10 @@ halka repl</code></pre>
     <h2>Where it is going</h2>
     <table>
       <tr><th>Version</th><th>Milestone</th></tr>
-      <tr><td><strong>v0.1</strong></td><td>The language runs — locked spec implemented end to end. <em>Here now.</em></td></tr>
-      <tr><td>v0.2</td><td>Static type inference, exhaustiveness, borrow checking</td></tr>
-      <tr><td>v0.3</td><td>Bytecode VM</td></tr>
-      <tr><td>v0.4</td><td>Native compilation, emitting C99 — no LLVM dependency</td></tr>
+      <tr><td>v0.1</td><td>The language runs — locked spec implemented end to end</td></tr>
+      <tr><td><strong>v0.2</strong></td><td>Static type inference, and a native backend at C-level speed. <em>Here now.</em></td></tr>
+      <tr><td>v0.3</td><td>Ownership and borrow checking as a static pass</td></tr>
+      <tr><td>v0.4</td><td>Enums, match, maps and tasks in the native backend</td></tr>
       <tr><td>v0.5</td><td>Real C, C++ and Python FFI</td></tr>
       <tr><td>v0.6</td><td>Self-hosting: the compiler written in Halka</td></tr>
       <tr><td>v0.7</td><td>Tensors, GPU kernels, compile-time shape checking</td></tr>

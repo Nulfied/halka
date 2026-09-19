@@ -132,12 +132,10 @@ export function installPrelude(interp: Interpreter): void {
     return float(Math.floor(needNum(x, "div") / d));
   }));
   def(native("mod", 2, 2, (a) => INTERP.binop("%", a[0]!, a[1]!, null)));
-  def(native("round", 1, 2, (a) => {
-    const n = needNum(a[0]!, "round");
-    const d = a[1] ? Number(needNum(a[1], "round")) : 0;
-    const f = 10 ** d;
-    const r = Math.round(n * f) / f;
-    return d === 0 ? int(BigInt(Math.round(n))) : float(r);
+  def(native("round", 1, 1, (a) => int(BigInt(Math.round(needNum(a[0]!, "round"))))));
+  def(native("round_to", 2, 2, (a) => {
+    const f = 10 ** needNum(a[1]!, "round_to");
+    return float(Math.round(needNum(a[0]!, "round_to") * f) / f);
   }));
   def(native("floor", 1, 1, (a) => int(BigInt(Math.floor(needNum(a[0]!, "floor"))))));
   def(native("ceil", 1, 1, (a) => int(BigInt(Math.ceil(needNum(a[0]!, "ceil"))))));
@@ -204,6 +202,8 @@ export function installPrelude(interp: Interpreter): void {
     yield { kind: "sleep", ms: needNum(a[0]!, "sleep") };
     return NOTHING;
   }));
+  def(native("now_ms", 0, 0, () => float(performance.now())));
+  def(native("cpu_count", 0, 0, () => int(BigInt(Math.max(1, (globalThis as { navigator?: { hardwareConcurrency?: number } }).navigator?.hardwareConcurrency ?? 1)))));
   def(native("yield_now", 0, 0, function* (): Generator<Suspend, Value, unknown> {
     yield { kind: "yield" };
     return NOTHING;

@@ -40,7 +40,17 @@ jobs:
 
       - name: Check that everything is formatted
         working-directory: compiler
-        run: node bin/halka.mjs fmt --check ../examples ../stdlib test/cases
+        run: node bin/halka.mjs fmt --check ../examples ../stdlib test/cases test/native
+
+      - name: Compile the benchmarks natively and check they agree
+        working-directory: compiler
+        shell: bash
+        run: |
+          node bin/halka.mjs toolchain
+          for f in ../bench/fib.hk ../bench/mandel.hk ../bench/parallel.hk; do
+            node bin/halka.mjs build --release "$f" -o "/tmp/$(basename "$f" .hk)" || exit 1
+          done
+          echo "native builds ok"
 
   typecheck:
     name: typecheck the toolchain

@@ -1,0 +1,25 @@
+# mandel.hk — floating-point kernel with an inner while loop.
+escapes(cr: float, ci: float, limit: int): int,
+    let zr: 0.0,
+    let zi: 0.0,
+    let i: 0,
+    while i < limit,
+        let zr2: zr * zr,
+        let zi2: zi * zi,
+        if zr2 + zi2 > 4.0,
+            give i,
+        zi: 2.0 * zr * zi + ci,
+        zr: zr2 - zi2 + cr,
+        i: i + 1,
+    give limit
+
+total(w: int, h: int, limit: int): int,
+    let acc: 0,
+    for y in 0..h,
+        for x in 0..w,
+            let cr: -2.0 + 3.0 * x as float / w as float,
+            let ci: -1.2 + 2.4 * y as float / h as float,
+            acc: acc + escapes(cr, ci, limit),
+    give acc
+
+say "mandel = {total(900, 900, 500)}"

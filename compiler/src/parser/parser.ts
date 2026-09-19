@@ -51,6 +51,12 @@ export class Parser {
     const t = this.at(k);
     return t.kind === T.Keyword && t.text === word;
   }
+  /** `step` is contextual: it only means anything directly after a range (#54). */
+  private isStepWord(): boolean {
+    const t = this.cur();
+    return t.kind === T.Ident && t.text === "step";
+  }
+
   /** FFI boundary markers are contextual keywords (R19). */
   private foreignAt(k = 0): A.ForeignLang | null {
     const t = this.at(k);
@@ -751,7 +757,7 @@ export class Parser {
         }
       }
       const nameTok = this.cur();
-      if (nameTok.kind !== T.Ident && nameTok.kind !== T.Underscore) {
+      if (nameTok.kind !== T.Ident && nameTok.kind !== T.Underscore && nameTok.kind !== T.Keyword) {
         this.error("E0114", `expected a parameter name, found ${tokenDesc(nameTok)}`, nameTok.span);
         while (!this.is(T.RParen) && !this.is(T.Comma) && !this.is(T.Eof)) this.p++;
         this.eat(T.Comma);
@@ -813,7 +819,8 @@ export class Parser {
     while (!this.is(T.Dedent) && !this.is(T.Eof)) {
       if (this.eat(T.Newline)) continue;
       const f = this.cur();
-      if (f.kind !== T.Ident) {
+      // A field-name slot is unambiguous, so a keyword is allowed there.
+      if (f.kind !== T.Ident && f.kind !== T.Keyword) {
         this.error("E0115", `expected a field name, found ${tokenDesc(f)}`, f.span);
         while (!this.is(T.Newline) && !this.is(T.Eof) && !this.is(T.Dedent)) this.p++;
         continue;
@@ -1430,7 +1437,7 @@ export class Parser {
       const kw = this.next();
       const inner = this.parseRange();
       let step: A.Expr | undefined;
-      if (this.eatKw("step")) step = this.parseRange();
+      if (this.isStepWord()) { this.next(); step = this.parseRange(); }
       if (inner.kind === "RangeExpr") {
         inner.step = step;
         inner.span = this.sp(kw);
@@ -1454,7 +1461,7 @@ export class Parser {
       let hi: A.Expr | undefined;
       if (this.canStartExpr()) hi = this.parseNot();
       let step: A.Expr | undefined;
-      if (this.isKw("step")) { this.next(); step = this.parseNot(); }
+      if (this.isStepWord()) { this.next(); step = this.parseNot(); }
       return { kind: "RangeExpr", span: this.sp(start), lo, hi, inclusive, step };
     }
     return lo;

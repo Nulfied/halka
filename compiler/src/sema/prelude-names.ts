@@ -10,7 +10,7 @@ export const PRELUDE_ARITY: Record<string, [number, number]> = {
   // constructors
   list: [0, 1], array: [0, 2], tuple: [0, Infinity], set: [0, 1], map: [0, 1], range: [1, 3],
   // numbers
-  abs: [1, 1], div: [2, 2], mod: [2, 2], round: [1, 2], floor: [1, 1], ceil: [1, 1],
+  abs: [1, 1], div: [2, 2], mod: [2, 2], round: [1, 1], round_to: [2, 2], floor: [1, 1], ceil: [1, 1],
   sqrt: [1, 1], pow: [2, 2], min: [1, Infinity], max: [1, Infinity], sum: [1, 1],
   // sequences
   sorted: [1, 2], reversed: [1, 1], enumerate: [1, 1], zip: [2, Infinity], contains: [2, 2],
@@ -18,6 +18,7 @@ export const PRELUDE_ARITY: Record<string, [number, number]> = {
   add: [2, 2], subtract: [2, 2], exchange: [2, 2], compare_exchange: [3, 3],
   // channels / tasks (#26-#31)
   close: [1, 1], sleep: [1, 1], yield_now: [0, 0],
+  now_ms: [0, 0], cpu_count: [0, 0],
   acquire: [1, 1], acquire_lock: [1, 1], release_lock: [1, 1], task_state: [1, 1],
   // function values (#17)
   apply: [2, 2],

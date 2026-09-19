@@ -1,0 +1,18 @@
+# Scalar arithmetic and the locked operator semantics.
+say 2 + 3 * 4
+say (2 + 3) * 4
+say 7 / 2
+say div(7, 2)
+say 7 % 2
+say div(-7, 3)
+say -7 % 3
+say 2.5 * 4.0
+say 10.0 / 4.0
+say 1 < 2
+say not 1 == 2
+say 1 < 2 and 2 < 3
+say sqrt(16.0)
+say pow(2, 10)
+say abs(-5)
+say min(3, 1, 2)
+say max(3, 1, 2)

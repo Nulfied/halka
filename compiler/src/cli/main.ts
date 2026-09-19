@@ -12,6 +12,8 @@ import { DiagnosticBag, renderAll, HalkaError, type Diagnostic } from "../util/d
 import { format } from "../fmt/format.ts";
 import { check } from "../sema/check.ts";
 import { inferTypes } from "../sema/infer.ts";
+import { emitC } from "../backend/c/emit.ts";
+import { buildNative, describeToolchains } from "../backend/c/build.ts";
 import { show as showTy } from "../sema/types.ts";
 import { inspect, display, type Value, NOTHING } from "../runtime/value.ts";
 import type * as A from "../parser/ast.ts";
@@ -215,6 +217,63 @@ function cmdFmt(args: string[]): void {
   }
 }
 
+function cmdBuild(args: string[]): void {
+  const flags = new Set(args.filter((a) => a.startsWith("-")));
+  const positional = args.filter((a) => !a.startsWith("-"));
+  const file = positional[0];
+  if (!file) die("usage: halka build [--release] [--emit-c] [-o out] <file.hk>");
+  if (!existsSync(file)) die(`no such file: ${file}`);
+
+  const oIdx = args.indexOf("-o");
+  const outName = oIdx >= 0 && args[oIdx + 1] ? args[oIdx + 1]! : defaultBinaryName(file);
+
+  const { main, sources, deps, diags } = loadProgram(file);
+  const sema = check(main, deps.map((d) => d.mod));
+  for (const d of sema.items) diags.items.push(d);
+  if (diags.hasErrors) { report(diags.items, sources); process.exit(1); }
+
+  const inferred = inferTypes(main);
+  for (const d of inferred.diags.items) diags.items.push(d);
+  if (diags.hasErrors) { report(diags.items, sources); process.exit(1); }
+
+  const { c, diags: emitDiags } = emitC(main, inferred.types, {
+    release: flags.has("--release"),
+    file: basename(file),
+  });
+  if (emitDiags.hasErrors) {
+    report(emitDiags.items, sources);
+    process.stderr.write(NL + "the native backend is still growing; `halka run` executes the whole language today." + NL);
+    process.exit(1);
+  }
+
+  const outcome = buildNative(c, file, {
+    out: outName,
+    release: flags.has("--release"),
+    keepC: flags.has("--keep-c") || flags.has("--emit-c"),
+    emitOnly: flags.has("--emit-c"),
+    quiet: flags.has("--quiet"),
+  });
+
+  if (!outcome.ok) die(outcome.message ?? "the build failed");
+  if (outcome.cFile && flags.has("--emit-c")) {
+    process.stdout.write(`wrote ${outcome.cFile}` + NL);
+    return;
+  }
+  if (!flags.has("--quiet")) {
+    process.stdout.write(`built ${outcome.binary}  (${outcome.toolchain}${flags.has("--release") ? ", release" : ", debug"})` + NL);
+    if (outcome.cFile) process.stdout.write(`  C source kept at ${outcome.cFile}` + NL);
+  }
+}
+
+function defaultBinaryName(file: string): string {
+  const base = basename(file).replace(/\.hk$/, "");
+  return process.platform === "win32" ? `${base}.exe` : `./${base}`;
+}
+
+function cmdToolchain(): void {
+  process.stdout.write(`C compilers found: ${describeToolchains()}` + NL);
+}
+
 function cmdAst(args: string[]): void {
   const file = args.find((a) => !a.startsWith("-"));
   if (!file) die("usage: halka ast <file.hk> [--json]");
@@ -388,7 +447,13 @@ const HELP = `Halka ${VERSION} — the Halka programming language
 usage: halka <command> [arguments]
 
 commands:
-  run <file.hk>          run a program
+  run <file.hk>          run a program (reference interpreter)
+  build <file.hk>        compile to a native binary via C99
+                           --release  optimise, drop overflow/bounds checks
+                           --emit-c   write the generated C and stop
+                           --keep-c   keep the generated C beside the binary
+                           -o <path>  output path
+  toolchain              show which C compilers were found
   check [files...]       parse and type-check without running
   fmt [--write] [paths]  format source to canonical style (#48)
   test [dir]             run test_*.hk / *_test.hk files
@@ -408,6 +473,8 @@ export async function main(argv: string[]): Promise<void> {
   switch (cmd) {
     case "run": return cmdRun(rest);
     case "check": return cmdCheck(rest);
+    case "build": return cmdBuild(rest);
+    case "toolchain": return cmdToolchain();
     case "fmt": case "format": return cmdFmt(rest);
     case "test": return cmdTest(rest);
     case "repl": case undefined: return cmdRepl();
