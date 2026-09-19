@@ -18,6 +18,7 @@
 // does: it hoists a dependency's declarations and executes only main.
 
 import type * as A from "../parser/ast.ts";
+import { isPreludeModule } from "./prelude-types.ts";
 
 export interface LinkInput {
   main: A.Module;
@@ -139,7 +140,7 @@ export function linkProgram(input: LinkInput): LinkResult {
     }
     const top = new Scope();
     for (const s of mod.stmts) {
-      if (s.kind === "ImportDecl") continue;
+      if (s.kind === "ImportDecl") continue; // a dependency's imports are resolved above
       if (declName(s) === null) continue; // top-level code is not imported
       stmts.push(rewrite(s, rename, top) as A.Stmt);
     }
@@ -153,7 +154,10 @@ export function linkProgram(input: LinkInput): LinkResult {
   }
   const mainTop = new Scope();
   for (const s of input.main.stmts) {
-    if (s.kind === "ImportDecl" && !s.foreign) continue;
+    // A prelude module is not a file to link in — it is provided by the
+    // runtime — so its import has to survive, or inference never binds the
+    // name and every `math.sqrt` types as unknown.
+    if (s.kind === "ImportDecl" && !s.foreign && !isPreludeModule(s.path)) continue;
     stmts.push(rewrite(s, mainRename, mainTop) as A.Stmt);
   }
 

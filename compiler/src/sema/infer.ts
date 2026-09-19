@@ -17,6 +17,7 @@ import {
   any, opt, list, arr, map, set, tup, named, fn, param, fresh,
   prune, unify, tryUnify, instantiate, show, isNumeric, UnifyError, resultOf, cty,
 } from "./types.ts";
+import { PRELUDE_MODULES, isPreludeModule, preludeMember } from "./prelude-types.ts";
 
 export type TypeMap = Map<A.Node, Ty>;
 
@@ -229,6 +230,20 @@ export class Inferencer {
           }
           break;
         case "ImportDecl":
+          // A prelude module binds a module type, so `math.hypot` can be
+          // looked up rather than falling through to `any` — which is why
+          // the backend could not compile a single prelude call.
+          if (!s.foreign && s.form === "module" && isPreludeModule(s.path)) {
+            scope.set(s.alias ?? lastSegment(s.path), { k: "module", name: s.path });
+            break;
+          }
+          if (!s.foreign && s.form !== "module" && isPreludeModule(s.path)) {
+            for (const n of s.names) {
+              const m = preludeMember(s.path, n.name);
+              if (m) scope.set(n.alias ?? n.name, m.ty);
+            }
+            break;
+          }
           if (s.foreign) {
             this.foreignImports.push({ lang: s.foreign, path: s.path, names: s.names.map((n) => n.name) });
             // `from py "math" import sqrt` binds the names locally.
@@ -943,6 +958,20 @@ export class Inferencer {
         }
       }
       return any(`member of ${ot.name}`);
+    }
+
+    if (ot.k === "module") {
+      const m = preludeMember(ot.name, e.name);
+      if (m) return instantiate(m.ty);
+      // A module that exists but has no such member is worth naming, rather
+      // than an `any` that fails somewhere further along.
+      if (isPreludeModule(ot.name)) {
+        this.err("E0462", `\`${ot.name}\` has no member \`${e.name}\``, e.span, {
+          help: near(e.name, [...(PRELUDE_MODULES.get(ot.name)?.keys() ?? [])]),
+        });
+        return any("unknown module member");
+      }
+      return any(`member of module ${ot.name}`);
     }
 
     const builtin = builtinMemberType(ot, e.name);

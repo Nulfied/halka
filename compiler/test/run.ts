@@ -48,7 +48,7 @@ function buildOpts(module: Parameters<typeof emitC>[0], inferred: ReturnType<typ
   return emitOptionsFrom(inferred, {
     file,
     release,
-    escapes: analyseEscapes(module, inferred.types, inferred.structFields, own.owningParams),
+    escapes: analyseEscapes(module, inferred.types, inferred.structFields, own.owningParams, inferred.enumVariants),
   });
 }
 const ROOT = join(HERE, "..", "..");
@@ -169,6 +169,16 @@ function suiteReject(): void {
 // suite: run golden outputs
 // ---------------------------------------------------------------------------
 
+/**
+ * Capabilities the suite grants the programs it runs (#45).
+ *
+ * The harness is the host here, and granting is the host's job — a test that
+ * touches the filesystem has to be given `FileAccess` exactly as a user
+ * would give it. Both engines get the same set, so the comparison stays
+ * honest.
+ */
+const TEST_GRANTS = ["FileAccess"];
+
 function runProgram(src: string, file: string): { out: string; error: string | null } {
   const lines: string[] = [];
   const { module, diags } = parse(src, file);
@@ -176,7 +186,9 @@ function runProgram(src: string, file: string): { out: string; error: string | n
   const errs = [...diags.items, ...sema.items].filter((d) => d.severity === "error");
   if (errs.length) return { out: "", error: renderAll(errs.slice(0, 3), { source: src }) };
 
-  const interp = new Interpreter({ out: (s) => lines.push(s), err: (s) => lines.push(s), stepLimit: 5_000_000 });
+  const interp = new Interpreter({
+    out: (s) => lines.push(s), err: (s) => lines.push(s), stepLimit: 5_000_000, grants: TEST_GRANTS,
+  });
   try {
     interp.run(module);
   } catch (e) {
@@ -306,7 +318,10 @@ function suiteNative(): void {
     const outcome = buildNative(c, f, { out: exe, release: false, keepC: false, emitOnly: false, quiet: true });
     if (!outcome.ok) { bad("native", name, outcome.message ?? "build failed"); continue; }
 
-    const r = spawnSync(exe, [], { encoding: "utf8", env: { ...process.env, HALKA_REPORT_LEAKS: "1" } });
+    const r = spawnSync(exe, [], {
+      encoding: "utf8",
+      env: { ...process.env, HALKA_REPORT_LEAKS: "1", HALKA_GRANTS: TEST_GRANTS.join(",") },
+    });
     if (r.status !== 0) {
       bad("native", name, `the binary exited with ${r.status}
 ${r.stdout ?? ""}${r.stderr ?? ""}`);
@@ -396,7 +411,10 @@ function suiteFfi(): void {
     });
     if (!outcome.ok) { bad("ffi", name, outcome.message ?? "build failed"); continue; }
 
-    const r = spawnSync(exe, [], { encoding: "utf8", env: { ...process.env, HALKA_REPORT_LEAKS: "1" } });
+    const r = spawnSync(exe, [], {
+      encoding: "utf8",
+      env: { ...process.env, HALKA_REPORT_LEAKS: "1", HALKA_GRANTS: TEST_GRANTS.join(",") },
+    });
     if (r.status !== 0) {
       bad("ffi", name, `the binary exited with ${r.status}\n${r.stdout ?? ""}${r.stderr ?? ""}`);
       continue;

@@ -103,8 +103,19 @@ under File I/O — what is left for it is teaching the backend about prelude
 modules, which brings `math`, `strings`, `lists` and the rest to compiled
 code at the same time.
 
+**The prelude compiles.** `sema/prelude-types.ts` is one signature table
+read by both inference and the backend, so they cannot disagree about what
+`math.hypot` is. `math`, `os`, `time`, `strings.repeat`, `io.write` and most
+of `files` now lower to C; a member with no C implementation is named in a
+diagnostic rather than mis-compiled. File I/O therefore works in compiled
+programs, capability gate and all.
+
 Still open from this milestone:
 
+- **`with capability` and `requires` in compiled code.** A binary reads its
+  grants from `HALKA_GRANTS` today, which is narrower than the interpreter.
+- **`lists`, `maps` and `json`**, whose members take heterogeneous
+  containers the signature table cannot describe honestly yet.
 - **Stack promotion** — the analysis already identifies values that neither
   escape nor grow; the backend does not yet place them on the stack.
 - **Bounds-check elision** for the `for i in 0..len(xs)` shape.

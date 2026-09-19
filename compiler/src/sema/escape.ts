@@ -19,7 +19,12 @@ import type { TypeMap } from "./infer.ts";
 import { type Ty, prune } from "./types.ts";
 import { classifyOwnership, type OwnershipKind } from "./ownership.ts";
 
-export interface Owned { name: string; kind: "str" | "list" }
+/**
+ * A local the frame must release. `enum` carries its type too, because
+ * which payload needs freeing depends on the variant, and the backend
+ * resolves that from the monomorphised instance.
+ */
+export interface Owned { name: string; kind: "str" | "list" | "enum"; ty?: Ty }
 
 export interface EscapeInfo {
   /**
@@ -53,6 +58,7 @@ class EscapeAnalysis {
   private types: TypeMap;
   private structFields: Map<string, Ty[]>;
   private owningParams: Map<string, boolean[]>;
+  private enumsWithHeap = new Set<string>();
   private fns = new Map<string, A.FnDecl>();
   readonly stackable = new Set<A.Expr>();
   readonly blocks = new Map<A.Block, Owned[]>();
@@ -65,22 +71,49 @@ class EscapeAnalysis {
     return this.top;
   }
 
-  constructor(types: TypeMap, structFields: Map<string, Ty[]>, owningParams: Map<string, boolean[]>) {
+  constructor(
+    types: TypeMap,
+    structFields: Map<string, Ty[]>,
+    owningParams: Map<string, boolean[]>,
+    enumVariants?: Map<string, Map<string, { fields: Ty[]; names: string[] }>>,
+  ) {
     this.types = types;
     this.structFields = structFields;
     this.owningParams = owningParams;
+    for (const [name, variants] of enumVariants ?? []) {
+      if (EscapeAnalysis.carriesHeap(variants)) this.enumsWithHeap.add(name);
+    }
   }
 
   private kind(n: A.Node): OwnershipKind {
     return classifyOwnership(this.types.get(n), (name) => this.structFields.get(name));
   }
 
-  private heapKind(t: Ty | undefined): "str" | "list" | null {
+  private heapKind(t: Ty | undefined): "str" | "list" | "enum" | null {
     if (!t) return null;
     const p = prune(t);
     if (p.k === "prim" && p.name === "string") return "str";
     if (p.k === "list" || p.k === "array") return "list";
+    // An enum can carry a heap payload — `Result<string>` owns its string —
+    // so it needs releasing like any other owner. Which field to free
+    // depends on the tag, which the backend works out per instantiation.
+    if (p.k === "named" && this.enumsWithHeap.has(p.name)) return "enum";
     return null;
+  }
+
+  /** Does any variant of this enum carry something heap-allocated? */
+  private static carriesHeap(variants: Map<string, { fields: Ty[] }>): boolean {
+    for (const v of variants.values()) {
+      for (const f of v.fields) {
+        const p = prune(f);
+        if (p.k === "prim" && p.name === "string") return true;
+        if (p.k === "list" || p.k === "array") return true;
+        // A bare type parameter may be instantiated with anything, so a
+        // generic payload counts as possibly owning.
+        if (p.k === "named" && p.args.length === 0) return true;
+      }
+    }
+    return false;
   }
 
   run(mod: A.Module): EscapeInfo {
@@ -121,8 +154,8 @@ class EscapeAnalysis {
      * which over-approximates in the leak direction rather than the
      * double-free one.
      */
-    const owns: { name: string; kind: "str" | "list"; init: A.Expr | null; block: A.Block | null }[] = [];
-    const declare = (name: string, d: { kind: "str" | "list"; init: A.Expr | null; block: A.Block | null }) => {
+    const owns: { name: string; kind: "str" | "list" | "enum"; ty?: Ty; init: A.Expr | null; block: A.Block | null }[] = [];
+    const declare = (name: string, d: { kind: "str" | "list" | "enum"; ty?: Ty; init: A.Expr | null; block: A.Block | null }) => {
       // One release per (block, name); a block cannot free the same C
       // variable twice however many times the source rebinds it.
       const at = owns.findIndex((o) => o.name === name && o.block === d.block);
@@ -236,7 +269,8 @@ class EscapeAnalysis {
             const hk = this.heapKind(this.types.get(s.pattern as unknown as A.Node) ?? this.types.get(s.value));
             // Only claim a value the frame demonstrably owns.
             if (hk && this.producesOwned(s.value)) {
-              declare(s.pattern.name, { kind: hk, init: s.value, block: current });
+              const ty = this.types.get(s.pattern as unknown as A.Node) ?? this.types.get(s.value);
+              declare(s.pattern.name, { kind: hk, ty, init: s.value, block: current });
             }
             break;
           }
@@ -293,7 +327,7 @@ class EscapeAnalysis {
     for (const info of owns) {
       const name = info.name;
       if (escaped.has(name) || movedAway.has(name)) continue;
-      const owned: Owned = { name, kind: info.kind };
+      const owned: Owned = { name, kind: info.kind, ty: info.ty };
       if (info.block === null) {
         paramOwned.push(owned);              // an owning parameter
       } else {
@@ -329,6 +363,12 @@ class EscapeAnalysis {
       case "CastExpr":
         return !e.fallible;
       case "CallExpr": {
+        // `files.read(path)` hands back a fresh `Result` that owns its
+        // payload; the module it came from does not keep a reference.
+        if (e.callee.kind === "MemberExpr" && e.callee.obj.kind === "Ident") {
+          const objTy = this.types.get(e.callee.obj);
+          if (objTy && prune(objTy).k === "module") return true;
+        }
         if (e.callee.kind === "Ident") {
           if (this.fns.has(e.callee.name)) return true; // M2.3: it cannot be a borrow
           return ALLOCATING.has(e.callee.name);
@@ -376,6 +416,7 @@ export function analyseEscapes(
   types: TypeMap,
   structFields: Map<string, Ty[]>,
   owningParams: Map<string, boolean[]>,
+  enumVariants?: Map<string, Map<string, { fields: Ty[]; names: string[] }>>,
 ): EscapeInfo {
-  return new EscapeAnalysis(types, structFields, owningParams).run(mod);
+  return new EscapeAnalysis(types, structFields, owningParams, enumVariants).run(mod);
 }

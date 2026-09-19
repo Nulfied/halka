@@ -11,6 +11,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <math.h>
+#include <sys/stat.h>
+#if defined(_WIN32)
+  #include <direct.h>
+#else
+  #include <unistd.h>
+#endif
 
 #if defined(_WIN32)
   #define WIN32_LEAN_AND_MEAN
@@ -64,7 +72,9 @@ hk_str *hk_str_new(const char *bytes, hk_int len) {
   hk_str *s = (hk_str *)hk_alloc(sizeof(hk_str) + (size_t)len);
   s->rc = 1;
   s->len = len;
-  if (len) memcpy(s->data, bytes, (size_t)len);
+  /* `bytes` may be NULL to allocate room and fill it afterwards, which is
+     what the file and repeat paths do; memcpy from NULL is undefined. */
+  if (len && bytes) memcpy(s->data, bytes, (size_t)len);
   s->data[len] = '\0';
   return s;
 }
@@ -408,9 +418,292 @@ hk_float hk_now_ms(void) {
 #endif
 }
 
+
+/* ---- prelude: math ------------------------------------------------------- */
+
+hk_int hk_math_gcd(hk_int a, hk_int b) {
+  if (a < 0) a = -a;
+  if (b < 0) b = -b;
+  while (b != 0) {
+    hk_int t = a % b;
+    a = b;
+    b = t;
+  }
+  return a;
+}
+
+hk_bool hk_math_is_nan(hk_float x) { return x != x; }
+
+hk_float hk_math_clamp(hk_float x, hk_float lo, hk_float hi) {
+  return x < lo ? lo : (x > hi ? hi : x);
+}
+
+hk_float hk_math_pi(void) { return 3.14159265358979323846; }
+hk_float hk_math_e(void)  { return 2.71828182845904523536; }
+
+/* ---- prelude: io, time, os, strings -------------------------------------- */
+
+void hk_io_error(hk_str *s) {
+  fputs(s ? s->data : "", stderr);
+  fputc('\n', stderr);
+}
+
+hk_int hk_time_now(void) { return (hk_int)(hk_now_ms()); }
+
+hk_str *hk_os_env(hk_str *name) {
+  const char *v = getenv(name ? name->data : "");
+  return hk_str_new(v ? v : "", v ? (hk_int)strlen(v) : 0);
+}
+
+hk_str *hk_os_platform(void) {
+#if defined(_WIN32)
+  return hk_str_lit("win32");
+#elif defined(__APPLE__)
+  return hk_str_lit("darwin");
+#else
+  return hk_str_lit("linux");
+#endif
+}
+
+void hk_os_exit(hk_int code) {
+  hk_shutdown();
+  exit((int)code);
+}
+
+hk_str *hk_strings_repeat(hk_str *s, hk_int n) {
+  if (!s || n <= 0) return hk_str_lit("");
+  if (n > 0 && s->len > 0 && n > (hk_int)(0x7fffffff / s->len)) {
+    HK_PANIC("`strings.repeat` would produce a string larger than this platform can hold");
+  }
+  hk_int len = s->len * n;
+  hk_str *out = hk_str_new(NULL, len);
+  for (hk_int i = 0; i < n; i++) memcpy(out->data + i * s->len, s->data, (size_t)s->len);
+  out->data[len] = '\0';
+  return out;
+}
+
+/* ---- capabilities (#45) --------------------------------------------------- */
+
+static char hk_grants[512];
+
+static void hk_cap_init(void) {
+  const char *g = getenv("HALKA_GRANTS");
+  if (!g) { hk_grants[0] = '\0'; return; }
+  size_t n = strlen(g);
+  if (n >= sizeof hk_grants) n = sizeof hk_grants - 1;
+  memcpy(hk_grants, g, n);
+  hk_grants[n] = '\0';
+}
+
+/* `FileAccess.read` is satisfied by holding it or by holding `FileAccess`,
+ * which is exactly how the interpreter reads a `requires` clause. */
+static bool hk_grant_contains(const char *want) {
+  size_t wl = strlen(want);
+  const char *p = hk_grants;
+  while (*p) {
+    const char *end = strchr(p, ',');
+    size_t len = end ? (size_t)(end - p) : strlen(p);
+    while (len && (p[0] == ' ')) { p++; len--; }
+    while (len && p[len - 1] == ' ') len--;
+    if (len == wl && memcmp(p, want, wl) == 0) return true;
+    if (!end) break;
+    p = end + 1;
+  }
+  return false;
+}
+
+hk_bool hk_cap_held(const char *permission) {
+  if (hk_grant_contains(permission)) return true;
+  const char *dot = strchr(permission, '.');
+  if (!dot) return false;
+  char root[64];
+  size_t n = (size_t)(dot - permission);
+  if (n >= sizeof root) return false;
+  memcpy(root, permission, n);
+  root[n] = '\0';
+  return hk_grant_contains(root);
+}
+
+void hk_cap_require(const char *permission, const char *who, const char *file, hk_int line) {
+  if (hk_cap_held(permission)) return;
+  fprintf(stderr,
+    "halka: `%s` requires the `%s` capability, which is not held here (rule #45)\n"
+    "  a compiled program takes capabilities from HALKA_GRANTS; run it with "
+    "HALKA_GRANTS=FileAccess\n",
+    who, permission);
+  hk_panic("missing capability", file, line);
+}
+
+/* ---- prelude: files (spec/FILE-IO.md) ------------------------------------- */
+
+static hk_io_result hk_io_ok(void) {
+  hk_io_result r;
+  r.ok = true;
+  r.value = NULL;
+  r.error = NULL;
+  r.number = 0;
+  return r;
+}
+
+static hk_io_result hk_io_fail(const char *op, hk_str *path, const char *why) {
+  hk_io_result r;
+  const char *p = path ? path->data : "";
+  hk_int need = (hk_int)(strlen(op) + strlen(p) + strlen(why) + 8);
+  hk_str *msg = hk_str_new(NULL, need);
+  int wrote = snprintf(msg->data, (size_t)need + 1, "%s \"%s\": %s", op, p, why);
+  msg->len = wrote < 0 ? 0 : (wrote > need ? need : wrote);
+  r.ok = false;
+  r.value = NULL;
+  r.error = msg;
+  r.number = 0;
+  return r;
+}
+
+hk_io_result hk_files_read(hk_str *path) {
+  FILE *f = fopen(path ? path->data : "", "rb");
+  if (!f) return hk_io_fail("reading", path, strerror(errno));
+  if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return hk_io_fail("reading", path, strerror(errno)); }
+  long size = ftell(f);
+  if (size < 0) { fclose(f); return hk_io_fail("reading", path, strerror(errno)); }
+  rewind(f);
+
+  hk_str *out = hk_str_new(NULL, (hk_int)size);
+  size_t got = size ? fread(out->data, 1, (size_t)size, f) : 0;
+  fclose(f);
+  if (size && got != (size_t)size) {
+    hk_str_release(out);
+    return hk_io_fail("reading", path, "the file ended early");
+  }
+  out->data[got] = '\0';
+  out->len = (hk_int)got;
+
+  /* Invalid UTF-8 is an error rather than replacement characters (F4). */
+  {
+    const unsigned char *b = (const unsigned char *)out->data;
+    hk_int i = 0;
+    while (i < out->len) {
+      unsigned char c = b[i];
+      hk_int extra = c < 0x80 ? 0 : (c >= 0xC2 && c <= 0xDF) ? 1
+                   : (c >= 0xE0 && c <= 0xEF) ? 2 : (c >= 0xF0 && c <= 0xF4) ? 3 : -1;
+      if (extra < 0 || i + extra >= out->len + (extra ? 0 : 1)) {
+        if (extra < 0 || i + extra >= out->len) {
+          hk_str_release(out);
+          return hk_io_fail("reading", path, "the file is not valid UTF-8");
+        }
+      }
+      for (hk_int k = 1; k <= extra; k++) {
+        if ((b[i + k] & 0xC0) != 0x80) {
+          hk_str_release(out);
+          return hk_io_fail("reading", path, "the file is not valid UTF-8");
+        }
+      }
+      i += extra + 1;
+    }
+  }
+
+  hk_io_result r = hk_io_ok();
+  r.value = out;
+  return r;
+}
+
+static hk_io_result hk_files_put(hk_str *path, hk_str *contents, const char *mode, const char *op) {
+  FILE *f = fopen(path ? path->data : "", mode);
+  if (!f) return hk_io_fail(op, path, strerror(errno));
+  hk_int len = contents ? contents->len : 0;
+  if (len && fwrite(contents->data, 1, (size_t)len, f) != (size_t)len) {
+    fclose(f);
+    return hk_io_fail(op, path, strerror(errno));
+  }
+  if (fclose(f) != 0) return hk_io_fail(op, path, strerror(errno));
+  return hk_io_ok();
+}
+
+hk_io_result hk_files_write(hk_str *path, hk_str *contents) {
+  return hk_files_put(path, contents, "wb", "writing");
+}
+
+hk_io_result hk_files_append(hk_str *path, hk_str *contents) {
+  return hk_files_put(path, contents, "ab", "appending to");
+}
+
+hk_io_result hk_files_size(hk_str *path) {
+  FILE *f = fopen(path ? path->data : "", "rb");
+  if (!f) return hk_io_fail("measuring", path, strerror(errno));
+  if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return hk_io_fail("measuring", path, strerror(errno)); }
+  long size = ftell(f);
+  fclose(f);
+  if (size < 0) return hk_io_fail("measuring", path, strerror(errno));
+  hk_io_result r = hk_io_ok();
+  r.number = (hk_int)size;
+  return r;
+}
+
+hk_bool hk_files_exists(hk_str *path) {
+#if defined(_WIN32)
+  struct _stat64 st;
+  return _stat64(path ? path->data : "", &st) == 0;
+#else
+  struct stat st;
+  return stat(path ? path->data : "", &st) == 0;
+#endif
+}
+
+hk_bool hk_files_is_dir(hk_str *path) {
+#if defined(_WIN32)
+  struct _stat64 st;
+  if (_stat64(path ? path->data : "", &st) != 0) return false;
+  return (st.st_mode & _S_IFDIR) != 0;
+#else
+  struct stat st;
+  if (stat(path ? path->data : "", &st) != 0) return false;
+  return S_ISDIR(st.st_mode);
+#endif
+}
+
+hk_io_result hk_files_remove(hk_str *path) {
+  const char *p = path ? path->data : "";
+  /* One file, or one *empty* directory, and never recursively (F3). */
+  if (hk_files_is_dir(path)) {
+#if defined(_WIN32)
+    if (_rmdir(p) != 0) return hk_io_fail("removing", path, strerror(errno));
+#else
+    if (rmdir(p) != 0) return hk_io_fail("removing", path, strerror(errno));
+#endif
+    return hk_io_ok();
+  }
+  if (remove(p) != 0) return hk_io_fail("removing", path, strerror(errno));
+  return hk_io_ok();
+}
+
+hk_io_result hk_files_make_dir(hk_str *path) {
+  /* Parents are created and an existing directory is not an error (F3). */
+  const char *p = path ? path->data : "";
+  size_t n = strlen(p);
+  char buf[1024];
+  if (n >= sizeof buf) return hk_io_fail("creating", path, "the path is too long");
+  memcpy(buf, p, n + 1);
+
+  for (size_t i = 1; i <= n; i++) {
+    if (i < n && buf[i] != '/' && buf[i] != '\\') continue;
+    char saved = buf[i];
+    buf[i] = '\0';
+#if defined(_WIN32)
+    int rc = _mkdir(buf);
+#else
+    int rc = mkdir(buf, 0777);
+#endif
+    if (rc != 0 && errno != EEXIST) {
+      buf[i] = saved;
+      return hk_io_fail("creating", path, strerror(errno));
+    }
+    buf[i] = saved;
+  }
+  return hk_io_ok();
+}
+
 /* ---- entry -------------------------------------------------------------- */
 
-void hk_init(int argc, char **argv) { (void)argc; (void)argv; }
+void hk_init(int argc, char **argv) { (void)argc; (void)argv; hk_cap_init(); }
 
 void hk_shutdown(void) {
   fflush(stdout);

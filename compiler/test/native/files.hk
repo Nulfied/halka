@@ -1,0 +1,22 @@
+# spec/FILE-IO.md, compiled. Each call is gated on FileAccess at run time,
+# and a Result carrying a string owns it, so the payload is freed at scope
+# exit like any other owner.
+import files
+
+let w: files.write("hk_nat_io.txt", "hello native\n")
+say w is Ok
+
+let r: files.read("hk_nat_io.txt")
+if r is Ok,
+    say r.value
+let n: files.size("hk_nat_io.txt")
+if n is Ok,
+    say n.value
+say files.exists("hk_nat_io.txt")
+say files.is_dir("hk_nat_io.txt")
+
+let missing: files.read("hk_nat_absent.txt")
+say missing is Error
+
+say files.remove("hk_nat_io.txt") is Ok
+say files.exists("hk_nat_io.txt")

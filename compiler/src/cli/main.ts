@@ -305,7 +305,7 @@ function cmdBuild(args: string[]): void {
   if (diags.hasErrors) { report(diags.items, sources); process.exit(1); }
 
   // M4 — turn the ownership proof into deallocation.
-  const escapes = analyseEscapes(linked, inferred.types, inferred.structFields, owningParams);
+  const escapes = analyseEscapes(linked, inferred.types, inferred.structFields, owningParams, inferred.enumVariants);
 
   const { c, diags: emitDiags, links, needsPython } = emitC(linked, inferred.types,
     emitOptionsFrom(inferred, { file: basename(file), release: flags.has("--release"), escapes }));

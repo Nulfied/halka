@@ -36,7 +36,7 @@ Counts today: **16 done · 12 partial · 23 not started · 4 ecosystem**
 |---|---|---|---|
 | 16 | Standard library | 🟡 | `math`, `strings`, `lists`, `maps`, `io`, `time`, `os`, `json` natively; `seq`, `result`, `testing` in Halka. **No filesystem, no networking, no processes, no compression, no crypto.** |
 | 17 | Collections | 🟡 | list, array, map, set, tuple, ranges, iteration. No queue, stack, tree or graph types. |
-| 18 | Filesystem & OS APIs | 🟡 | `files.read/read_bytes/lines/write/append/remove/size/exists/is_dir/list_dir/make_dir`, every one gated on the `FileAccess` capability (#45) and returning `Result` (#22, #23) — [spec/FILE-IO.md](spec/FILE-IO.md). Plus `os.env`, `os.args`, `os.platform`. Interpreter only: the native backend cannot represent `Result<T>` yet. No sockets, processes or permissions APIs. |
+| 18 | Filesystem & OS APIs | 🟡 | `files.read/read_bytes/lines/write/append/remove/size/exists/is_dir/list_dir/make_dir`, every one gated on the `FileAccess` capability (#45) and returning `Result` (#22, #23) — [spec/FILE-IO.md](spec/FILE-IO.md). Plus `os.env`, `os.args`, `os.platform`. Compiled as well as interpreted, except `lines`, `read_bytes` and `list_dir`, which build lists. A compiled program takes grants from `HALKA_GRANTS`. No sockets, processes or permissions APIs. |
 | 19 | Networking stack | ⬜ | Nothing. |
 | 37 | Cryptography | 🔗 | Nothing — and Halka should **bind libsodium or BoringSSL, never implement its own primitives.** Writing new crypto is how projects get CVEs. |
 

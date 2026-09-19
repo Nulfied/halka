@@ -122,10 +122,16 @@ is a security boundary would be worse than not offering one.
 
 ## Status
 
-Implemented for the interpreter. The native backend can now represent
-`Result<T>` — enums compile to tagged unions and each instantiation gets its
-own C type — but it does not yet know about prelude modules, so `files.read`
-still only runs under `halka run`. That is the remaining step, and it is the
-same one that brings `math`, `strings` and the rest to compiled code.
-`halka build` refuses with a diagnostic naming the construct rather than
-mis-compiling, which is R23's contract.
+Both engines. `read`, `write`, `append`, `remove`, `size`, `exists`,
+`is_dir` and `make_dir` compile, and a `Result` carrying a string owns it,
+so the payload is freed at scope exit like any other owner — a compiled
+program that uses files still exits with zero live heap objects.
+
+`lines`, `read_bytes` and `list_dir` build lists and remain interpreter
+only; `halka build` names the function rather than mis-compiling it.
+
+One difference worth knowing. A compiled program takes its capabilities
+from `HALKA_GRANTS`, because `with capability` and `requires` are not
+compiled yet. The gate itself is enforced either way — a binary refuses a
+file operation it has no grant for — so compiled code is *narrower* than
+interpreted here, never wider.

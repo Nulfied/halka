@@ -19,6 +19,7 @@ import type { TypeMap, ForeignImport } from "../../sema/infer.ts";
 import type { EscapeInfo, Owned } from "../../sema/escape.ts";
 import { type Ty, prune, show, C_SCALARS } from "../../sema/types.ts";
 import { PY_RUNTIME, pyConverter, pyLifter } from "./pyruntime.ts";
+import { preludeMember } from "../../sema/prelude-types.ts";
 
 interface EnumVariantDef { name: string; tag: number; fields: { name: string; ty: Ty }[] }
 /** One monomorphised enum. `key` is the C name; `name` is the Halka name. */
@@ -97,7 +98,7 @@ export class CEmitter {
    * must free; `live` is the subset already declared at the current point, so
    * an early `give` never frees something C has not seen yet.
    */
-  private blockStack: { owned: Set<string>; kinds: Map<string, "str" | "list">; live: Owned[]; isLoopBody: boolean }[] = [];
+  private blockStack: { owned: Set<string>; kinds: Map<string, "str" | "list" | "enum">; types: Map<string, Ty | undefined>; live: Owned[]; isLoopBody: boolean }[] = [];
   /** Owning parameters of the current function, freed when it returns. */
   private frameParams: Owned[] = [];
   /** Values built inside the current statement, freed once it completes. */
@@ -106,6 +107,10 @@ export class CEmitter {
   private includes: string[] = [];
   private links: string[] = [];
   private needsPython = false;
+  /** Prelude modules the program actually calls, so only those are linked. */
+  private preludeUsed = new Set<string>();
+  /** Result wrappers already emitted, so each is generated once. */
+  private wrappers = new Set<string>();
   /** `c struct Point:` — referenced as `struct Point`, never redefined by us. */
   private foreignStructs = new Set<string>();
   /** `import py "numpy"` -> the static holding the imported module. */
@@ -273,6 +278,46 @@ export class CEmitter {
   private close(s = "}"): void { this.depth--; this.line(s); }
   private fresh(prefix = "t"): string { return `hk_${prefix}${this.tmp++}`; }
 
+  /**
+   * A `static` wrapper turning the runtime's neutral `hk_io_result` into the
+   * `Result<T>` this call site expects. One per (function, instantiation),
+   * because `Result<string>` and `Result<int>` are different C types.
+   */
+  private resultWrapper(member: { c?: string; okFrom?: string }, name: string, e: A.CallExpr): string {
+    const inst = this.enumOf(this.tyOf(e), e.span);
+    if (!inst) {
+      this.err("E0701", `the native backend cannot tell which \`Result\` \`files.${name}\` returns here`, e.span,
+        "annotate the value or the function's return type");
+      return member.c!;
+    }
+    const wrapper = `hk_w_${member.c}__${inst.key}`;
+    if (!this.wrappers.has(wrapper)) {
+      this.wrappers.add(wrapper);
+      const ok = inst.variants.find((v) => v.name === "Ok")!;
+      const err = inst.variants.find((v) => v.name === "Error")!;
+      const params = (paramTypesOf(this.types.get(e.callee) ?? undefined) ?? []).map((t, i) =>
+        `${this.cty(t, `parameter ${i}`)} a${i}`);
+      const payload = member.okFrom === "none" ? ""
+        : `, .as.Ok.${mangle(ok.fields[0]!.name)} = ${member.okFrom === "number" ? "r.number" : "r.value"}`;
+      this.aux.push(
+        `static ${mangleType(inst.key)} ${wrapper}(${params.length ? params.join(", ") : "void"}) {`,
+        `  hk_io_result r = ${member.c}(${params.map((_, i) => `a${i}`).join(", ")});`,
+        `  if (r.ok) return (${mangleType(inst.key)}){ .tag = ${variantTag(inst.key, "Ok")}${payload} };`,
+        `  return (${mangleType(inst.key)}){ .tag = ${variantTag(inst.key, "Error")}, .as.Error.${mangle(err.fields[0]!.name)} = r.error };`,
+        "}",
+        "",
+      );
+    }
+    return wrapper;
+  }
+
+  private usePrelude(mod: string): void {
+    this.preludeUsed.add(mod);
+    if (mod === "math" && !this.includes.includes("#include <math.h>")) {
+      this.includes.push("#include <math.h>");
+    }
+  }
+
   private tyOf(n: A.Node): Ty | undefined { return this.types.get(n); }
 
   private err(code: string, msg: string, span: Span, help?: string): void {
@@ -396,7 +441,9 @@ export class CEmitter {
           this.err("E0704", "the native backend only supports plain names inside a variant pattern yet", arm.span);
           return;
         }
-        this.line(`${this.cty(f.ty, `\`${name}.${f.name}\``)} ${mangle(a.name)} = ${subject}.as.${mangle(name)}.${mangle(f.name)};`);
+        const fc = this.cty(f.ty, `\`${name}.${f.name}\``);
+        if (fc === "void") return; // a `nothing` payload carries no field
+        this.line(`${fc} ${mangle(a.name)} = ${subject}.as.${mangle(name)}.${mangle(f.name)};`);
       });
       this.suite(arm.body);
       this.line("break;");
@@ -475,12 +522,16 @@ export class CEmitter {
       out.push("  hk_int tag;");
       // A union with no members is not valid C, so an enum whose variants
       // all carry nothing is just the tag.
-      if (e.variants.some((v) => v.fields.length)) {
+      // `Result<nothing>`'s Ok carries nothing, and a `void` struct member
+      // is not valid C, so a payload of type `nothing` contributes no field.
+      const carried = (v: EnumVariantDef) =>
+        v.fields.filter((f) => this.cty(f.ty, `\`${e.name}.${v.name}.${f.name}\``) !== "void");
+      if (e.variants.some((v) => carried(v).length)) {
         out.push("  union {");
         for (const v of e.variants) {
-          if (!v.fields.length) continue;
-          const fs = v.fields.map((f) => `${this.cty(f.ty, `\`${e.name}.${v.name}.${f.name}\``)} ${mangle(f.name)};`);
-          out.push(`    struct { ${fs.join(" ")} } ${mangle(v.name)};`);
+          const fs = carried(v);
+          if (!fs.length) continue;
+          out.push(`    struct { ${fs.map((f) => `${this.cty(f.ty, f.name)} ${mangle(f.name)};`).join(" ")} } ${mangle(v.name)};`);
         }
         out.push("  } as;");
       }
@@ -556,7 +607,46 @@ export class CEmitter {
     { isVoid: true, needsCleanup: false, retTy: undefined };
 
   private releaseLocal(o: Owned): void {
+    if (o.kind === "enum") {
+      const fn = this.enumReleaser(o.ty);
+      if (fn) this.line(`${fn}(${mangle(o.name)});`);
+      return;
+    }
     this.line(o.kind === "str" ? `hk_str_release(${mangle(o.name)});` : `hk_list_release(${mangle(o.name)});`);
+  }
+
+  /**
+   * A releaser for one monomorphised enum: a switch on the tag that frees
+   * whatever that variant carries. Generated once per instantiation, and
+   * only when some variant actually carries heap memory.
+   */
+  private enumReleaser(t: Ty | undefined): string | null {
+    const inst = this.enumOf(t);
+    if (!inst) return null;
+    const name = `hk_free_${inst.key}`;
+    if (this.wrappers.has(name)) return name;
+
+    const arms: string[] = [];
+    for (const v of inst.variants) {
+      const frees = v.fields
+        .map((f) => ({ f, c: this.cty(f.ty, f.name) }))
+        .filter(({ c }) => c === "hk_str *" || c === "hk_list *")
+        .map(({ f, c }) => `${c === "hk_str *" ? "hk_str_release" : "hk_list_release"}(v.as.${mangle(v.name)}.${mangle(f.name)});`);
+      if (frees.length) arms.push(`    case ${variantTag(inst.key, v.name)}: ${frees.join(" ")} break;`);
+    }
+    if (!arms.length) return null;
+
+    this.wrappers.add(name);
+    this.aux.push(
+      `static void ${name}(${mangleType(inst.key)} v) {`,
+      "  switch (v.tag) {",
+      ...arms,
+      "    default: break;",
+      "  }",
+      "}",
+      "",
+    );
+    return name;
   }
 
   /** Emit a block's statements, freeing what it owns on the way out (M4). */
@@ -565,6 +655,7 @@ export class CEmitter {
     const frame = {
       owned: new Set(owned.map((o) => o.name)),
       kinds: new Map(owned.map((o) => [o.name, o.kind] as const)),
+      types: new Map(owned.map((o) => [o.name, o.ty] as const)),
       live: [] as Owned[],
       isLoopBody,
     };
@@ -639,7 +730,11 @@ export class CEmitter {
         this.line(`${ct} ${mangle(s.pattern.name)} = ${init};`);
         const here = this.blockStack[this.blockStack.length - 1];
         if (here?.owned.has(s.pattern.name)) {
-          here.live.push({ name: s.pattern.name, kind: here.kinds.get(s.pattern.name) ?? "list" });
+          here.live.push({
+            name: s.pattern.name,
+            kind: here.kinds.get(s.pattern.name) ?? "list",
+            ty: here.types.get(s.pattern.name),
+          });
         }
         return;
       }
@@ -1257,7 +1352,10 @@ export class CEmitter {
           return "0";
         }
         const v = inst.variants.find((x) => x.name === n)!;
-        const payload = v.fields.map((f, i) => `.as.${mangle(n)}.${mangle(f.name)} = ${args[i] ?? zeroOf(this.cty(f.ty, f.name))}`);
+        const payload = v.fields
+          .map((f, i) => ({ f, a: args[i] }))
+          .filter(({ f }) => this.cty(f.ty, f.name) !== "void")
+          .map(({ f, a }) => `.as.${mangle(n)}.${mangle(f.name)} = ${a ?? zeroOf(this.cty(f.ty, f.name))}`);
         return `((${mangleType(inst.key)}){ .tag = ${variantTag(inst.key, n)}${payload.length ? ", " + payload.join(", ") : ""} })`;
       }
       return `${mangle(n)}(${args.join(", ")})`;
@@ -1269,6 +1367,32 @@ export class CEmitter {
       const ot = this.tyOf(obj);
       const m = e.callee.name;
       const args = e.args.map((a) => this.expr(a.value));
+
+      // `math.hypot(3.0, 4.0)`, `files.read(path)` — a call into a prelude
+      // module. The signature table says which C function implements it.
+      const op = ot ? prune(ot) : undefined;
+      if (op?.k === "module") {
+        const member = preludeMember(op.name, m);
+        if (!member) {
+          this.err("E0707", `\`${op.name}\` has no member \`${m}\``, e.span);
+          return "0";
+        }
+        if (!member.c) {
+          this.err("E0707", `the native backend does not implement \`${op.name}.${m}\` yet`, e.span,
+            "run it with `halka run` while the backend catches up");
+          return "0";
+        }
+        this.usePrelude(op.name);
+        // File operations are gated on a capability at run time (#45), and
+        // a compiled program has to refuse on the same terms or the gate
+        // would mean nothing once built.
+        if (op.name === "files") {
+          const perm = FILE_WRITERS.has(m) ? "FileAccess.write" : "FileAccess.read";
+          this.line(`HK_CAP("${perm}", "files.${m}");`);
+        }
+        if (member.okFrom) return `${this.resultWrapper(member, m, e)}(${args.join(", ")})`;
+        return `${member.c}(${args.join(", ")})`;
+      }
       if (this.isList(ot)) {
         const et = this.cty(this.elemOf(ot), "element", e.span);
         switch (m) {
@@ -1443,6 +1567,14 @@ function mangle(name: string): string {
 
 function mangleType(name: string): string { return `hk_T_${name}`; }
 function variantTag(instanceKey: string, variant: string): string { return `hk_V_${instanceKey}_${variant}`; }
+
+/** The permissions that count as writing, for the capability gate (F1). */
+const FILE_WRITERS = new Set(["write", "append", "remove", "make_dir"]);
+
+function paramTypesOf(t: Ty | undefined): Ty[] | null {
+  const p = t ? prune(t) : undefined;
+  return p && p.k === "fn" ? p.params.map((x) => x.ty) : null;
+}
 
 /** A short, C-safe name for a type argument, used in a monomorphised name. */
 function tyKey(t: Ty): string {

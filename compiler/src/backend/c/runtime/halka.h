@@ -132,6 +132,7 @@ typedef struct hk_str {
   char   data[1];
 } hk_str;
 
+/* `bytes` may be NULL: allocate `len` bytes and fill them afterwards. */
 hk_str *hk_str_new(const char *bytes, hk_int len);
 hk_str *hk_str_lit(const char *cstr);          /* static literal, rc = -1 */
 hk_str *hk_str_cat(hk_str *a, hk_str *b);
@@ -223,6 +224,60 @@ hk_int hk_total_allocs(void);
 /* ---- timing (for benchmarks) -------------------------------------------- */
 
 hk_float hk_now_ms(void);
+
+/* ---- prelude modules ----------------------------------------------------- */
+
+/* `math`. The one-argument functions lower straight to libm, so only the
+ * ones with no C equivalent appear here. */
+hk_int   hk_math_gcd(hk_int a, hk_int b);
+hk_bool  hk_math_is_nan(hk_float x);
+hk_float hk_math_clamp(hk_float x, hk_float lo, hk_float hi);
+hk_float hk_math_pi(void);
+hk_float hk_math_e(void);
+
+/* `io`, `time`, `os`, `strings`. */
+void     hk_io_error(hk_str *s);
+hk_int   hk_time_now(void);
+hk_str  *hk_os_env(hk_str *name);
+hk_str  *hk_os_platform(void);
+void     hk_os_exit(hk_int code);
+hk_str  *hk_strings_repeat(hk_str *s, hk_int n);
+
+/* ---- capabilities (#45) --------------------------------------------------
+ *
+ * The interpreter refuses a file operation unless `FileAccess` is held, and
+ * a compiled program has to refuse it on the same terms or the capability
+ * would mean nothing once built. `with capability` is not compiled yet, so
+ * the only route here is HALKA_GRANTS, read once at startup. That is
+ * narrower than the interpreter, never wider.
+ */
+hk_bool hk_cap_held(const char *permission);
+void    hk_cap_require(const char *permission, const char *who, const char *file, hk_int line);
+
+#define HK_CAP(perm, who) hk_cap_require((perm), (who), __FILE__, __LINE__)
+
+/* ---- files (spec/FILE-IO.md) ---------------------------------------------
+ *
+ * A file operation reports failure as a `Result`, whose C type depends on
+ * the payload and so is generated per instantiation. The runtime therefore
+ * returns this neutral struct and the generated code wraps it into the
+ * right `Result`.
+ */
+typedef struct hk_io_result {
+  hk_bool ok;
+  hk_str *value;   /* the contents, for `read` */
+  hk_str *error;   /* the message, when `ok` is false */
+  hk_int  number;  /* the size, for `size` */
+} hk_io_result;
+
+hk_io_result hk_files_read(hk_str *path);
+hk_io_result hk_files_write(hk_str *path, hk_str *contents);
+hk_io_result hk_files_append(hk_str *path, hk_str *contents);
+hk_io_result hk_files_remove(hk_str *path);
+hk_io_result hk_files_size(hk_str *path);
+hk_io_result hk_files_make_dir(hk_str *path);
+hk_bool      hk_files_exists(hk_str *path);
+hk_bool      hk_files_is_dir(hk_str *path);
 
 /* ---- entry -------------------------------------------------------------- */
 

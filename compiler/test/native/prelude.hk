@@ -1,0 +1,12 @@
+# Prelude modules compiled, not just interpreted. One signature table
+# (sema/prelude-types.ts) says what each member is and which C function
+# implements it, so inference and the backend cannot disagree.
+import math
+
+say math.sqrt(9.0)
+say math.hypot(3.0, 4.0)
+say math.gcd(12, 18)
+say math.clamp(5.0, 0.0, 1.0)
+say math.is_nan(0.0)
+say floor(math.pi() * 100.0)
+say math.atan2(0.0, 1.0)
