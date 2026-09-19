@@ -1,0 +1,85 @@
+# Optionals (#7) in the compiled backend. `T?` becomes a struct carrying a
+# tag and a value, because NULL cannot stand in for an absent `int?`.
+#
+# The arm-order case below is the one worth stating: a bare name in a `match`
+# matches anything, `null` included, so it ends the chain and a later `null`
+# arm is unreachable. Emitting it as "present, else absent" would quietly
+# disagree with the interpreter for an absent value.
+
+greet(name: string?),
+    if name is null,
+        say "Hello",
+    else,
+        say name
+
+find(id: int): string?,
+    if id == 1,
+        give "one",
+    give null
+
+main(),
+    # Absent, and printed as `null`.
+    let a: string?,
+    let b: int?,
+    say a,
+    say b,
+
+    # Present, declared and inferred.
+    let c: string?: "HALKA",
+    let d: int?: 25,
+    say c,
+    say d,
+
+    # A plain value passed where an optional is wanted, and `null` itself.
+    greet("direct"),
+    greet(null),
+    greet(c),
+    greet(a),
+
+    # An optional return, both ways.
+    say find(1),
+    say find(2),
+
+    # `or` takes the left value when it has one (R11).
+    say find(1) or "missing",
+    say find(2) or "missing",
+    say b or 0,
+
+    # Truthiness: an optional is true when it holds a value.
+    if d,
+        say "d has a value",
+    if a,
+        say "unreachable",
+    else,
+        say "a does not",
+    # Narrowing: inside the false arm of `is null`, `c` is a plain string.
+    if c is null,
+        say "no c",
+    else,
+        let n: int: len(c),
+        say n,
+    # A bare name matches an absent value too, so this prints `null`.
+    match a,
+        value,
+            say "bind saw {value}",
+        null,
+            say "unreachable null arm",
+    # With `null` first, the absent value takes that arm instead.
+    match b,
+        null,
+            say "b is null",
+        v,
+            say "b is {v}",
+    match c,
+        value,
+            say "c is {value}",
+    # An optional owning heap memory is freed through the tag.
+    let xs: list(int)?: [1, 2, 3],
+    say xs,
+
+    # Rebuilt each iteration, so a leak here would accumulate.
+    let total: 0,
+    for i in 0..30,
+        let s: string?: "row {i}",
+        total: total + len(s or ""),
+    say total

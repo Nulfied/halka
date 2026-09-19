@@ -540,7 +540,15 @@ export class Inferencer {
 
   private bindPattern(p: A.Pattern, t: Ty, scope: Scope): void {
     switch (p.kind) {
-      case "BindPat": scope.set(p.name, p.type ? this.toTy(p.type) : t); return;
+      case "BindPat": {
+        const bt = p.type ? this.toTy(p.type) : t;
+        scope.set(p.name, bt);
+        // Record it against the pattern too. The backend needs the declared
+        // type, not the initialiser's: `let name: string?: "x"` binds an
+        // optional, and reading the value's type instead would lose that.
+        this.types.set(p, bt);
+        return;
+      }
       case "TypePat": scope.set(p.name, t); return;
       case "WildcardPat": return;
       case "RestPat": if (p.name) scope.set(p.name, list(any("rest"))); return;

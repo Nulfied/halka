@@ -24,7 +24,7 @@ import { classifyOwnership, type OwnershipKind } from "./ownership.ts";
  * which payload needs freeing depends on the variant, and the backend
  * resolves that from the monomorphised instance.
  */
-export interface Owned { name: string; kind: "str" | "list" | "enum"; ty?: Ty }
+export interface Owned { name: string; kind: "str" | "list" | "enum" | "opt"; ty?: Ty }
 
 export interface EscapeInfo {
   /**
@@ -89,7 +89,7 @@ class EscapeAnalysis {
     return classifyOwnership(this.types.get(n), (name) => this.structFields.get(name));
   }
 
-  private heapKind(t: Ty | undefined): "str" | "list" | "enum" | null {
+  private heapKind(t: Ty | undefined): "str" | "list" | "enum" | "opt" | null {
     if (!t) return null;
     const p = prune(t);
     if (p.k === "prim" && p.name === "string") return "str";
@@ -98,6 +98,9 @@ class EscapeAnalysis {
     // so it needs releasing like any other owner. Which field to free
     // depends on the tag, which the backend works out per instantiation.
     if (p.k === "named" && this.enumsWithHeap.has(p.name)) return "enum";
+    // `string?` owns its string when it has one. The wrapper itself is a
+    // plain struct, so the release has to look at the tag first.
+    if (p.k === "opt" && this.heapKind(p.inner)) return "opt";
     return null;
   }
 
@@ -154,8 +157,8 @@ class EscapeAnalysis {
      * which over-approximates in the leak direction rather than the
      * double-free one.
      */
-    const owns: { name: string; kind: "str" | "list" | "enum"; ty?: Ty; init: A.Expr | null; block: A.Block | null }[] = [];
-    const declare = (name: string, d: { kind: "str" | "list" | "enum"; ty?: Ty; init: A.Expr | null; block: A.Block | null }) => {
+    const owns: { name: string; kind: "str" | "list" | "enum" | "opt"; ty?: Ty; init: A.Expr | null; block: A.Block | null }[] = [];
+    const declare = (name: string, d: { kind: "str" | "list" | "enum" | "opt"; ty?: Ty; init: A.Expr | null; block: A.Block | null }) => {
       // One release per (block, name); a block cannot free the same C
       // variable twice however many times the source rebinds it.
       const at = owns.findIndex((o) => o.name === name && o.block === d.block);

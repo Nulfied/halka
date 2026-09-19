@@ -104,7 +104,7 @@ export class CEmitter {
    * must free; `live` is the subset already declared at the current point, so
    * an early `give` never frees something C has not seen yet.
    */
-  private blockStack: { owned: Set<string>; kinds: Map<string, "str" | "list" | "enum">; types: Map<string, Ty | undefined>; live: Owned[]; caps: number; isLoopBody: boolean }[] = [];
+  private blockStack: { owned: Set<string>; kinds: Map<string, "str" | "list" | "enum" | "opt">; types: Map<string, Ty | undefined>; declared: Set<string>; optVars: Set<string>; live: Owned[]; caps: number; isLoopBody: boolean }[] = [];
   /** Owning parameters of the current function, freed when it returns. */
   private frameParams: Owned[] = [];
   /** Values built inside the current statement, freed once it completes. */
@@ -284,8 +284,12 @@ export class CEmitter {
     let body = this.out.join("\n").replace("  hk_init(argc, argv);", bootstrap.join("\n"));
     if (this.needsPython) body = body.split("  hk_shutdown();").join("  hk_py_stop();\n  hk_shutdown();");
     const pyrt = this.needsPython ? [PY_RUNTIME] : [];
-    return [...head, ...this.structDecls(), ...this.enumDecls(), ...lits, "", ...this.decls, "", ...pyrt, ...this.aux, ...init, body, ""].join("\n");
+    return [...head, ...this.optDecls(), ...this.structDecls(), ...this.enumDecls(), ...lits, "", ...this.decls, "", ...pyrt, ...this.aux, ...init, body, ""].join("\n");
   }
+
+  private optTypes = new Map<string, { key: string; cty: string }>();
+  /** Parameters of the function being emitted that are stored as optionals. */
+  private optParams = new Set<string>();
 
   private structDecls(): string[] {
     const out: string[] = [];
@@ -388,6 +392,11 @@ export class CEmitter {
       case "mutex": return "hk_mutex *";
       case "atomic": return "volatile hk_int";
       case "range": return "hk_int";
+      case "opt": {
+        const o = this.optRegister(p.inner, span);
+        if (o) return o;
+        break;
+      }
       default: break;
     }
     if (span) {
@@ -395,6 +404,202 @@ export class CEmitter {
         "run it with `halka run`, or annotate this with a concrete type");
     }
     return "hk_int";
+  }
+
+  // --- optionals (#7) -------------------------------------------------------
+  //
+  // `T?` becomes a struct per inner type: `{ hk_bool has; T v; }`. NULL would
+  // do for the pointer-shaped types, but not for `int?` or `bool?`, and one
+  // representation keeps every operation on optionals the same shape.
+  //
+  // The inner type is deliberately restricted. An optional of a struct or an
+  // enum would have to be declared after that type, while a struct with an
+  // optional field has to be declared after the optional — orders that can
+  // both be required at once. Rejecting is allowed (R23); mis-compiling is
+  // not, so the cases that cannot be ordered are refused by name.
+
+  /** Register `T?` and give its C type, or null if `T` cannot be optional. */
+  private optRegister(inner: Ty, span?: Span): string | null {
+    const p = prune(inner);
+    const ok = (p.k === "prim" && p.name !== "nothing" && p.name !== "null")
+      || p.k === "list" || p.k === "array";
+    if (!ok) {
+      if (span) {
+        this.err("E0701", `the native backend cannot represent ${show(p)}? yet`, span,
+          "an optional may hold a number, bool, char, byte, string, or list");
+      }
+      return null;
+    }
+    const key = `opt_${tyKey(p)}`;
+    if (!this.optTypes.has(key)) {
+      this.optTypes.set(key, { key, cty: this.cty(p, "optional value", span) });
+    }
+    return mangleType(key);
+  }
+
+  private optDecls(): string[] {
+    const out: string[] = [];
+    for (const o of this.optTypes.values()) {
+      out.push(`typedef struct ${mangleType(o.key)} {`);
+      out.push("  hk_bool has;");
+      out.push(`  ${o.cty} v;`);
+      out.push(`} ${mangleType(o.key)};`);
+      out.push("");
+    }
+    return out;
+  }
+
+  /**
+   * `match` on an optional (#7). The locked spec writes it as a binding arm
+   * for the value and a `null` arm for its absence, in either order, so this
+   * is an if/else on the tag rather than a switch.
+   */
+  private matchOptional(m: A.MatchExpr, o: { cty: string; inner: Ty }): void {
+    const subject = this.fresh("opt");
+    this.open("{");
+    this.line(`${o.cty} ${subject} = ${this.expr(m.subject)};`);
+    // A scope of its own, so an arm's binding is not visible to whatever
+    // follows the match.
+    this.pushScope();
+
+    // Arms are tried in order and the first match wins, so a bare name --
+    // which matches anything, `null` included -- ends the chain. Getting
+    // this wrong would make `match x, value, ..., null, ...` take the second
+    // arm for an absent value where the interpreter takes the first.
+    let opened = 0;
+    let exhaustive = false;
+    for (const arm of m.arms) {
+      if (exhaustive) break; // unreachable: an earlier arm matches everything
+      if (arm.guard) {
+        this.err("E0704", "the native backend does not support a guard on a `match` arm yet", arm.span,
+          "run it with `halka run` while the backend catches up");
+        continue;
+      }
+      const pat = arm.pattern;
+      if (pat.kind === "NullPat") {
+        this.open(`${opened ? "else " : ""}if (!${subject}.has) {`);
+        this.suite(arm.body);
+        this.close("}");
+        opened++;
+        continue;
+      }
+      if (pat.kind === "BindPat" || pat.kind === "WildcardPat") {
+        this.open(opened ? "else {" : "{");
+        // The name is bound to the optional itself, not to its contents:
+        // this arm is reached for an absent value too.
+        if (pat.kind === "BindPat") {
+          this.line(`${o.cty} ${mangle(pat.name)} = ${subject};`);
+          this.noteDecl(pat.name, this.tyOf(m.subject));
+        }
+        this.suite(arm.body);
+        this.close("}");
+        opened++;
+        exhaustive = true;
+        continue;
+      }
+      this.err("E0704", "matching an optional takes a name and `null`", arm.span,
+        "run it with `halka run` while the backend catches up");
+    }
+    this.popScope();
+    this.close("}");
+  }
+
+  /**
+   * A condition (R11). An optional is true when it holds a value, which in C
+   * is its tag rather than the struct, and a struct cannot be tested at all.
+   */
+  private cond(e: A.Expr): string {
+    const o = this.optOf(this.tyOf(e));
+    if (!o) return this.expr(e);
+    if (e.kind === "Ident" && this.isOptVar(e.name)) return `${mangle(e.name)}.has`;
+    const t = this.fresh("cnd");
+    this.line(`${o.cty} ${t} = ${this.expr(e)};`);
+    return `${t}.has`;
+  }
+
+  /** A block frame that owns nothing, for bindings introduced outside `suite`. */
+  private pushScope(): void {
+    this.blockStack.push({
+      owned: new Set(), kinds: new Map(), types: new Map(),
+      declared: new Set(), optVars: new Set(), live: [], caps: 0, isLoopBody: false,
+    });
+  }
+
+  private popScope(): void { this.blockStack.pop(); }
+
+  /** Record what this block declared, so a narrowed read knows how it is stored. */
+  private noteDecl(name: string, t: Ty | undefined): void {
+    const here = this.blockStack[this.blockStack.length - 1];
+    if (!here) return;
+    here.declared.add(name);
+    if (this.optOf(t)) here.optVars.add(name);
+  }
+
+  /**
+   * Is this name stored as an optional? Innermost declaration wins, so a
+   * block that shadows `x: string?` with a plain `x: string` reads its own.
+   */
+  private isOptVar(name: string): boolean {
+    for (let i = this.blockStack.length - 1; i >= 0; i--) {
+      const f = this.blockStack[i]!;
+      if (f.declared.has(name)) return f.optVars.has(name);
+    }
+    return this.optParams.has(name);
+  }
+
+  /** The optional type of `t`, if it is one. */
+  private optOf(t: Ty | undefined): { cty: string; inner: Ty } | null {
+    const p = t ? prune(t) : undefined;
+    if (!p || p.k !== "opt") return null;
+    const c = this.optRegister(p.inner);
+    return c ? { cty: c, inner: p.inner } : null;
+  }
+
+  /** `(T?){ .has = true, .v = x }` — an inner value lifted into an optional. */
+  private optSome(cty: string, value: string): string {
+    return `((${cty}){ .has = true, .v = ${value} })`;
+  }
+
+  private optNone(cty: string): string {
+    return `((${cty}){ .has = false })`;
+  }
+
+  /**
+   * Emit `e` as a value of type `want`, lifting it into an optional when the
+   * target is optional and the expression is not. This is where `let x: T?: v`
+   * and passing a plain `T` to a `T?` parameter become well-typed C.
+   */
+  private coerce(e: A.Expr, want: Ty | undefined): string {
+    return this.liftTo(this.expr(e), e, want);
+  }
+
+  /**
+   * Lift already-emitted C text into `want` if that is an optional and the
+   * expression did not already produce one.
+   */
+  private liftTo(cExpr: string, e: A.Expr, want: Ty | undefined): string {
+    const o = this.optOf(want);
+    if (!o) return cExpr;
+    if (e.kind === "NullLit") return this.optNone(o.cty);
+    if (this.producesOpt(e)) return cExpr;
+    return this.optSome(o.cty, cExpr);
+  }
+
+  /**
+   * Does emitting `e` already yield the optional struct? The inferred type
+   * cannot answer this on its own: a literal in an optional slot is recorded
+   * with the optional type, but the C text for it is still a bare value.
+   */
+  private producesOpt(e: A.Expr): boolean {
+    switch (e.kind) {
+      case "IntLit": case "FloatLit": case "StrLit": case "CharLit":
+      case "BoolLit": case "NullLit": case "ListExpr": case "MapExpr":
+        return false;
+      case "Ident":
+        return this.isOptVar(e.name) && !!this.optOf(this.tyOf(e));
+      default:
+        return !!this.optOf(this.tyOf(e));
+    }
   }
 
   private isStr(t: Ty | undefined): boolean {
@@ -428,6 +633,8 @@ export class CEmitter {
    * leak between arms and the compiler checks the types for us.
    */
   private matchStmt(m: A.MatchExpr): void {
+    const o = this.optOf(this.tyOf(m.subject));
+    if (o) { this.matchOptional(m, o); return; }
     const def = this.enumOf(this.tyOf(m.subject), m.span);
     if (!def) {
       this.err("E0704", "the native backend can only `match` on an enum yet", m.span,
@@ -600,6 +807,10 @@ export class CEmitter {
     this.out.push(this.signature(f) + " {");
     this.depth = 1;
     this.frameParams = this.opts.escapes?.params.get(f.name) ?? [];
+    const fsig = this.tyOf(f);
+    this.optParams = new Set(
+      f.params.filter((_, i) => fsig && this.optOf(paramOf(fsig, i))).map((p) => p.name),
+    );
 
     const sig = this.tyOf(f);
     const ret = sig ? retOf(sig) : undefined;
@@ -639,6 +850,16 @@ export class CEmitter {
     { isVoid: true, needsCleanup: false, retTy: undefined };
 
   private releaseLocal(o: Owned): void {
+    if (o.kind === "opt") {
+      // Only when it holds something: the wrapper owns nothing itself.
+      const p = o.ty ? prune(o.ty) : undefined;
+      const inner = p && p.k === "opt" ? prune(p.inner) : undefined;
+      const free = inner && (inner.k === "list" || inner.k === "array")
+        ? "hk_list_release"
+        : inner && inner.k === "prim" && inner.name === "string" ? "hk_str_release" : null;
+      if (free) this.line(`if (${mangle(o.name)}.has) ${free}(${mangle(o.name)}.v);`);
+      return;
+    }
     if (o.kind === "enum") {
       const fn = this.enumReleaser(o.ty);
       if (fn) this.line(`${fn}(${mangle(o.name)});`);
@@ -688,6 +909,11 @@ export class CEmitter {
       owned: new Set(owned.map((o) => o.name)),
       kinds: new Map(owned.map((o) => [o.name, o.kind] as const)),
       types: new Map(owned.map((o) => [o.name, o.ty] as const)),
+      // Which names this block declares, and which of those are stored as
+      // optionals. Scoped rather than per-function, so an inner block that
+      // shadows an optional with a plain value is read correctly.
+      declared: new Set<string>(),
+      optVars: new Set<string>(),
       live: [] as Owned[],
       caps,
       isLoopBody,
@@ -783,7 +1009,8 @@ export class CEmitter {
         }
         const t = this.tyOf(s.pattern as unknown as A.Node) ?? (s.value ? this.tyOf(s.value) : undefined);
         const ct = this.cty(t, `\`${s.pattern.name}\``, s.span);
-        const init = s.value ? this.expr(s.value) : zeroOf(ct);
+        const init = s.value ? this.coerce(s.value, t) : (this.optOf(t) ? this.optNone(ct) : zeroOf(ct));
+        this.noteDecl(s.pattern.name, t);
         // A module-level constant is already declared at file scope.
         if (this.inMain && this.moduleConsts.has(s.pattern.name)) {
           this.line(`${mangle(s.pattern.name)} = ${init};`);
@@ -803,7 +1030,7 @@ export class CEmitter {
 
       case "AssignStmt": {
         const t = s.target;
-        if (t.kind === "Ident") { this.line(`${mangle(t.name)} = ${this.expr(s.value)};`); return; }
+        if (t.kind === "Ident") { this.line(`${mangle(t.name)} = ${this.coerce(s.value, this.tyOf(t))};`); return; }
         if (t.kind === "MemberExpr") { this.line(`${this.expr(t)} = ${this.expr(s.value)};`); return; }
         if (t.kind === "IndexExpr") {
           const ot = this.tyOf(t.obj);
@@ -854,13 +1081,13 @@ export class CEmitter {
           return;
         }
         if (this.fnCtx.needsCleanup) {
-          if (s.value && !this.fnCtx.isVoid) this.line(`hk_result = ${this.expr(s.value)};`);
+          if (s.value && !this.fnCtx.isVoid) this.line(`hk_result = ${this.coerce(s.value, this.fnCtx.retTy)};`);
           // Block-scoped values must go before the jump; C scopes end here.
           this.releaseForReturn(keep);
           this.line("goto hk_cleanup;");
           return;
         }
-        const value = s.value && !this.fnCtx.isVoid ? this.expr(s.value) : null;
+        const value = s.value && !this.fnCtx.isVoid ? this.coerce(s.value, this.fnCtx.retTy) : null;
         this.releaseForReturn(keep);
         this.line(value !== null ? `return ${value};` : "return;");
         return;
@@ -871,10 +1098,10 @@ export class CEmitter {
       case "ContinueStmt": this.releaseForLoopExit(); this.line("continue;"); return;
 
       case "IfStmt": {
-        this.open(`if (${this.expr(s.cond)}) {`);
+        this.open(`if (${this.cond(s.cond)}) {`);
         this.suite(s.then);
         for (const e of s.elifs) {
-          this.close(`} else if (${this.expr(e.cond)}) {`);
+          this.close(`} else if (${this.cond(e.cond)}) {`);
           this.depth++;
           this.suite(e.block);
         }
@@ -888,7 +1115,7 @@ export class CEmitter {
       }
 
       case "WhileStmt": {
-        this.open(`while (${this.expr(s.cond)}) {`);
+        this.open(`while (${this.cond(s.cond)}) {`);
         this.suite(s.body, true);
         this.close();
         return;
@@ -1082,6 +1309,11 @@ export class CEmitter {
             return `((${mangleType(inst.key)}){ .tag = ${variantTag(inst.key, e.name)} })`;
           }
         }
+        // Narrowing (#7, R10) happens in the checker: inside the false arm
+        // of `x is null`, `x` has type `T` while the C variable is still a
+        // `T?`. Reading `.v` is what makes the two agree, and the checker
+        // has already established the value is there.
+        if (this.isOptVar(e.name) && !this.optOf(this.tyOf(e))) return `${mangle(e.name)}.v`;
         return mangle(e.name);
       }
 
@@ -1147,7 +1379,11 @@ export class CEmitter {
       case "ForeignExpr": return this.foreignExpr(e);
 
       case "IsExpr": {
-        if (e.test === "null") return `((${this.expr(e.expr)}) == NULL)`;
+        if (e.test === "null") {
+          const o = this.optOf(this.tyOf(e.expr));
+          if (o) return `(!(${this.expr(e.expr)}).has)`;
+          return `((${this.expr(e.expr)}) == NULL)`;
+        }
         if (this.variantOwner.has(e.test)) {
           const inst = this.enumOf(this.tyOf(e.expr), e.span);
           if (inst) return `((${this.expr(e.expr)}).tag == ${variantTag(inst.key, e.test)})`;
@@ -1306,7 +1542,12 @@ export class CEmitter {
       if (bothBool) return `((${l}) || (${r}))`;
       // R11: `a or b` yields `b` when `a` is null or false, so the left
       // operand is evaluated exactly once.
+      const o = this.optOf(lt);
       const t = this.fresh("or");
+      if (o) {
+        this.line(`${o.cty} ${t} = ${l};`);
+        return `(${t}.has ? ${t}.v : (${r}))`;
+      }
       this.line(`${this.cty(lt, "operand", e.span)} ${t} = ${l};`);
       return `(${t} ? ${t} : (${r}))`;
     }
@@ -1371,6 +1612,7 @@ export class CEmitter {
         const argv = pargs.length ? `(PyObject *[]){ ${pargs.join(", ")} }` : "NULL";
         return `hk_py_call(${pyBound.slot}, ${argv}, ${pargs.length}, ${cString(n)}, ${this.loc(e.span)})`;
       }
+      const csig = this.tyOf(e.callee);
       const args = e.args.map((a) => this.expr(a.value));
 
       // Prelude functions with a direct C equivalent.
@@ -1452,6 +1694,12 @@ export class CEmitter {
         return `((${mangleType(inst.key)}){ .tag = ${variantTag(inst.key, n)}${payload.length ? ", " + payload.join(", ") : ""} })`;
       }
       this.holdArgs(e, args, this.opts.owningParams?.get(n));
+      // Lifting into `T?` happens after holding, not before: it is the inner
+      // value that was freshly built and needs freeing, and the wrapper is
+      // a plain struct that owns nothing itself.
+      e.args.forEach((a, i) => {
+        args[i] = this.liftTo(args[i]!, a.value, csig ? paramOf(csig, i) : undefined);
+      });
       return `${mangle(n)}(${args.join(", ")})`;
     }
 
@@ -1571,11 +1819,42 @@ export class CEmitter {
     return this.asStr(e);
   }
 
+  /**
+   * Produce an `hk_str *` for an already-emitted C expression of known type.
+   * `asStr` works from the AST; an optional's inner value has no AST node of
+   * its own, so this takes the C text instead.
+   */
+  private cStrOf(cExpr: string, t: Ty, span: Span): string {
+    const p = prune(t);
+    if (p.k === "prim") {
+      switch (p.name) {
+        case "string": return cExpr;
+        case "int": case "byte": return `hk_str_from_int(${cExpr})`;
+        case "float": return `hk_str_from_float(${cExpr})`;
+        case "bool": return `hk_str_from_bool(${cExpr})`;
+        case "char": return `hk_str_from_char(${cExpr})`;
+        default: break;
+      }
+    }
+    if (p.k === "list" || p.k === "array") return `hk_str_from_list(${cExpr})`;
+    this.err("E0714", `the native backend cannot print ${show(p)} yet`, span);
+    return `hk_str_lit("")`;
+  }
+
   /** Produce an `hk_str *` for any expression (used by `say` and `+`). */
   private asStr(e: A.Expr): string {
     const t = this.tyOf(e);
     const p = t ? prune(t) : undefined;
     if (e.kind === "StrLit") return this.strLit(e);
+    if (e.kind === "NullLit") return `hk_str_lit("null")`;
+
+    // An optional prints its value, or `null` when it has none (#7).
+    const o = this.optOf(t);
+    if (o) {
+      const v = this.fresh("osv");
+      this.line(`${o.cty} ${v} = ${this.expr(e)};`);
+      return `(${v}.has ? ${this.cStrOf(`${v}.v`, o.inner, e.span)} : hk_str_lit("null"))`;
+    }
 
     // A list prints as `[a, b, c]`, matching `inspect` (#53).
     if (p?.k === "list" || p?.k === "array") {

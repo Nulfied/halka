@@ -91,6 +91,17 @@ JSON. Cells are interpreted, not compiled — the notebook is for the edit-run
 loop, and `halka build` is what makes a program fast
 ([docs/JUPYTER.md](docs/JUPYTER.md)).
 
+**Optionals** (#7) compile now, which maps turned out to need: `m[k]` is a
+`T?`, so there was no way to reach maps without them. `T?` becomes a struct
+with a tag and a value rather than a null pointer, because NULL cannot stand
+in for an absent `int?` or `bool?`. The locked surface all works compiled:
+`is null`, `or`, truthiness, narrowing in the false arm of `is null`, and
+`match` with a `null` arm. That last one has a trap worth recording — a bare
+name matches anything, `null` included, so it ends the chain and a following
+`null` arm is unreachable. Emitting it as "present, else absent" would have
+disagreed with the interpreter on exactly the case the arm exists for. An
+optional of a struct or enum is refused rather than mis-ordered in C.
+
 **Packages** (#29/#30/#31) shipped too: `halka.pkg` manifests, semver
 requirements in two forms, Minimal Version Selection, a hash-pinned
 `halka.lock`, a per-user cache and path dependencies, against any static
