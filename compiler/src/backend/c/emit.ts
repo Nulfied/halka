@@ -98,7 +98,7 @@ export class CEmitter {
    * must free; `live` is the subset already declared at the current point, so
    * an early `give` never frees something C has not seen yet.
    */
-  private blockStack: { owned: Set<string>; kinds: Map<string, "str" | "list" | "enum">; types: Map<string, Ty | undefined>; live: Owned[]; isLoopBody: boolean }[] = [];
+  private blockStack: { owned: Set<string>; kinds: Map<string, "str" | "list" | "enum">; types: Map<string, Ty | undefined>; live: Owned[]; caps: number; isLoopBody: boolean }[] = [];
   /** Owning parameters of the current function, freed when it returns. */
   private frameParams: Owned[] = [];
   /** Values built inside the current statement, freed once it completes. */
@@ -584,6 +584,11 @@ export class CEmitter {
     const needsCleanup = defers.length > 0;
     if (needsCleanup && !isVoid) this.line(`${this.cty(ret, "return", f.span)} hk_result = 0;`);
 
+    // #45 — a `requires` clause is checked on entry, which is where the
+    // interpreter checks it. Without this a compiled function declared
+    // `requires FileAccess` would run for anyone.
+    for (const need of f.requires) this.line(`HK_CAP("${need}", "${f.name}");`);
+
     this.fnCtx = { isVoid, needsCleanup, retTy: ret };
     this.suite(f.body!);
 
@@ -650,18 +655,20 @@ export class CEmitter {
   }
 
   /** Emit a block's statements, freeing what it owns on the way out (M4). */
-  private suite(b: A.Block, isLoopBody = false, override?: Owned[]): void {
+  private suite(b: A.Block, isLoopBody = false, override?: Owned[], caps = 0): void {
     const owned = override ?? this.opts.escapes?.blocks.get(b) ?? [];
     const frame = {
       owned: new Set(owned.map((o) => o.name)),
       kinds: new Map(owned.map((o) => [o.name, o.kind] as const)),
       types: new Map(owned.map((o) => [o.name, o.ty] as const)),
       live: [] as Owned[],
+      caps,
       isLoopBody,
     };
     this.blockStack.push(frame);
     for (const st of b.stmts) this.stmt(st);
     for (const o of frame.live.slice().reverse()) this.releaseLocal(o);
+    for (let i = 0; i < frame.caps; i++) this.line("hk_cap_pop();");
     this.blockStack.pop();
   }
 
@@ -671,6 +678,9 @@ export class CEmitter {
       for (const o of this.blockStack[i]!.live.slice().reverse()) {
         if (o.name !== keep) this.releaseLocal(o);
       }
+      // A `give` out of a `with capability` block must not leave the grant
+      // standing for whatever runs next.
+      for (let c = 0; c < this.blockStack[i]!.caps; c++) this.line("hk_cap_pop();");
     }
     for (const o of this.frameParams.slice().reverse()) if (o.name !== keep) this.releaseLocal(o);
   }
@@ -679,6 +689,7 @@ export class CEmitter {
   private releaseForLoopExit(): void {
     for (let i = this.blockStack.length - 1; i >= 0; i--) {
       for (const o of this.blockStack[i]!.live.slice().reverse()) this.releaseLocal(o);
+      for (let c = 0; c < this.blockStack[i]!.caps; c++) this.line("hk_cap_pop();");
       if (this.blockStack[i]!.isLoopBody) return;
     }
   }
@@ -842,6 +853,26 @@ export class CEmitter {
       }
 
       case "ParallelStmt": return this.parallelStmt(s);
+
+      case "WithStmt": {
+        if (!s.capability) {
+          this.err("E0704", "the native backend supports `with capability` only, for now", s.span,
+            "run it with `halka run` while the backend catches up");
+          return;
+        }
+        const name = s.subject.kind === "Ident" ? s.subject.name : null;
+        if (!name) {
+          this.err("E0503", "`with capability` expects a capability name", s.span);
+          return;
+        }
+        this.open("{");
+        this.line(`hk_cap_push("${name}");`);
+        // The pop is recorded on the body's own frame, so every path out of
+        // it — falling off the end, `give`, `break` — pops exactly once.
+        this.suite(s.body, false, undefined, 1);
+        this.close();
+        return;
+      }
 
       case "MatchStmt": return this.matchStmt(s.expr);
 

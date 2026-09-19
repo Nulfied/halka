@@ -130,8 +130,8 @@ program that uses files still exits with zero live heap objects.
 `lines`, `read_bytes` and `list_dir` build lists and remain interpreter
 only; `halka build` names the function rather than mis-compiling it.
 
-One difference worth knowing. A compiled program takes its capabilities
-from `HALKA_GRANTS`, because `with capability` and `requires` are not
-compiled yet. The gate itself is enforced either way — a binary refuses a
-file operation it has no grant for — so compiled code is *narrower* than
-interpreted here, never wider.
+`with capability`, a `requires` clause and `HALKA_GRANTS` all work in a
+compiled program, on the same terms as in the interpreter: the grant lasts
+for the block, a `requires` clause is checked on entry, and a binary refuses
+an operation it has no grant for. The guarantee does not weaken at
+`halka build`, which is the only way a capability is worth anything.

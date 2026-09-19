@@ -1,0 +1,23 @@
+# #45 — a capability the harness does not grant ambiently, so this fails
+# unless `with capability` really does grant and `requires` really does
+# check. Both have to hold in the binary as well as the interpreter, or the
+# guarantee evaporates at `halka build`.
+capability Audit:
+    read,
+    write
+
+note(): string requires Audit,
+    give "audited"
+
+tally(n: int): int requires Audit.read,
+    give n * 2
+
+with capability Audit,
+    say note(),
+    say tally(21)
+# Nested, and a grant that ends with its block.
+with capability Audit,
+    with capability Audit,
+        say note(),
+    say note()
+say "done"

@@ -36,7 +36,7 @@ Counts today: **16 done · 12 partial · 23 not started · 4 ecosystem**
 |---|---|---|---|
 | 16 | Standard library | 🟡 | `math`, `strings`, `lists`, `maps`, `io`, `time`, `os`, `json` natively; `seq`, `result`, `testing` in Halka. **No filesystem, no networking, no processes, no compression, no crypto.** |
 | 17 | Collections | 🟡 | list, array, map, set, tuple, ranges, iteration. No queue, stack, tree or graph types. |
-| 18 | Filesystem & OS APIs | 🟡 | `files.read/read_bytes/lines/write/append/remove/size/exists/is_dir/list_dir/make_dir`, every one gated on the `FileAccess` capability (#45) and returning `Result` (#22, #23) — [spec/FILE-IO.md](spec/FILE-IO.md). Plus `os.env`, `os.args`, `os.platform`. Compiled as well as interpreted, except `lines`, `read_bytes` and `list_dir`, which build lists. A compiled program takes grants from `HALKA_GRANTS`. No sockets, processes or permissions APIs. |
+| 18 | Filesystem & OS APIs | 🟡 | `files.read/read_bytes/lines/write/append/remove/size/exists/is_dir/list_dir/make_dir`, every one gated on the `FileAccess` capability (#45) and returning `Result` (#22, #23) — [spec/FILE-IO.md](spec/FILE-IO.md). Plus `os.env`, `os.args`, `os.platform`. Compiled as well as interpreted, except `lines`, `read_bytes` and `list_dir`, which build lists. No sockets, processes or permissions APIs. |
 | 19 | Networking stack | ⬜ | Nothing. |
 | 37 | Cryptography | 🔗 | Nothing — and Halka should **bind libsodium or BoringSSL, never implement its own primitives.** Writing new crypto is how projects get CVEs. |
 
@@ -90,7 +90,7 @@ Counts today: **16 done · 12 partial · 23 not started · 4 ecosystem**
 |---|---|---|---|
 | 49 | Self-hosting | ⬜ | Stage 0 in TypeScript. Nothing written in Halka yet beyond three stdlib modules. |
 | 51 | Formal verification | ⬜ | Nothing. Honestly: this is a research programme, not a feature. |
-| 52 | Security model | 🟡 | Ownership, borrows and data-race freedom are now static. Capabilities (`requires`, `with capability`) are still dynamic, and `unsafe:` is enforced only by the interpreter. |
+| 52 | Security model | 🟡 | Ownership, borrows and data-race freedom are static. Capabilities (`requires`, `with capability`, `HALKA_GRANTS`) are dynamic but enforced in compiled binaries as well as the interpreter, so the guarantee does not weaken at `halka build`. `unsafe:` is still enforced only by the interpreter. |
 | 53 | Developer experience | 🟡 | Language, runtime, CLI, formatter, diagnostics, testing, LSP and editor integration exist. Package manager, debugger and distribution do not. |
 | 54 | Ecosystem philosophy | — | The organising principle, not a feature. |
 | 55 | Interaction rule | ✅ | Honoured. This file is how implemented and planned are kept apart. |

@@ -254,6 +254,12 @@ hk_str  *hk_strings_repeat(hk_str *s, hk_int n);
 hk_bool hk_cap_held(const char *permission);
 void    hk_cap_require(const char *permission, const char *who, const char *file, hk_int line);
 
+/* `with capability X,` — X is held for the duration of the block. The push
+ * and the matching pop are emitted around the block, including on the paths
+ * out of it, so a `give` from inside cannot leave the grant standing. */
+void    hk_cap_push(const char *name);
+void    hk_cap_pop(void);
+
 #define HK_CAP(perm, who) hk_cap_require((perm), (who), __FILE__, __LINE__)
 
 /* ---- files (spec/FILE-IO.md) ---------------------------------------------

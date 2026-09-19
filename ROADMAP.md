@@ -112,8 +112,6 @@ programs, capability gate and all.
 
 Still open from this milestone:
 
-- **`with capability` and `requires` in compiled code.** A binary reads its
-  grants from `HALKA_GRANTS` today, which is narrower than the interpreter.
 - **`lists`, `maps` and `json`**, whose members take heterogeneous
   containers the signature table cannot describe honestly yet.
 - **Stack promotion** — the analysis already identifies values that neither

@@ -512,7 +512,37 @@ static bool hk_grant_contains(const char *want) {
   return false;
 }
 
+/* Capabilities granted by an enclosing `with capability` block (#45). The
+ * nesting is lexical and small, so a fixed depth is enough; overflowing it
+ * would be a compiler bug rather than something a program can provoke. */
+#define HK_CAP_MAX 64
+static const char *hk_cap_stack[HK_CAP_MAX];
+static int hk_cap_depth = 0;
+
+void hk_cap_push(const char *name) {
+  if (hk_cap_depth >= HK_CAP_MAX) HK_PANIC("`with capability` nested too deeply");
+  hk_cap_stack[hk_cap_depth++] = name;
+}
+
+void hk_cap_pop(void) {
+  if (hk_cap_depth > 0) hk_cap_depth--;
+}
+
+/* Holding `FileAccess` satisfies `FileAccess.read`, which is how the
+ * interpreter reads a `requires` clause. */
+static bool hk_cap_scoped(const char *want) {
+  size_t wl = strlen(want);
+  for (int i = hk_cap_depth - 1; i >= 0; i--) {
+    const char *g = hk_cap_stack[i];
+    size_t gl = strlen(g);
+    if (gl == wl && memcmp(g, want, wl) == 0) return true;
+    if (gl < wl && want[gl] == '.' && memcmp(g, want, gl) == 0) return true;
+  }
+  return false;
+}
+
 hk_bool hk_cap_held(const char *permission) {
+  if (hk_cap_scoped(permission)) return true;
   if (hk_grant_contains(permission)) return true;
   const char *dot = strchr(permission, '.');
   if (!dot) return false;
@@ -528,9 +558,9 @@ void hk_cap_require(const char *permission, const char *who, const char *file, h
   if (hk_cap_held(permission)) return;
   fprintf(stderr,
     "halka: `%s` requires the `%s` capability, which is not held here (rule #45)\n"
-    "  a compiled program takes capabilities from HALKA_GRANTS; run it with "
-    "HALKA_GRANTS=FileAccess\n",
-    who, permission);
+    "  wrap the call in `with capability`, declare `requires` on the enclosing\n"
+    "  function, or run with HALKA_GRANTS=%s\n",
+    who, permission, permission);
   hk_panic("missing capability", file, line);
 }
 
