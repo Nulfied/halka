@@ -251,32 +251,68 @@ hk_int hk_list_check(hk_list *l, hk_int i, const char *file, hk_int line) {
   return j;
 }
 
-/* A list prints the way `inspect` prints it: [1, 2, 3] (#53). */
-hk_str *hk_str_from_list(struct hk_list *l, int kind) {
+/* A list prints the way `inspect` prints it (#53): strings are quoted and
+   escaped, chars are quoted, and a nested list recurses. Printing the raw
+   element bytes as integers is what it used to do for a list of lists. */
+
+/* Append the escape for one byte of a quoted string, or the byte itself.
+   Written with byte values rather than character literals so that the
+   escapes cannot be mangled by anything that rewrites this file. */
+#define HK_BSLASH 92
+#define HK_DQUOTE 34
+#define HK_SQUOTE 39
+
+static hk_int hk_escape_into(char *out, char c) {
+  switch ((unsigned char)c) {
+    case 92: out[0] = HK_BSLASH; out[1] = HK_BSLASH; return 2;
+    case 34: out[0] = HK_BSLASH; out[1] = 34;  return 2;  /* " */
+    case 10: out[0] = HK_BSLASH; out[1] = 110; return 2;  /* n */
+    case 9:  out[0] = HK_BSLASH; out[1] = 116; return 2;  /* t */
+    case 13: out[0] = HK_BSLASH; out[1] = 114; return 2;  /* r */
+    case 0:  out[0] = HK_BSLASH; out[1] = 48;  return 2;  /* 0 */
+    default: out[0] = c; return 1;
+  }
+}
+
+static hk_str *hk_str_quoted(hk_str *v, char q) {
+  hk_int worst = (v ? v->len : 0) * 2 + 2;
+  hk_str *out = hk_str_new(NULL, worst);
+  hk_int at = 0;
+  out->data[at++] = q;
+  for (hk_int i = 0; v && i < v->len; i++) at += hk_escape_into(out->data + at, v->data[i]);
+  out->data[at++] = q;
+  out->data[at] = 0;
+  out->len = at;
+  return out;
+}
+static hk_str *hk_join2(hk_str *a, hk_str *b) {
+  hk_str *t = hk_str_cat(a, b);
+  hk_str_release(a);
+  hk_str_release(b);
+  return t;
+}
+
+hk_str *hk_str_from_list(struct hk_list *l) {
   hk_str *acc = hk_str_new("[", 1);
   for (hk_int i = 0; i < l->len; i++) {
-    if (i) {
-      hk_str *sep = hk_str_new(", ", 2);
-      hk_str *t = hk_str_cat(acc, sep);
-      hk_str_release(acc); hk_str_release(sep);
-      acc = t;
-    }
+    if (i) acc = hk_join2(acc, hk_str_new(", ", 2));
     hk_str *piece;
-    switch (kind) {
-      case 1:  piece = hk_str_from_float(HK_AT(l, hk_float, i)); break;
-      case 2:  piece = hk_str_from_bool(HK_AT(l, hk_bool, i)); break;
-      case 3:  piece = hk_str_from_char(HK_AT(l, hk_char, i)); break;
-      case 4:  piece = hk_str_retain(HK_AT(l, hk_str *, i)); break;
-      default: piece = hk_str_from_int(HK_AT(l, hk_int, i)); break;
+    switch (l->ekind) {
+      case HK_E_FLOAT: piece = hk_str_from_float(HK_AT(l, hk_float, i)); break;
+      case HK_E_BOOL:  piece = hk_str_from_bool(HK_AT(l, hk_bool, i)); break;
+      case HK_E_CHAR: {
+        hk_str *c = hk_str_from_char(HK_AT(l, hk_char, i));
+        piece = hk_str_quoted(c, HK_SQUOTE);
+        hk_str_release(c);
+        break;
+      }
+      case HK_E_STR:   piece = hk_str_quoted(HK_AT(l, hk_str *, i), HK_DQUOTE); break;
+      case HK_E_LIST:  piece = hk_str_from_list(HK_AT(l, hk_list *, i)); break;
+      default:         piece = hk_str_from_int(HK_AT(l, hk_int, i)); break;
     }
-    hk_str *t = hk_str_cat(acc, piece);
-    hk_str_release(acc); hk_str_release(piece);
-    acc = t;
+    acc = hk_join2(acc, piece);
   }
-  hk_str *close = hk_str_new("]", 1);
-  hk_str *out = hk_str_cat(acc, close);
-  hk_str_release(acc); hk_str_release(close);
-  return out;
+  return hk_join2(acc, hk_str_new("]", 1));
 }
 
 /* ---- output ------------------------------------------------------------- */
@@ -489,6 +525,90 @@ hk_str *hk_strings_repeat(hk_str *s, hk_int n) {
   hk_str *out = hk_str_new(NULL, len);
   for (hk_int i = 0; i < n; i++) memcpy(out->data + i * s->len, s->data, (size_t)s->len);
   out->data[len] = '\0';
+  return out;
+}
+
+
+/* ---- prelude: lists ------------------------------------------------------
+ *
+ * Generic over the element size the list already records, so one
+ * implementation serves every element type. A copied element that is itself
+ * an owner is retained, because two lists now point at it and either may be
+ * released first.
+ */
+
+static void hk_elem_retain(hk_int ekind, void *slot) {
+  if (ekind == HK_E_STR) hk_str_retain(*(hk_str **)slot);
+  else if (ekind == HK_E_LIST) hk_list_retain(*(hk_list **)slot);
+}
+
+/** Append `n` elements from `src` to `out`, retaining any it now co-owns. */
+static void hk_list_append(hk_list *out, const void *src, hk_int n) {
+  if (n <= 0) return;
+  hk_list_reserve(out, out->len + n);
+  memcpy((char *)out->data + out->len * out->esz, src, (size_t)(n * out->esz));
+  for (hk_int i = 0; i < n; i++) {
+    hk_elem_retain(out->ekind, (char *)out->data + (out->len + i) * out->esz);
+  }
+  out->len += n;
+}
+
+hk_list *hk_lists_concat(hk_list *a, hk_list *b) {
+  hk_list *out = hk_list_new(a->esz, a->len + b->len, a->ekind);
+  hk_list_append(out, a->data, a->len);
+  hk_list_append(out, b->data, b->len);
+  return out;
+}
+
+hk_list *hk_lists_flatten(hk_list *xs) {
+  /* One level, matching the interpreter: a non-list element is kept as-is,
+     but a list of lists is the only shape the backend can type. */
+  hk_int total = 0;
+  for (hk_int i = 0; i < xs->len; i++) {
+    hk_list *inner = ((hk_list **)xs->data)[i];
+    if (inner) total += inner->len;
+  }
+  hk_list *first = xs->len ? ((hk_list **)xs->data)[0] : NULL;
+  hk_list *out = hk_list_new(first ? first->esz : (hk_int)sizeof(hk_int), total,
+                             first ? first->ekind : HK_E_INT);
+  for (hk_int i = 0; i < xs->len; i++) {
+    hk_list *inner = ((hk_list **)xs->data)[i];
+    if (inner) hk_list_append(out, inner->data, inner->len);
+  }
+  return out;
+}
+
+hk_list *hk_lists_chunk(hk_list *xs, hk_int n) {
+  if (n < 1) n = 1;
+  hk_int groups = (xs->len + n - 1) / n;
+  hk_list *out = hk_list_new((hk_int)sizeof(hk_list *), groups, HK_E_LIST);
+  for (hk_int i = 0; i < xs->len; i += n) {
+    hk_int take = xs->len - i < n ? xs->len - i : n;
+    hk_list *part = hk_list_new(xs->esz, take, xs->ekind);
+    hk_list_append(part, (char *)xs->data + i * xs->esz, take);
+    hk_list_push_raw(out, &part);
+  }
+  return out;
+}
+
+static bool hk_elem_eq(hk_int ekind, const void *a, const void *b, hk_int esz) {
+  if (ekind == HK_E_STR) return hk_str_eq(*(hk_str *const *)a, *(hk_str *const *)b);
+  /* A nested list compares by identity, which is what comparing anything
+     else would amount to here. Scalars compare by their bytes, which is
+     exact for every scalar the backend emits. */
+  return memcmp(a, b, (size_t)esz) == 0;
+}
+
+hk_list *hk_lists_unique(hk_list *xs) {
+  hk_list *out = hk_list_new(xs->esz, xs->len, xs->ekind);
+  for (hk_int i = 0; i < xs->len; i++) {
+    const char *cand = (const char *)xs->data + i * xs->esz;
+    bool seen = false;
+    for (hk_int j = 0; j < out->len && !seen; j++) {
+      seen = hk_elem_eq(xs->ekind, cand, (const char *)out->data + j * out->esz, xs->esz);
+    }
+    if (!seen) hk_list_append(out, cand, 1);
+  }
   return out;
 }
 

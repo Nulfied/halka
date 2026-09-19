@@ -144,7 +144,7 @@ hk_str *hk_str_from_float(hk_float v);
 hk_str *hk_str_from_bool(hk_bool v);
 hk_str *hk_str_from_char(hk_char v);
 hk_int  hk_str_len_chars(hk_str *s);           /* code points, not bytes */
-hk_str *hk_str_from_list(struct hk_list *l, int kind); /* 0=int 1=float 2=bool 3=char 4=str */
+hk_str *hk_str_from_list(struct hk_list *l); /* renders like `inspect` (#53) */
 hk_bool hk_str_eq(hk_str *a, hk_str *b);
 int     hk_str_cmp(hk_str *a, hk_str *b);
 hk_str *hk_str_retain(hk_str *s);
@@ -154,12 +154,18 @@ void    hk_str_release(hk_str *s);
 
 /* Unboxed storage: `data` is a flat array of `esz`-byte elements, so an
  * int list is a plain int64_t[] and indexing is one load. */
-/* What the elements own, so releasing a list can release them too. A list
- * of strings used to free only its backing array and leak every string in
- * it, because nothing recorded that the elements were owners. */
-#define HK_E_SCALAR 0
-#define HK_E_STR    1
-#define HK_E_LIST   2
+/* What a list's elements are. One code serves two purposes: releasing a
+ * list has to release elements that are owners, and printing one has to
+ * render them the way `inspect` does. Recording only "scalar or not" meant
+ * a list of strings leaked its strings, and a list of lists printed its
+ * element pointers as integers. */
+#define HK_E_INT   0
+#define HK_E_FLOAT 1
+#define HK_E_BOOL  2
+#define HK_E_CHAR  3
+#define HK_E_STR   4
+#define HK_E_LIST  5
+#define HK_E_OWNS(k) ((k) >= HK_E_STR)
 
 typedef struct hk_list {
   hk_int rc;
@@ -250,6 +256,15 @@ hk_str  *hk_os_env(hk_str *name);
 hk_str  *hk_os_platform(void);
 void     hk_os_exit(hk_int code);
 hk_str  *hk_strings_repeat(hk_str *s, hk_int n);
+
+/* `lists`. Generic over the element size the list records, so one
+ * implementation serves every element type. Each copies elements into a new
+ * list and retains anything the new list now co-owns, so releasing either
+ * list is safe. */
+hk_list *hk_lists_concat(hk_list *a, hk_list *b);
+hk_list *hk_lists_flatten(hk_list *xs);
+hk_list *hk_lists_chunk(hk_list *xs, hk_int n);
+hk_list *hk_lists_unique(hk_list *xs);
 
 /* ---- capabilities (#45) --------------------------------------------------
  *

@@ -1,0 +1,27 @@
+# The `lists` module, compiled. One C implementation serves every element
+# type, because a list records its element size and kind; copied elements
+# that are owners are retained, so releasing either list is safe.
+import lists
+
+let a: [1, 2, 3]
+let b: [4, 5]
+say lists.concat(a, b)
+say lists.unique([1, 2, 2, 3, 1, 3])
+say lists.chunk([1, 2, 3, 4, 5], 2)
+say lists.flatten([[1, 2], [3], [4, 5]])
+
+# Strings: the copies are retained, and comparison is by value not pointer.
+let s1: ["x", "y"]
+let s2: ["y", "z"]
+say lists.concat(s1, s2)
+say lists.unique(lists.concat(s1, s2))
+say lists.chunk(["a", "b", "c"], 2)
+
+# A list prints the way `inspect` does: strings quoted and escaped, nested
+# lists recursed into. Printing the element bytes as integers is what it
+# used to do for a list of lists.
+say ["x", "y"]
+say [[1, 2], [3]]
+say [[["deep"]]]
+say [1.5, 2.5]
+say [true, false]

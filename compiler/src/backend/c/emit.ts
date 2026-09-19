@@ -1425,6 +1425,17 @@ export class CEmitter {
           return "0";
         }
         this.usePrelude(op.name);
+        // A prelude function copies what it is given and retains anything
+        // it keeps, so a freshly built argument is still the caller's to
+        // release. Without this `lists.concat([1, 2], [3])` leaked both
+        // literals.
+        e.args.forEach((a, i) => {
+          if (a.value.kind === "Ident" || a.value.kind === "MemberExpr" || a.value.kind === "IndexExpr") return;
+          const at = this.tyOf(a.value);
+          const ac = at ? this.cty(at, "argument") : "";
+          if (ac === "hk_list *") args[i] = this.holdTemp(args[i]!, "list");
+          else if (ac === "hk_str *") args[i] = this.holdTemp(args[i]!, "str");
+        });
         // File operations are gated on a capability at run time (#45), and
         // a compiled program has to refuse on the same terms or the gate
         // would mean nothing once built.
@@ -1525,14 +1536,16 @@ export class CEmitter {
     // A list prints as `[a, b, c]`, matching `inspect` (#53).
     if (p?.k === "list" || p?.k === "array") {
       const elem = this.cty(this.elemOf(t), "element", e.span);
-      const kind = elem === "hk_float" ? 1 : elem === "hk_bool" ? 2 : elem === "hk_char" ? 3 : elem === "hk_str *" ? 4 : 0;
+      void elem;
       const isRead = e.kind === "Ident" || e.kind === "MemberExpr" || e.kind === "IndexExpr";
-      if (isRead) return `hk_str_from_list(${this.expr(e)}, ${kind})`;
+      // The list carries its own element kind now, so the printer does not
+      // have to be told and a nested list can recurse into its child's.
+      if (isRead) return `hk_str_from_list(${this.expr(e)})`;
       // A list built just to be printed is freed again straight away.
       const lv = this.fresh("plst");
       const sv = this.fresh("pstr");
       this.line(`hk_list *${lv} = ${this.expr(e)};`);
-      this.line(`hk_str *${sv} = hk_str_from_list(${lv}, ${kind});`);
+      this.line(`hk_str *${sv} = hk_str_from_list(${lv});`);
       this.line(`hk_list_release(${lv});`);
       return sv;
     }
@@ -1619,9 +1632,14 @@ function mangle(name: string): string {
  * every string in it.
  */
 function ekindOf(elemCty: string): string {
-  if (elemCty === "hk_str *") return "HK_E_STR";
-  if (elemCty === "hk_list *") return "HK_E_LIST";
-  return "HK_E_SCALAR";
+  switch (elemCty) {
+    case "hk_float": return "HK_E_FLOAT";
+    case "hk_bool": return "HK_E_BOOL";
+    case "hk_char": return "HK_E_CHAR";
+    case "hk_str *": return "HK_E_STR";
+    case "hk_list *": return "HK_E_LIST";
+    default: return "HK_E_INT";
+  }
 }
 
 function atom(s: string): string {

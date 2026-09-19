@@ -112,8 +112,9 @@ programs, capability gate and all.
 
 Still open from this milestone:
 
-- **`lists`, `maps` and `json`**, whose members take heterogeneous
-  containers the signature table cannot describe honestly yet.
+- **`maps` and `json` in compiled code.** Both are typed and both run under
+  `halka run`; the backend has no map type at all, and `json.parse` yields a
+  value whose shape is only known at run time. `lists` compiles.
 - **Stack promotion** — the analysis already identifies values that neither
   escape nor grow; the backend does not yet place them on the stack.
 - **Bounds-check elision** for the `for i in 0..len(xs)` shape.

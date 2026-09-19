@@ -28,7 +28,7 @@ Counts today: **16 done · 12 partial · 23 not started · 4 ecosystem**
 | 12 | Native programming & ABI | 🟡 | The backend emits C99, links native binaries, and links extra libraries via `extern: link:`. No calling-convention control or callbacks yet. |
 | 13 | **Foreign function interface** | ✅ | **C works.** `import c "header.h"` includes it, `c f(x)` calls it, declarations are type-checked, strings cross as `const char *` with no copy, `extern: link:` links libraries, and C compiler warnings are surfaced rather than hidden. C++ still errors (`E0716`). |
 | 14 | Python interoperability | ✅ | **Works.** The binary embeds CPython. Modules, attribute chains, `from py "m" import f`, lists both ways, GIL taken per call so `parallel:` keeps every core busy. Crossing back is explicit with `as` (#15). Measured against the same program in Python: 44x single-threaded, 153x on four threads. |
-| 15 | Runtime system | ✅ | `libhalka`: C99, no dependencies — strings, lists, threads, mutexes, atomics, panics, timing, and live-allocation accounting so leaks are testable. |
+| 15 | Runtime system | ✅ | `libhalka`: C99, no dependencies — strings, lists (which own and release their elements), threads, mutexes, atomics, panics, timing, files, capabilities, and live-allocation accounting so leaks are testable. |
 
 ## Libraries
 

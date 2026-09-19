@@ -12,7 +12,7 @@
 
 import {
   type Ty, BOOL, FLOAT, INT, NOTHING, STRING,
-  fn, list, named, param,
+  any, fn, list, map, named, param, tup,
 } from "./types.ts";
 
 export interface PreludeMember {
@@ -32,6 +32,14 @@ export interface PreludeMember {
 const p = (name: string, ty: Ty) => param(name, ty);
 const sig = (params: [string, Ty][], ret: Ty, c?: string, okFrom?: PreludeMember["okFrom"]): PreludeMember =>
   ({ ty: fn(params.map(([n, t]) => p(n, t)), ret), c, okFrom });
+
+/** A signature generic over the names given, e.g. `T` for a list element. */
+const gsig = (generics: string[], params: [string, Ty][], ret: Ty, c?: string): PreludeMember =>
+  ({ ty: fn(params.map(([n, t]) => p(n, t)), ret, generics), c });
+
+const T = named("T");
+const K = named("K");
+const V = named("V");
 
 /** `Result<T>` for a prelude function that can fail (#22). */
 const result = (t: Ty): Ty => named("Result", [t]);
@@ -102,6 +110,27 @@ const FILES: Record<string, PreludeMember> = {
   list_dir: sig([["path", STRING]], result(list(STRING))),
 };
 
+const LISTS: Record<string, PreludeMember> = {
+  concat: gsig(["T"], [["a", list(T)], ["b", list(T)]], list(T), "hk_lists_concat"),
+  flatten: gsig(["T"], [["xs", list(list(T))]], list(T), "hk_lists_flatten"),
+  chunk: gsig(["T"], [["xs", list(T)], ["n", INT]], list(list(T)), "hk_lists_chunk"),
+  // `unique` compares elements, which the runtime can only do for a type it
+  // knows the shape of; the backend refuses it rather than comparing bytes
+  // of something that is not a scalar.
+  unique: gsig(["T"], [["xs", list(T)]], list(T), "hk_lists_unique"),
+};
+
+const MAPS: Record<string, PreludeMember> = {
+  from_entries: gsig(["K", "V"], [["entries", list(tup([K, V]))]], map(K, V)),
+  merge: gsig(["K", "V"], [["a", map(K, V)], ["b", map(K, V)]], map(K, V)),
+};
+
+const JSON_MOD: Record<string, PreludeMember> = {
+  // `parse` yields whatever the document held, which is `any` by nature.
+  parse: sig([["text", STRING]], any("a parsed JSON document")),
+  stringify: gsig(["T"], [["value", T]], STRING),
+};
+
 export const PRELUDE_MODULES: Map<string, Map<string, PreludeMember>> = new Map(
   Object.entries({
     math: MATH,
@@ -110,10 +139,13 @@ export const PRELUDE_MODULES: Map<string, Map<string, PreludeMember>> = new Map(
     os: OS,
     files: FILES,
     strings: STRINGS,
-    // `lists`, `maps` and `json` are deliberately absent. Their members take
-    // and return heterogeneous containers that this table cannot describe
-    // honestly, and a wrong signature here is worse than none: it would
-    // reject working programs. They keep the untyped behaviour they had.
+    lists: LISTS,
+    // `maps` and `json` are typed but have no C implementation: the backend
+    // has no map type at all, and `json.parse` yields a value whose shape is
+    // only known at run time. Typing them still helps `halka check` and the
+    // interpreter; `halka build` names the function it cannot compile.
+    maps: MAPS,
+    json: JSON_MOD,
   }).map(([mod, members]) => [mod, new Map(Object.entries(members))]),
 );
 

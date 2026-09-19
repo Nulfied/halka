@@ -205,7 +205,7 @@ static hk_list *hk_py_to_list_int(PyObject *o, const char *file, hk_int line) {
   PyObject *seq = PySequence_Fast(o, "value is not a sequence");
   if (!seq) { hk_py_fail("converting to list(int)", file, line); }
   Py_ssize_t n = PySequence_Fast_GET_SIZE(seq);
-  hk_list *l = hk_list_new((hk_int)sizeof(hk_int), (hk_int)n, HK_E_SCALAR);
+  hk_list *l = hk_list_new((hk_int)sizeof(hk_int), (hk_int)n, HK_E_INT);
   for (Py_ssize_t i = 0; i < n; i++) {
     long long v = PyLong_AsLongLong(PySequence_Fast_GET_ITEM(seq, i));
     HK_PUSH(l, hk_int, (hk_int)v);
@@ -220,7 +220,7 @@ static hk_list *hk_py_to_list_float(PyObject *o, const char *file, hk_int line) 
   PyObject *seq = PySequence_Fast(o, "value is not a sequence");
   if (!seq) { hk_py_fail("converting to list(float)", file, line); }
   Py_ssize_t n = PySequence_Fast_GET_SIZE(seq);
-  hk_list *l = hk_list_new((hk_int)sizeof(hk_float), (hk_int)n, HK_E_SCALAR);
+  hk_list *l = hk_list_new((hk_int)sizeof(hk_float), (hk_int)n, HK_E_FLOAT);
   for (Py_ssize_t i = 0; i < n; i++) {
     double v = PyFloat_AsDouble(PySequence_Fast_GET_ITEM(seq, i));
     HK_PUSH(l, hk_float, (hk_float)v);
