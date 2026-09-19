@@ -155,6 +155,24 @@ export class Interpreter {
     return main.result;
   }
 
+  /**
+   * Bind a module's own `import` declarations into its environment.
+   *
+   * A dependency's imports are not executed by `run`, which only ever walks
+   * the main module. Without this a module could be loaded but could not use
+   * anything it imported, so `a` importing `b` importing `c` failed at `c`.
+   * Every module is hoisted before any of this runs, so the order the
+   * dependencies happen to be in does not matter (#33, #34).
+   */
+  bindImports(stmts: A.Stmt[], env: Env): void {
+    for (const s of stmts) {
+      if (s.kind !== "ImportDecl") continue;
+      // Binding an import never blocks, so the generator runs to completion.
+      const it = this.execImport(env, s);
+      for (;;) if (it.next().done) break;
+    }
+  }
+
   /** Register every declaration in a statement list before executing it. */
   hoist(stmts: A.Stmt[], env: Env): void {
     for (const s of stmts) this.hoistOne(s, env);

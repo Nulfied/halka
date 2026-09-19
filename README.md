@@ -9,7 +9,7 @@ that compiles to native code **as fast as hand-written C** — with memory safet
 no lifetime annotations, and real multicore parallelism.
 
 [Quick start](#quick-start) · [Tour](#a-sixty-second-tour) · [Performance](#performance) ·
-[Why Halka](#why-halka) · [Spec](spec/V49-LOCKED.md) · [Status](STATUS.md) · [Roadmap](ROADMAP.md) · [Editors](#editor-support)
+[Why Halka](#why-halka) · [Spec](spec/V49-LOCKED.md) · [Packages](spec/PACKAGES.md) · [Status](STATUS.md) · [Roadmap](ROADMAP.md) · [Editors](#editor-support)
 
 </div>
 
@@ -334,11 +334,17 @@ What works today:
 - **C and Python interop** — `import c "math.h"` then `c hypot(3.0, 4.0)`;
   `import py "numpy"` embeds CPython so NumPy stays available while the hot
   loop compiles to native code on every core ([details](docs/ffi.md)).
+- **Packages** — `halka add` with `halka.pkg` manifests, Minimal Version
+  Selection, and a `halka.lock` that pins a SHA-256 per archive. No install
+  scripts, no build scripts, no post-install hooks — a package is source that
+  gets compiled, so `halka add` cannot run anything
+  ([spec/PACKAGES.md](spec/PACKAGES.md)).
 - **Tooling** — formatter, REPL, language server, VS Code extension,
-  Tree-sitter grammar, package-free module resolution.
+  Tree-sitter grammar.
 
-What is next, in order: enums/match and maps in the native backend, a package
-manager and registry, then self-hosting. See [ROADMAP.md](ROADMAP.md).
+What is next, in order: multi-module native builds (the interpreter handles
+them today, the C backend does not), enums/match and maps in the native
+backend, a public registry, then self-hosting. See [ROADMAP.md](ROADMAP.md).
 
 [STATUS.md](STATUS.md) maps all 55 planned ecosystem areas to what actually
 exists today, so "is that implemented or planned?" always has an answer.

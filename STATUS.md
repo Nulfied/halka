@@ -58,9 +58,9 @@ Counts today: **16 done · 12 partial · 23 not started · 4 ecosystem**
 | 26 | Code formatting | ✅ | Canonical, idempotent, comment-preserving, behaviour-preserving — all four properties are tested. |
 | 27 | Linting & static analysis | ✅ | Name resolution, arity, locked-absence checks, naming conventions, type errors, match exhaustiveness, and full ownership and borrow analysis. No unused-code detection yet. |
 | 28 | Testing ecosystem | ✅ | `halka test` for user projects; 160 internal tests across spec conformance, rejection, golden output, formatter, native-vs-interpreter equivalence, real C and Python FFI calls, ownership, and a zero-leak assertion on every compiled binary. |
-| 29 | Build system | 🟡 | `halka build` compiles one file to a binary. No multi-file project build, no incremental compilation, no cross-compilation yet. |
-| 30 | Package management | ⬜ | Module resolution over a search path only. No manifest resolution, no versions, no lockfile. **Second-biggest multiplier.** |
-| 31 | Package registry | ⬜ | Nothing. |
+| 29 | Build system | 🟡 | `halka build` compiles one file to a binary, and `halka.pkg` defines a project. Multi-module *interpreted* programs work; the native backend still compiles one module, so a native build of a program that imports another module is refused with `E0714` rather than mis-compiled. No incremental or cross-compilation yet. |
+| 30 | Package management | ✅ | `halka init/add/remove/install/update/tree`. `halka.pkg` manifests, semver with caret and exact requirements, Minimal Version Selection, `halka.lock` with SHA-256 per archive, a per-user cache, and path dependencies. No install scripts of any kind. [spec/PACKAGES.md](spec/PACKAGES.md). |
+| 31 | Package registry | 🟡 | The client works against any static registry (`index/<name>.json` + `pkg/<name>/<ver>.tar.gz`), which is a directory or a URL via `HALKA_REGISTRY`. Archives are verified by hash before extraction and rejected if they contain links or escaping paths. No public registry is published yet. |
 | 32 | CLI | ✅ | `run build check fmt test repl lsp ast tokens toolchain`. |
 | 33 | IDE & editor integration | ✅ | VS Code extension, TextMate grammar, Tree-sitter grammar, and setup for Neovim, Helix, Zed, Sublime. |
 | 50 | Compiler API | 🟡 | `halka ast --json` exposes the canonical AST. No stable library API, no IR access, no plugins. |

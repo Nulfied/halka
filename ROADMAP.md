@@ -73,8 +73,20 @@ inside an expression and never named. The runtime counts live heap objects, so
 the test suite asserts it — **every compiled program in the repo exits with
 zero live objects**, including the ones that embed CPython.
 
+**Packages** (#29/#30/#31) shipped too: `halka.pkg` manifests, semver
+requirements in two forms, Minimal Version Selection, a hash-pinned
+`halka.lock`, a per-user cache and path dependencies, against any static
+registry. Fixing it turned up two problems worth naming: a module could not
+use anything it imported (so a package could never have a dependency), and an
+uninstalled dependency silently resolved to a built-in module of the same
+name. Both are fixed and both now have tests.
+
 Still open from this milestone:
 
+- **Multi-module native builds.** The interpreter runs multi-module programs;
+  the C backend compiles one module and refuses the rest with `E0714`. This is
+  the single biggest gap now that packages exist, because it is what stands
+  between a dependency and a native binary.
 - **Stack promotion** — the analysis already identifies values that neither
   escape nor grow; the backend does not yet place them on the stack.
 - **Bounds-check elision** for the `for i in 0..len(xs)` shape.
@@ -141,7 +153,7 @@ The locked syntax already reserves what this needs: `kernel`, `launch`, `device`
 - The full specification frozen, including semantics (not just syntax).
 - A conformance test suite any implementation can run.
 - Backwards-compatibility guarantee.
-- `halka pkg` and a package registry.
+- A public package registry to point `halka add` at (the client is done).
 - Debugger (DAP), profiler, coverage.
 - Documentation generator.
 

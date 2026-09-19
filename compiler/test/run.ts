@@ -8,6 +8,7 @@
 //   native   — R23: the compiled binary prints exactly what the interpreter does
 //   ffi      — #35/#37: C and Python interop, built and run for real
 //   own      — spec/MEMORY-MODEL.md: ownership and borrow checking
+//   pkg      — spec/PACKAGES.md: versions, manifests, resolution, archives
 //              M4 is checked inside `native` and `ffi`: every compiled
 //              program must free every heap object it allocates
 
@@ -26,6 +27,8 @@ import { emitC } from "../src/backend/c/emit.ts";
 import { buildNative, findToolchain, findPython } from "../src/backend/c/build.ts";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
+import { suitePkg } from "./pkg.ts";
+import { suitePkgE2E } from "./pkg-e2e.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..", "..");
@@ -436,6 +439,8 @@ suiteNative();
 suiteFfi();
 suiteOwnership();
 suiteOwnershipCorpus();
+suitePkg({ ok: (n) => ok("pkg", n), bad: (n, d) => bad("pkg", n, d) });
+await suitePkgE2E({ ok: (n) => ok("pkg", n), bad: (n, d) => bad("pkg", n, d) });
 const ms = Date.now() - t0;
 
 if (failures.length) {

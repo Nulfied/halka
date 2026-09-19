@@ -23,6 +23,12 @@ export interface Toolchain {
 export interface CompileOpts {
   release: boolean;
   includeDirs: string[];
+  /**
+   * Where intermediate object files go. This must be unique per build: MSVC
+   * names an object after its source, so two builds sharing a directory both
+   * write `halka.obj`, and one of them fails with a sharing violation.
+   */
+  objDir: string;
   /** Extra libraries, from `extern: link: "..."` (#38). */
   libs?: string[];
   /** CPython embedding, when the program uses `py` (#37). */
@@ -138,7 +144,7 @@ function findMsvc(): Toolchain | null {
         ...(py ? [`/I${py.include}`, `/DHK_PYTHONHOME=\"${py.prefix}\"`] : []),
         ...sources,
         `/Fe:${out}`,
-        `/Fo:${join(dirname(out), "")}\\`,
+        `/Fo:${join(opts.objDir, "")}\\`,
         "/link", "/INCREMENTAL:NO",
         ...(py ? [`/LIBPATH:${py.libDir}`, `${py.libName}.lib`] : []),
         ...(opts.libs ?? []).map((l) => (l.endsWith(".lib") ? l : `${l}.lib`)),
@@ -271,6 +277,7 @@ export function buildNative(cSource: string, sourceName: string, opts: BuildOpti
 
   const outPath = resolve(opts.out);
   const { cmd, args, env } = tc.compile([cFile, rtC], outPath, {
+    objDir: workDir,
     release: opts.release,
     includeDirs: [workDir],
     libs: opts.libs,

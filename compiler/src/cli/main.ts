@@ -1,6 +1,6 @@
 // The `halka` command-line driver.
 
-import { readFileSync, existsSync, writeFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, readdirSync, statSync, mkdirSync } from "node:fs";
 import { resolve, dirname, join, basename, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
@@ -19,6 +19,22 @@ import { buildNative, describeToolchains, findPython } from "../backend/c/build.
 import { show as showTy } from "../sema/types.ts";
 import { inspect, display, type Value, NOTHING } from "../runtime/value.ts";
 import type * as A from "../parser/ast.ts";
+import {
+  BUILTIN_MODULES,
+  LOCK_NAME,
+  MANIFEST_NAME,
+  ProjectError,
+  type Project,
+  type ResolvedDep,
+  findProjectDir,
+  loadProject,
+  missingPackages,
+  projectSearchPath,
+  sync,
+} from "../pkg/project.ts";
+import { formatManifest, type Dependency } from "../pkg/manifest.ts";
+import { compareVersions, formatVersion, parseReq, parseVersion } from "../pkg/semver.ts";
+import { Registry, cacheRoot, cachedPackages, clearIndexCache, registryRoot } from "../pkg/registry.ts";
 
 export const VERSION = "0.1.0";
 
@@ -59,12 +75,27 @@ function loadProgram(file: string): Loaded {
   const deps: { path: string; mod: A.Module }[] = [];
   const seen = new Set<string>();
 
+  // A dependency the lockfile names but the cache does not have would
+  // otherwise let `import` fall through to whatever else the search path can
+  // reach — a built-in module, or a same-named file elsewhere. Silently
+  // importing something other than what was asked for is worse than stopping.
+  const absent = missingPackages(file);
+  if (absent) {
+    die(
+      `${absent.names.length === 1 ? "a dependency is" : "dependencies are"} not installed: ` +
+      `${absent.names.join(", ")}` + NL +
+      `  Run \`halka install\` in ${absent.projectDir}`,
+    );
+  }
+
   const root = dirname(resolve(file));
   // Module search path: next to the importing file, then the bundled stdlib,
   // then anything on HALKA_PATH (#33, #34).
   const searchPath = [
     root,
     join(root, ".."),
+    // Anything this project declared in `halka.pkg` and has installed (#30).
+    ...projectSearchPath(file),
     join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "stdlib"),
     ...(process.env["HALKA_PATH"] ?? "").split(process.platform === "win32" ? ";" : ":").filter(Boolean),
   ];
@@ -127,12 +158,16 @@ function cmdRun(args: string[]): void {
   if (warnings.length && process.env["HALKA_WARN"] !== "0") report(warnings, sources);
 
   const interp = new Interpreter({ color: useColor, grants: (process.env["HALKA_GRANTS"] ?? "").split(",").filter(Boolean) });
-  // Register local modules before running main.
-  for (const d of deps) {
+  // Register local modules before running main. Hoisting happens for every
+  // module first, then imports are bound, so a dependency that imports
+  // another dependency resolves whichever order they were discovered in.
+  const moduleEnvs = deps.map((d) => {
     const env = interp.globals.child();
     interp.hoist(d.mod.stmts, env);
     interp.modules.set(d.path, env);
-  }
+    return { d, env };
+  });
+  for (const { d, env } of moduleEnvs) interp.bindImports(d.mod.stmts, env);
   try {
     interp.run(main);
   } catch (e) {
@@ -434,11 +469,13 @@ function cmdTest(args: string[]): void {
     if (diags.hasErrors) { report(diags.items, sources); fail++; continue; }
     const out: string[] = [];
     const interp = new Interpreter({ out: (s) => out.push(s), err: (s) => out.push(s) });
-    for (const d of deps) {
+    const envs = deps.map((d) => {
       const env = interp.globals.child();
       interp.hoist(d.mod.stmts, env);
       interp.modules.set(d.path, env);
-    }
+      return { d, env };
+    });
+    for (const { d, env } of envs) interp.bindImports(d.mod.stmts, env);
     try {
       interp.run(main);
       process.stdout.write(`  ok   ${f}\n`);
@@ -494,6 +531,220 @@ function sexp(n: unknown, depth: number): string {
   return lines.join("\n");
 }
 
+// ---------------------------------------------------------------------------
+// packages (#29, #30, #31) — spec/PACKAGES.md
+// ---------------------------------------------------------------------------
+
+/** Find the project this command applies to, or explain why there is none. */
+function currentProject(): Project {
+  const dir = findProjectDir(process.cwd());
+  if (!dir) {
+    die(
+      `this is not a Halka project — no ${MANIFEST_NAME} here or in any parent directory.` + NL +
+      `  Run \`halka init\` to create one.`,
+    );
+  }
+  try {
+    return loadProject(dir);
+  } catch (e) {
+    if (e instanceof ProjectError) die(e.message);
+    throw e;
+  }
+}
+
+async function withProjectErrors<T>(f: () => Promise<T>): Promise<T> {
+  try {
+    return await f();
+  } catch (e) {
+    if (e instanceof Error) die(e.message);
+    throw e;
+  }
+}
+
+function cmdInit(args: string[]): void {
+  const dir = process.cwd();
+  const target = join(dir, MANIFEST_NAME);
+  if (existsSync(target)) die(`${MANIFEST_NAME} already exists here`);
+
+  const given = args.find((a) => !a.startsWith("-"));
+  const name = given ?? basename(dir).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!/^[a-z][a-z0-9-]*$/.test(name)) {
+    die(
+      `\`${name}\` is not a valid package name — lowercase letters, digits and \`-\`, starting with a letter.` + NL +
+      `  Pass one explicitly: \`halka init my-package\``,
+    );
+  }
+
+  const version = parseVersion("0.1.0")!;
+  writeFileSync(target, formatManifest({ name, version, license: "", description: "", deps: [], file: target }));
+  process.stdout.write(`wrote ${MANIFEST_NAME}` + NL);
+
+  const src = join(dir, "src");
+  const entry = join(src, "main.hk");
+  if (!existsSync(entry)) {
+    mkdirSync(src, { recursive: true });
+    writeFileSync(entry, `say "hello from ${name}"` + NL);
+    process.stdout.write("wrote src/main.hk" + NL);
+  }
+}
+
+async function cmdAdd(args: string[]): Promise<void> {
+  const positional = args.filter((a) => !a.startsWith("--"));
+  const name = positional[0];
+  if (!name) die("usage: halka add <name> [version] [--dev] [--path DIR]");
+
+  const pathIdx = args.indexOf("--path");
+  const pathValue = pathIdx >= 0 ? args[pathIdx + 1] : undefined;
+  if (pathIdx >= 0 && !pathValue) die("`--path` needs a directory");
+
+  if (BUILTIN_MODULES.has(name)) {
+    die(
+      `\`${name}\` is the name of a built-in module, so no package can use it.` + NL +
+      `  \`import ${name}\` already means the one in the prelude.`,
+    );
+  }
+
+  const project = currentProject();
+  const dev = args.includes("--dev");
+
+  let dep: Dependency;
+  if (pathValue) {
+    dep = { name, req: null, path: pathValue, dev };
+  } else {
+    const reqText = positional.find((a) => a !== name && a !== pathValue);
+    let req = reqText ? parseReq(reqText) : null;
+    if (reqText && !req) die(`\`${reqText}\` is not a version requirement — write \`1.2.0\` or \`=1.2.0\``);
+    if (!req) {
+      // No version given: take the newest published and pin its compatibility
+      // range, which is exactly what the bare (caret) form means.
+      const registry = new Registry();
+      const failures = (await registry.prefetch([name])).failures;
+      if (failures.length) die(`could not read the registry:` + NL + `  ${failures.join(NL + "  ")}`);
+      const versions = registry.versions(name);
+      if (!versions || versions.length === 0) die(`no package named \`${name}\` was found in ${registryRoot()}`);
+      const newest = versions.slice().sort(compareVersions).pop()!;
+      req = { kind: "caret", version: newest };
+    }
+    dep = { name, req, path: null, dev };
+  }
+
+  const deps = [...project.manifest.deps];
+  const at = deps.findIndex((d) => d.name === name);
+  if (at >= 0) deps[at] = dep;
+  else deps.push(dep);
+  const updated = { ...project.manifest, deps };
+
+  // Install before writing the manifest, so a failed add leaves the project
+  // exactly as it was rather than half-changed.
+  const installed = await withProjectErrors(() =>
+    sync({ ...project, manifest: updated }, { dev: true, offline: false, update: false }));
+  writeFileSync(join(project.dir, MANIFEST_NAME), formatManifest(updated));
+
+  const added = installed.find((d) => d.name === name);
+  const where = dev ? "dev-deps" : "deps";
+  process.stdout.write(`added ${name}${added ? " " + formatVersion(added.version) : ""} to ${where}` + NL);
+}
+
+async function cmdRemove(args: string[]): Promise<void> {
+  const name = args.find((a) => !a.startsWith("-"));
+  if (!name) die("usage: halka remove <name>");
+  const project = currentProject();
+  if (!project.manifest.deps.some((d) => d.name === name)) {
+    die(`\`${name}\` is not a dependency of \`${project.manifest.name}\``);
+  }
+  const updated = { ...project.manifest, deps: project.manifest.deps.filter((d) => d.name !== name) };
+  writeFileSync(join(project.dir, MANIFEST_NAME), formatManifest(updated));
+  // Re-resolve from scratch: dropping a dependency can drop transitive ones.
+  await withProjectErrors(() =>
+    sync({ ...project, manifest: updated, lock: null }, { dev: true, offline: false, update: true }));
+  process.stdout.write(`removed ${name}` + NL);
+}
+
+async function cmdInstall(args: string[]): Promise<void> {
+  const project = currentProject();
+  const installed = await withProjectErrors(() =>
+    sync(project, { dev: args.includes("--dev"), offline: args.includes("--offline"), update: false }));
+  reportInstalled(installed);
+}
+
+async function cmdUpdate(args: string[]): Promise<void> {
+  const project = currentProject();
+  const only = args.find((a) => !a.startsWith("-"));
+  if (only && !project.manifest.deps.some((d) => d.name === only)) {
+    die(`\`${only}\` is not a dependency of \`${project.manifest.name}\``);
+  }
+  // An update is the one time a newly published version should be visible.
+  clearIndexCache();
+  const installed = await withProjectErrors(() => sync(project, { dev: true, offline: false, update: true }));
+  reportInstalled(installed);
+}
+
+function reportInstalled(installed: ResolvedDep[]): void {
+  if (installed.length === 0) {
+    process.stdout.write("no dependencies" + NL);
+    return;
+  }
+  for (const d of installed) {
+    process.stdout.write(`  ${d.name} ${formatVersion(d.version)}${d.source === "path" ? "  (path)" : ""}` + NL);
+  }
+  process.stdout.write(
+    `${installed.length} package${installed.length === 1 ? "" : "s"}, ${LOCK_NAME} is up to date` + NL,
+  );
+}
+
+async function cmdTree(_args: string[]): Promise<void> {
+  const project = currentProject();
+  process.stdout.write(`${project.manifest.name} ${formatVersion(project.manifest.version)}` + NL);
+
+  const direct = project.manifest.deps;
+  if (direct.length === 0) {
+    process.stdout.write("  (no dependencies)" + NL);
+    return;
+  }
+
+  const installed = await withProjectErrors(() => sync(project, { dev: true, offline: true, update: false }));
+  const byName = new Map(installed.map((d) => [d.name, d]));
+  const registry = new Registry(undefined, true);
+  const seen = new Set<string>();
+
+  const walk = (name: string, prefix: string, last: boolean): void => {
+    const d = byName.get(name);
+    const label = d
+      ? `${name} ${formatVersion(d.version)}${d.source === "path" ? " (path)" : ""}`
+      : `${name} (not installed)`;
+    const repeated = seen.has(name);
+    process.stdout.write(`${prefix}${last ? "`-- " : "|-- "}${label}${repeated ? " *" : ""}` + NL);
+    if (repeated || !d || d.source === "path") return;
+    seen.add(name);
+    const kids = registry.requirements(name, d.version) ?? [];
+    kids.forEach((k, i) => walk(k.name, prefix + (last ? "    " : "|   "), i === kids.length - 1));
+  };
+  direct.forEach((d, i) => walk(d.name, "", i === direct.length - 1));
+  if (seen.size) process.stdout.write(NL + "* already shown above" + NL);
+}
+
+function cmdPkg(args: string[]): void {
+  if (args[0] !== "cache") die("usage: halka pkg cache [--clear]");
+  if (args.includes("--clear")) {
+    clearIndexCache();
+    process.stdout.write(`cleared the index cache under ${cacheRoot()}` + NL);
+    process.stdout.write(
+      "package archives were kept — they are verified by hash, so reusing them is safe" + NL,
+    );
+    return;
+  }
+  process.stdout.write(`cache:    ${cacheRoot()}` + NL);
+  process.stdout.write(`registry: ${registryRoot()}` + NL);
+  const packages = cachedPackages();
+  if (packages.length === 0) {
+    process.stdout.write("no packages cached" + NL);
+    return;
+  }
+  for (const p of packages.sort((a, b) => (a.name + a.version < b.name + b.version ? -1 : 1))) {
+    process.stdout.write(`  ${p.name} ${p.version}` + NL);
+  }
+}
+
 const HELP = `Halka ${VERSION} — the Halka programming language
 
 usage: halka <command> [arguments]
@@ -515,8 +766,23 @@ commands:
   lsp                    start the language server (stdio)
   version                print the version
 
+packages (spec/PACKAGES.md):
+  init [name]            create a halka.pkg in this directory
+  add <name> [req]       add a dependency and install it
+                           --dev      add to dev-deps instead
+                           --path P   depend on a local directory
+  remove <name>          drop a dependency
+  install                install what halka.pkg asks for
+                           --offline  use only what is already cached
+                           --dev      include dev-deps
+  update [name]          re-resolve, ignoring the lockfile's pins
+  tree                   show the resolved dependency graph
+  pkg cache [--clear]    show or clear the package cache
+
 environment:
   HALKA_GRANTS=A,B       grant capabilities to the program (#45)
+  HALKA_REGISTRY=URL     registry root (a URL or a local directory)
+  HALKA_CACHE=DIR        where packages are cached
   NO_COLOR=1             disable coloured diagnostics
 `;
 
@@ -524,6 +790,13 @@ export async function main(argv: string[]): Promise<void> {
   const [cmd, ...rest] = argv;
   switch (cmd) {
     case "run": return cmdRun(rest);
+    case "init": return cmdInit(rest);
+    case "add": return cmdAdd(rest);
+    case "remove": return cmdRemove(rest);
+    case "install": return cmdInstall(rest);
+    case "update": return cmdUpdate(rest);
+    case "tree": return cmdTree(rest);
+    case "pkg": return cmdPkg(rest);
     case "check": return cmdCheck(rest);
     case "build": return cmdBuild(rest);
     case "toolchain": return cmdToolchain();
