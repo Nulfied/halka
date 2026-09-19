@@ -13,7 +13,7 @@
 //              M4 is checked inside `native` and `ffi`: every compiled
 //              program must free every heap object it allocates
 
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, rmSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -309,6 +309,36 @@ ${r.stdout ?? ""}${r.stderr ?? ""}`);
  * so these build a binary and run it. A case declares its expected output in a
  * `.out` file next to it. Skipped when the toolchain is not present.
  */
+/**
+ * A `c` declaration that does not match the real symbol must fail the build
+ * on every toolchain. gcc makes it an error on its own; MSVC only warns and
+ * would otherwise hand back a binary that returns garbage, which is the bug
+ * that once made `hypot(3, 4)` produce 4294965466.
+ */
+function suiteFfiReject(): void {
+  const dir = join(HERE, "ffi-reject");
+  if (!existsSync(dir) || !findToolchain()) return;
+
+  for (const f of readdirSync(dir).filter((x) => x.endsWith(".hk")).sort()) {
+    const name = basename(f, ".hk");
+    const src = readFileSync(join(dir, f), "utf8");
+    const { module, diags } = parse(src, f);
+    if (diags.hasErrors) { bad("ffi", `${name} (parse)`, "the fixture does not parse"); continue; }
+    const inferred = inferTypes(module);
+    const { c, diags: emitDiags } = emitC(module, inferred.types, { release: false, file: f });
+    if (emitDiags.hasErrors) { ok("ffi", `${name} (rejected before C)`); continue; }
+
+    const exe = join(tmpdir(), `halka-ffireject-${name}-${process.pid}${process.platform === "win32" ? ".exe" : ""}`);
+    const outcome = buildNative(c, f, { out: exe, release: false, keepC: false, emitOnly: false, quiet: true });
+    if (outcome.ok) {
+      bad("ffi", `${name} (must not build)`, "the C compiler accepted a declaration that contradicts the header");
+      try { rmSync(exe, { force: true }); } catch { /* best effort */ }
+    } else {
+      ok("ffi", `${name} (a mismatched prototype fails the build)`);
+    }
+  }
+}
+
 function suiteFfi(): void {
   const dir = join(HERE, "ffi");
   if (!existsSync(dir)) return;
@@ -439,6 +469,7 @@ suiteRun();
 suiteFmt();
 suiteNative();
 suiteFfi();
+suiteFfiReject();
 suiteOwnership();
 suiteOwnershipCorpus();
 suitePkg({ ok: (n) => ok("pkg", n), bad: (n, d) => bad("pkg", n, d) });

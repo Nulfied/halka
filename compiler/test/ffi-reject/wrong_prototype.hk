@@ -1,0 +1,9 @@
+# A `c` declaration that contradicts the real symbol must stop the build.
+# `strlen` takes `const char *` and returns `size_t`; this says otherwise.
+# Left to the C compiler's defaults, gcc rejects it but MSVC only warns and
+# produces a binary that returns garbage — so the build promotes the warning.
+import c string.h
+
+c strlen(s: c char): c int
+
+say "len {c strlen(65)}"

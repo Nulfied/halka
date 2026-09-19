@@ -139,6 +139,16 @@ function findMsvc(): Toolchain | null {
       const py = opts.python;
       const args = [
         "/nologo", "/std:c11", "/W3",
+        // A `c` declaration that contradicts the real symbol is a hole in
+        // the safety claim, not a style issue: it silently produces garbage
+        // at run time. gcc and clang reject it outright, MSVC only warns, so
+        // these are promoted to errors to make every toolchain agree.
+        //   C4028 parameter differs from declaration
+        //   C4029 declared parameter list differs
+        //   C4047 differing levels of indirection
+        //   C4133 incompatible pointer types
+        //   C4113 incompatible function pointer types
+        "/we4028", "/we4029", "/we4047", "/we4133", "/we4113",
         opts.release ? "/O2" : "/Od", opts.release ? "/DNDEBUG" : "/Zi",
         ...opts.includeDirs.map((d) => `/I${d}`),
         ...(py ? [`/I${py.include}`, `/DHK_PYTHONHOME=\"${py.prefix}\"`] : []),
@@ -166,6 +176,11 @@ function findUnixCc(): Toolchain | null {
         const py = opts.python;
         const flags = [
           "-std=c99", "-Wall",
+          // Same reasoning as the MSVC block: a `c` declaration that does not
+          // match the real symbol must stop the build on every toolchain.
+          "-Werror=implicit-function-declaration",
+          "-Werror=incompatible-pointer-types",
+          "-Werror=int-conversion",
           opts.release ? "-O2" : "-O0", opts.release ? "-DNDEBUG" : "-g",
           ...opts.includeDirs.map((d) => `-I${d}`),
           ...(py ? [`-I${py.include}`, `-DHK_PYTHONHOME="${py.prefix}"`] : []),
