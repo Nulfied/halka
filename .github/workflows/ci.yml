@@ -82,7 +82,8 @@ jobs:
       - name: Fail if the locked rules drifted from the authored documents
         run: |
           # The header is hand-written; the rules below it must match byte for byte.
-          tail -n +20 spec/V49-LOCKED.md > /tmp/have.md
+          # 22 lines of header: the HTML comment, the title, and the status line.
+          tail -n +23 spec/V49-LOCKED.md > /tmp/have.md
           if ! diff -q <(sed -e 's/[[:space:]]*$//' /tmp/rules.md) \
                        <(sed -e 's/[[:space:]]*$//' /tmp/have.md) > /dev/null; then
             echo "::error::spec/V49-LOCKED.md no longer matches spec/source/*.docx."
