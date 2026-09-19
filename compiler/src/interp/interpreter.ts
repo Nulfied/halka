@@ -94,6 +94,21 @@ export class Interpreter {
     installPrelude(this);
   }
 
+  /**
+   * Is a capability held at this point? (#45)
+   *
+   * `FileAccess.read` is satisfied by holding either it or `FileAccess`,
+   * matching how a `requires` clause is checked. Native functions in the
+   * prelude use this: rule #45 says ordinary code gets no ambient
+   * privileges, so anything touching the outside world asks first.
+   */
+  holdsCapability(name: string): boolean {
+    const set = this.capStack[this.capStack.length - 1]!;
+    if (set.has(name)) return true;
+    const root = name.split(".")[0]!;
+    return set.has(root);
+  }
+
   // ---- error helpers ----------------------------------------------------
 
   fail(msg: string, span: Span | null = null, code = "R0001"): never {

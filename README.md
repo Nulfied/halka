@@ -335,6 +335,10 @@ What works today:
 - **C and Python interop** — `import c "math.h"` then `c hypot(3.0, 4.0)`;
   `import py "numpy"` embeds CPython so NumPy stays available while the hot
   loop compiles to native code on every core ([details](docs/ffi.md)).
+- **File I/O** — `files.read`, `files.write` and the rest, each gated on the
+  `FileAccess` capability so no code touches the filesystem by ambient
+  authority (#45), and each returning `Result` rather than throwing
+  ([spec/FILE-IO.md](spec/FILE-IO.md)). Interpreter only for now.
 - **Packages** — `halka add` with `halka.pkg` manifests, Minimal Version
   Selection, and a `halka.lock` that pins a SHA-256 per archive. No install
   scripts, no build scripts, no post-install hooks — a package is source that

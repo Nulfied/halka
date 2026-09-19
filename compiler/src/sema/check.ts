@@ -33,7 +33,12 @@ class Checker {
   private types = new Set<string>();
   private variants = new Set<string>();
   private traits = new Set<string>();
-  private caps = new Set<string>();
+  /**
+   * `FileAccess` is built in rather than user-declared: the prelude's `files`
+   * module is gated on it (spec/FILE-IO.md F1), so a program must be able to
+   * name it without first redeclaring something the runtime already knows.
+   */
+  private caps = new Set<string>(["FileAccess"]);
   private macros = new Set<string>();
   private structFields = new Map<string, string[]>();
   private modules = new Set<string>();

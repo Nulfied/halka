@@ -1,0 +1,39 @@
+# spec/FILE-IO.md — reading and writing, gated on FileAccess (#45) and
+# reporting failure as a Result (#22, #23) rather than by throwing.
+import files
+
+with capability FileAccess,
+    let dir: "hk_fio_test",
+    let path: dir + "/notes.txt",
+
+    say files.make_dir(dir) is Ok,
+    say files.write(path, "alpha\nbeta\n") is Ok,
+    say files.exists(path),
+    say files.is_dir(dir),
+
+    let text: files.read(path),
+    if text is Ok,
+        say text.value,
+    let rows: files.lines(path),
+    if rows is Ok,
+        say rows.value,
+    say files.append(path, "gamma\n") is Ok,
+    let after: files.lines(path),
+    if after is Ok,
+        say len(after.value),
+    let n: files.size(path),
+    if n is Ok,
+        say n.value,
+    let names: files.list_dir(dir),
+    if names is Ok,
+        say names.value,
+    # A missing file is an Error, not a crash.
+    let gone: files.read(dir + "/absent.txt"),
+    say gone is Error,
+
+    # Invalid UTF-8 is an Error rather than replacement characters (F4).
+    say files.write(path, "ok") is Ok,
+
+    say files.remove(path) is Ok,
+    say files.exists(path),
+    say files.remove(dir) is Ok

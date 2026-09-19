@@ -1,7 +1,7 @@
 // The Halka prelude: built-in functions, methods, and modules.
 //
 // Everything here is reachable without an import. Module-scoped helpers live in
-// `math`, `strings`, `lists`, `maps`, `io`, `fs`, `time`, `os`, and `json`, and
+// `math`, `strings`, `lists`, `maps`, `io`, `files`, `time`, `os`, and `json`, and
 // are reached with `import math` / `from math import sqrt` (#33).
 
 import type { Interpreter, Ev } from "../interp/interpreter.ts";
@@ -13,6 +13,9 @@ import {
   display, inspect, keyOf, valueEq, truthy, typeNameOf, codePoints,
 } from "./value.ts";
 import { convert } from "./convert.ts";
+import {
+  appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, rmdirSync, statSync, writeFileSync,
+} from "node:fs";
 
 type Fn = (args: Value[], ctx: NativeCtx) => Value | Generator<Suspend, Value, unknown>;
 
@@ -241,6 +244,7 @@ export function installPrelude(interp: Interpreter): void {
   installModule(interp, "time", timeModule());
   installModule(interp, "os", osModule());
   installModule(interp, "json", jsonModule());
+  installModule(interp, "files", filesModule(interp));
 }
 
 function installModule(interp: Interpreter, name: string, entries: NativeV[]): void {
@@ -610,6 +614,145 @@ function ioModule(interp: Interpreter): NativeV[] {
     native("say", 0, Infinity, (a) => { interp.out(a.map(display).join(" ")); return NOTHING; }),
     native("write", 1, 1, (a) => { process.stdout.write(display(a[0]!)); return NOTHING; }),
     native("error", 1, 1, (a) => { interp.errOut(display(a[0]!)); return NOTHING; }),
+  ];
+}
+
+// --- files (#18) — spec/FILE-IO.md ---------------------------------------
+
+/**
+ * Every operation here is gated on `FileAccess` (#45: ordinary code receives
+ * no ambient unrestricted privileges), and every one that can fail gives a
+ * `Result` rather than throwing, because Halka has no exceptions (#22, #23).
+ */
+function needCapability(interp: Interpreter, perm: string, who: string): void {
+  if (interp.holdsCapability(perm)) return;
+  // E0505 is the code a `requires` clause raises, because this is the same
+  // failure: a capability that is not held at the point of the call.
+  interp.fail(
+    `\`files.${who}\` requires the \`${perm}\` capability, which is not held here (rule #45)\n` +
+    `  wrap the call in \`with capability FileAccess,\`, declare \`requires FileAccess\` ` +
+    `on the enclosing function, or run with HALKA_GRANTS=FileAccess`,
+    null, "E0505",
+  );
+}
+
+function okOf(v: Value): Value {
+  return INTERP.mkVariant("Result", "Ok", ["value"], [v]);
+}
+
+function errOf(op: string, path: string, e: unknown): Value {
+  const why = e instanceof Error ? (e as NodeJS.ErrnoException).message : String(e);
+  return INTERP.mkVariant("Result", "Error", ["message"], [str(`${op} ${JSON.stringify(path)}: ${why}`)]);
+}
+
+/** Run a filesystem call, turning a throw into an `Error` result (#23). */
+function attempt(op: string, path: string, f: () => Value): Value {
+  try {
+    return f();
+  } catch (e) {
+    return errOf(op, path, e);
+  }
+}
+
+function filesModule(interp: Interpreter): NativeV[] {
+  const read = (who: string, a: Value[]): string => {
+    needCapability(interp, "FileAccess.read", who);
+    return needStr(a[0]!, `files.${who}`);
+  };
+  const write = (who: string, a: Value[]): string => {
+    needCapability(interp, "FileAccess.write", who);
+    return needStr(a[0]!, `files.${who}`);
+  };
+  const NOTHING_OK = () => okOf(NOTHING);
+
+  return [
+    native("read", 1, 1, (a) => {
+      const path = read("read", a);
+      return attempt("reading", path, () => {
+        const bytes = readFileSync(path);
+        // Invalid UTF-8 is an error, not U+FFFD: substituting silently turns
+        // a data problem into a correctness problem further downstream (F4).
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        return okOf(str(text));
+      });
+    }),
+
+    native("read_bytes", 1, 1, (a) => {
+      const path = read("read_bytes", a);
+      return attempt("reading", path, () =>
+        okOf(list([...readFileSync(path)].map((b) => int(BigInt(b))))));
+    }),
+
+    native("lines", 1, 1, (a) => {
+      const path = read("lines", a);
+      return attempt("reading", path, () => {
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(path));
+        // A trailing newline ends the last line rather than starting an
+        // empty one, and a CR before it is dropped so a file written on
+        // Windows reads the same everywhere (F4).
+        const body = text.endsWith("\n") ? text.slice(0, -1) : text;
+        const out = body === "" && text === "" ? [] : body.split("\n").map((l) => l.replace(/\r$/, ""));
+        return okOf(list(out.map(str)));
+      });
+    }),
+
+    native("write", 2, 2, (a) => {
+      const path = write("write", a);
+      const body = needStr(a[1]!, "files.write");
+      return attempt("writing", path, () => { writeFileSync(path, body, "utf8"); return NOTHING_OK(); });
+    }),
+
+    native("append", 2, 2, (a) => {
+      const path = write("append", a);
+      const body = needStr(a[1]!, "files.append");
+      return attempt("appending to", path, () => { appendFileSync(path, body, "utf8"); return NOTHING_OK(); });
+    }),
+
+    native("remove", 1, 1, (a) => {
+      const path = write("remove", a);
+      // A directory is removed only when empty, and never recursively: an
+      // accidental `files.remove("src")` should fail, not delete a tree.
+      return attempt("removing", path, () => {
+        if (existsSync(path) && statSync(path).isDirectory()) rmdirSync(path);
+        else rmSync(path);
+        return NOTHING_OK();
+      });
+    }),
+
+    native("size", 1, 1, (a) => {
+      const path = read("size", a);
+      return attempt("measuring", path, () => okOf(int(BigInt(statSync(path).size))));
+    }),
+
+    // `exists` and `is_dir` answer a question; "no" is an answer and not a
+    // failure, so they are plain booleans rather than Results (F2).
+    native("exists", 1, 1, (a) => {
+      const path = read("exists", a);
+      return bool(existsSync(path));
+    }),
+
+    native("is_dir", 1, 1, (a) => {
+      const path = read("is_dir", a);
+      try {
+        return bool(statSync(path).isDirectory());
+      } catch {
+        return bool(false);
+      }
+    }),
+
+    native("list_dir", 1, 1, (a) => {
+      const path = read("list_dir", a);
+      // Names, not paths: joining them is the caller's business, and it is
+      // the only answer that does not depend on how the directory was named.
+      return attempt("listing", path, () => okOf(list(readdirSync(path).map(str))));
+    }),
+
+    native("make_dir", 1, 1, (a) => {
+      const path = write("make_dir", a);
+      // Parents are created and an existing directory is not an error, so
+      // callers do not all write the same "does it exist yet" dance (F3).
+      return attempt("creating", path, () => { mkdirSync(path, { recursive: true }); return NOTHING_OK(); });
+    }),
   ];
 }
 

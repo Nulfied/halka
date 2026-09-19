@@ -89,6 +89,13 @@ dependency's own imports were never bound, an import was invisible inside
 every function, and the compiled binary never called a `main()` function
 while the interpreter did.
 
+**File I/O** (#18) landed, capability-gated and `Result`-returning
+([spec/FILE-IO.md](spec/FILE-IO.md)). It runs under `halka run` only, and
+that is the next thing to fix: the native backend cannot represent
+`Result<T>` because it has no enums, and it knows nothing about the prelude
+modules either. So the order now is enums in the C backend, then the prelude
+modules, then file I/O compiles too. None of that changes the API.
+
 Still open from this milestone:
 
 - **Stack promotion** — the analysis already identifies values that neither
