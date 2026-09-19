@@ -8,8 +8,16 @@ let age: int: 25
 --------------------------------------------------------------------------------
 
 (source_file
-  (let_statement (pattern (identifier)) (string (string_fragment)))
-  (let_statement (pattern (identifier)) (primitive_type) (integer)))
+  (let_statement
+    (pattern
+      (identifier))
+    (string
+      (string_fragment)))
+  (let_statement
+    (pattern
+      (identifier))
+    (primitive_type)
+    (integer)))
 
 ================================================================================
 function declaration
@@ -23,9 +31,13 @@ square(x),
 (source_file
   (function_declaration
     (identifier)
-    (parameter_list (parameter (identifier)))
+    (parameter_list
+      (parameter
+        (identifier)))
     (give_statement
-      (binary_expression (primary_expression (identifier)) (primary_expression (identifier))))))
+      (binary_expression
+        (identifier)
+        (identifier)))))
 
 ================================================================================
 if / else
@@ -40,10 +52,16 @@ else,
 
 (source_file
   (if_statement
-    (binary_expression (primary_expression (identifier)) (primary_expression (integer)))
-    (say_statement (string (string_fragment)))
+    (binary_expression
+      (identifier)
+      (integer))
+    (say_statement
+      (string
+        (string_fragment)))
     (else_clause
-      (say_statement (string (string_fragment))))))
+      (say_statement
+        (string
+          (string_fragment))))))
 
 ================================================================================
 comments
@@ -59,8 +77,11 @@ let b: 2
 --------------------------------------------------------------------------------
 
 (source_file
-  (line_comment)
-  (let_statement (pattern (identifier)) (integer))
-  (line_comment)
-  (block_comment)
-  (let_statement (pattern (identifier)) (integer)))
+  (let_statement
+    (pattern
+      (identifier))
+    (integer))
+  (let_statement
+    (pattern
+      (identifier))
+    (integer)))

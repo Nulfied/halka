@@ -37,8 +37,8 @@
 (capability_declaration name: (type_identifier) @type.definition)
 
 ; ---- calls ------------------------------------------------------------------
-(call_expression function: (primary_expression (identifier) @function.call))
-(call_expression function: (primary_expression (member_expression property: (identifier) @function.method.call)))
+(call_expression function: (identifier) @function.call)
+(call_expression function: (member_expression property: (identifier) @function.method.call))
 (command_call function: (identifier) @function.call)
 (member_expression property: (identifier) @variable.member)
 

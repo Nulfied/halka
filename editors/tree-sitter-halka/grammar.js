@@ -32,17 +32,20 @@ module.exports = grammar({
   word: ($) => $.identifier,
 
   conflicts: ($) => [
-    [$._type, $.primary_expression],
+    [$._type, $._primary_expression],
     [$.range_expression],
     [$._type, $.generic_type],
-    [$.generic_type, $.primary_expression],
-    [$.parameter, $.primary_expression],
+    [$.generic_type, $._primary_expression],
     [$.pattern, $.null],
-    [$.struct_declaration, $.primary_expression],
-    [$.function_declaration, $.primary_expression],
+    [$.struct_declaration, $._primary_expression],
+    [$.function_declaration, $._primary_expression],
   ],
 
-  supertypes: ($) => [$._statement, $._expression, $._type, $.pattern],
+  // `pattern` is deliberately not a supertype. A supertype is erased from
+  // the tree in favour of its concrete member, and queries/locals.scm asks
+  // for `(let_statement pattern: (pattern (identifier)))` — which could never
+  // match while it was one, so no local variable was ever captured.
+  supertypes: ($) => [$._statement, $._expression, $._type],
 
   rules: {
     source_file: ($) => repeat($._statement),
@@ -95,16 +98,39 @@ module.exports = grammar({
 
     // ---- declarations ----------------------------------------------------
 
+    // `square(x),` is also a call followed by a statement end; only the
+    // indented block that may follow tells them apart, which is further than
+    // the parser can look. The conflict with `primary_expression` keeps both
+    // readings alive, and this prefers the declaration once both complete.
     function_declaration: ($) =>
-      seq(
+      prec.dynamic(2, seq(
         optional(field("marker", choice("macro", "compile", "kernel", "callback", "device"))),
         field("name", $.identifier),
         optional(field("generics", $.type_parameters)),
         field("parameters", $.parameter_list),
-        optional(seq(":", field("return_type", $._type))),
-        optional(seq("requires", commaSep1(field("capability", $.capability_path)))),
-        choice(field("body", $._block), $._end),
-      ),
+        choice(
+          // With a body: the block is what tells a declaration apart from a
+          // call statement, so nothing else is needed.
+          seq(
+            optional(seq(":", field("return_type", $._type))),
+            optional(seq("requires", commaSep1(field("capability", $.capability_path)))),
+            field("body", $._block),
+          ),
+          // Bodyless — a contract or a trait member. `name(args)` on its own
+          // is a call statement, and that is much the commoner form, so a
+          // bodyless declaration has to carry a return type or a capability
+          // list to be read as one.
+          seq(
+            ":", field("return_type", $._type),
+            optional(seq("requires", commaSep1(field("capability", $.capability_path)))),
+            $._end,
+          ),
+          seq(
+            "requires", commaSep1(field("capability", $.capability_path)),
+            $._end,
+          ),
+        ),
+      )),
 
     parameter_list: ($) => seq("(", optional(commaSep(choice($.parameter, "..."))), optional(","), ")"),
 
@@ -206,7 +232,26 @@ module.exports = grammar({
     command_call: ($) =>
       prec(
         -1,
-        seq(field("function", $.identifier), field("argument", $._expression), optional(seq(":", field("value", $._expression)))),
+        seq(field("function", $.identifier), field("argument", $._command_argument), optional(seq(":", field("value", $._expression)))),
+      ),
+
+    /**
+     * A command call is the *parenthesis-free* form, so its argument may not
+     * begin with `(`. That rules out `member_expression` and
+     * `index_expression` too, since both start with an expression that may
+     * itself be parenthesised. Allowing it to made `identifier (` a three-way fork —
+     * parameter list, argument list, or command argument — which the
+     * generator then settled silently against the declaration, so no
+     * function declaration ever parsed as one.
+     */
+    _command_argument: ($) =>
+      choice(
+        $.identifier,
+        $.type_identifier,
+        $.list_expression,
+        $.map_expression,
+        $.set_expression,
+        $._literal,
       ),
 
     // ---- control flow ----------------------------------------------------
@@ -277,10 +322,12 @@ module.exports = grammar({
         $.range_expression,
         $.keyword_expression,
         $.apply_expression,
-        $.primary_expression,
+        $._primary_expression,
       ),
 
-    primary_expression: ($) =>
+    // Hidden: a wrapper that only says "this is a primary expression" adds a
+    // node to every expression in the tree and tells a reader nothing.
+    _primary_expression: ($) =>
       choice(
         $.call_expression,
         $.member_expression,
@@ -345,13 +392,13 @@ module.exports = grammar({
     apply_expression: ($) => prec.right(seq("apply", field("value", $._expression), ":", field("function", $._expression))),
 
     call_expression: ($) =>
-      prec(PREC.postfix, seq(field("function", $.primary_expression), optional($.type_arguments), field("arguments", $.argument_list))),
+      prec(PREC.postfix, seq(field("function", $._primary_expression), optional($.type_arguments), field("arguments", $.argument_list))),
     argument_list: ($) => seq("(", optional(commaSep(choice(seq(optional(seq($.identifier, ":")), $._expression), "..."))), optional(","), ")"),
 
-    member_expression: ($) => prec(PREC.postfix, seq(field("object", $.primary_expression), ".", field("property", $.identifier))),
-    index_expression: ($) => prec(PREC.postfix, seq(field("object", $.primary_expression), "[", field("index", $._expression), "]")),
+    member_expression: ($) => prec(PREC.postfix, seq(field("object", $._primary_expression), ".", field("property", $.identifier))),
+    index_expression: ($) => prec(PREC.postfix, seq(field("object", $._primary_expression), "[", field("index", $._expression), "]")),
     slice_expression: ($) =>
-      prec(PREC.postfix, seq(field("object", $.primary_expression), "[", optional($._expression), ":", optional($._expression), optional(seq(":", optional($._expression))), "]")),
+      prec(PREC.postfix, seq(field("object", $._primary_expression), "[", optional($._expression), ":", optional($._expression), optional(seq(":", optional($._expression))), "]")),
 
     parenthesized_expression: ($) => seq("(", $._expression, ")"),
     tuple_expression: ($) => seq("(", $._expression, ",", optional(commaSep($._expression)), optional(","), ")"),
