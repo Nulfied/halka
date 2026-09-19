@@ -22,20 +22,31 @@ Halka and C were compiled by **the same compiler with the same flags**
 (MSVC 19.36, `/O2 /DNDEBUG`), so this measures the quality of the code Halka
 *generates*, not the compiler underneath it. Python 3.10.11, CPython.
 
-Best of 5 runs, wall clock including process start.
+Best of 7 runs, wall clock including process start.
 
 | kernel | measures | Halka | C `/O2` | Python | vs C | vs Python |
 |---|---|---|---|---|---|---|
-| `fib` | recursive calls, `fib(35)` | **158 ms** | 157 ms | 9 660 ms | **1.01x** | 61x faster |
-| `loop` | integer arithmetic, 200M iterations | **452 ms** | 389 ms | 27 906 ms | **1.16x** | 62x faster |
-| `mandel` | floating point, 900×900×500 | **660 ms** | 702 ms | 40 423 ms | **0.94–1.04x** | 61x faster |
+| `fib` | recursive calls, `fib(35)` | **153 ms** | 141 ms | 9 344 ms | **1.08x** | 61x faster |
+| `loop` | integer arithmetic, 200M iterations | **424 ms** | 349 ms | 26 606 ms | **1.21x** | 63x faster |
+| `mandel` | floating point, 900×900×500 | **593 ms** | 638 ms | 39 158 ms | **0.93x** | 66x faster |
 
 All three implementations produce identical output; the harness asserts it
 before printing any timing.
 
 ### Reading these honestly
 
-- **`fib` at 1.01x** is the expected result, not a lucky one. The generated C
+- **The ratios move between runs, and the absolute times move with them.**
+  An earlier best-of-5 on this machine recorded Halka at 158 / 452 / 660 ms
+  against C at 157 / 389 / 702 ms — `fib` at 1.01x and `loop` at 1.16x. In the
+  best-of-7 above *both* sides got faster and C gained more, so the ratio grew
+  while Halka's own times fell. Before reading that as a regression we diffed
+  the generated C against the previous commit: `fib`, `sum_to` and `total` are
+  **byte-identical**, and the only change anywhere is the single `say` after
+  the timed section. The codegen did not change; the machine did. This is the
+  kind of thing a ratio hides and an absolute number exposes, which is why
+  both are printed.
+
+- **`fib` near 1.0x** is the expected result, not a lucky one. The generated C
   for `fib` is the same code a person would write, so it compiles to the same
   instructions. An earlier version of this benchmark used `fib(32)`, which runs
   in ~50 ms — short enough that process startup dominated and the numbers
@@ -43,17 +54,18 @@ before printing any timing.
   measurement was stable. **Treat any sub-100 ms benchmark result, here or
   anywhere, as noise.**
 
-- **`mandel` at 0.94–1.04x** — repeated runs put Halka on either side of the
-  hand-written C. The honest conclusion is **parity**, not superiority. A single
-  run showing 0.94x would be a flattering way to report a tie, so the range is
-  given instead. Expect roughly ±10% run-to-run variance on this machine.
+- **`mandel` under 1.0x is a tie, not a win.** Repeated runs put Halka on
+  either side of the hand-written C (0.93x–1.04x across the runs recorded so
+  far). The honest conclusion is **parity**. Reporting the 0.93x on its own
+  would be a flattering way to describe a tie. Expect roughly ±10%
+  run-to-run variance on this machine.
 
-- **`loop` at 1.16x is a real, explainable gap, and it is a correctness cost,
-  not an inefficiency.** Halka's `%` is *floored*: the sign of the result
+- **`loop`'s gap is real and explainable, and it is a correctness cost, not
+  an inefficiency.** Halka's `%` is *floored*: the sign of the result
   follows the divisor, so `-7 % 3` is `2` and the identity
   `div(a,b)*b + a%b == a` holds for every sign. C's `%` truncates, so `-7 % 3`
   is `-1` and the identity does not hold. Halka emits a sign correction that C
-  does not, and that is the 16%. We could match C exactly by truncating; we
+  does not, and that is the gap. We could match C exactly by truncating; we
   would rather be right about negative numbers. When the compiler can prove an
   operand is non-negative the correction will be elided, which is a planned
   optimisation, not a change of semantics.
@@ -111,10 +123,12 @@ prevents data races statically rather than documenting them.
   Match, enums, maps, and tasks run under `halka run` and will be added to the
   backend; the compiler tells you which it is with an `E07xx` diagnostic rather
   than silently producing something slow.
-- **Memory is not yet freed by the v1 backend** for heap values the compiler
-  cannot prove local. It is memory-*safe* (no use-after-free is possible) but
-  not yet memory-*efficient*. Ownership-driven release lands with the borrow
-  checker. None of the kernels above allocate in their hot loop.
+- **Memory is freed now.** Escape analysis (M4) turns the ownership proof into
+  deallocation, and the runtime counts live heap objects so the test suite can
+  assert it: every compiled program in this repo ends with **zero** live
+  objects. Run any binary with `HALKA_REPORT_LEAKS=1` to see its own count.
+  None of the kernels above allocate in their hot loop, so this does not move
+  their numbers either way.
 
 ---
 

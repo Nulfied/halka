@@ -173,9 +173,9 @@ compiler underneath. Best of 5, all three producing identical output.
 
 | kernel | measures | Halka | C `/O2` | Python | vs C |
 |---|---|---|---|---|---|
-| `fib` | recursive calls, `fib(35)` | **158 ms** | 157 ms | 9 660 ms | **1.01x** |
-| `loop` | integer arithmetic, 200M iterations | **452 ms** | 389 ms | 27 906 ms | **1.16x** |
-| `mandel` | floating point, 900×900×500 | **660 ms** | 702 ms | 40 423 ms | **0.94–1.04x** |
+| `fib` | recursive calls, `fib(35)` | **153 ms** | 141 ms | 9 344 ms | **1.08x** |
+| `loop` | integer arithmetic, 200M iterations | **424 ms** | 349 ms | 26 606 ms | **1.21x** |
+| `mandel` | floating point, 900×900×500 | **593 ms** | 638 ms | 39 158 ms | **0.93x** |
 
 The `loop` gap is a correctness cost, not an inefficiency: Halka's `%` is
 floored, so `-7 % 3` is `2` and `div(a,b)*b + a%b == a` holds for every sign.
@@ -320,6 +320,11 @@ What works today:
   aliasing violations and data races rejected at compile time, with **no
   lifetime annotations anywhere** ([the model](spec/MEMORY-MODEL.md),
   [a worked example](examples/ownership.hk)).
+- **Deterministic deallocation** — escape analysis places every `free` at
+  compile time, so there is no collector and no pause. The runtime counts live
+  heap objects and the test suite asserts every compiled binary exits with
+  zero. (`shared(T)` reference cycles will still leak, as in Rust and Swift;
+  `halka check` warns when a `shared` type can reach itself.)
 - **The reference interpreter** — the whole language, including tasks,
   channels, mutexes, atomics, cancellation, macros and `reflect`.
 - **The native backend** — scalars, strings, lists, structs, functions,
@@ -332,9 +337,8 @@ What works today:
 - **Tooling** — formatter, REPL, language server, VS Code extension,
   Tree-sitter grammar, package-free module resolution.
 
-What is next, in order: escape analysis so the backend frees what it
-allocates, enums/match and maps in the native backend, a package manager, then
-self-hosting. See [ROADMAP.md](ROADMAP.md).
+What is next, in order: enums/match and maps in the native backend, a package
+manager and registry, then self-hosting. See [ROADMAP.md](ROADMAP.md).
 
 [STATUS.md](STATUS.md) maps all 55 planned ecosystem areas to what actually
 exists today, so "is that implemented or planned?" always has an answer.
@@ -350,7 +354,7 @@ support, documentation, examples — is open.
 
 ```bash
 cd compiler
-npm test          # 154 tests: spec conformance, rejections, golden output,
+npm test          # 160 tests: spec conformance, rejections, golden output,
                   #            formatter, native/interpreter equivalence, FFI, ownership
 npm run typecheck
 ```

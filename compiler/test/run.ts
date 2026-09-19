@@ -8,6 +8,8 @@
 //   native   — R23: the compiled binary prints exactly what the interpreter does
 //   ffi      — #35/#37: C and Python interop, built and run for real
 //   own      — spec/MEMORY-MODEL.md: ownership and borrow checking
+//              M4 is checked inside `native` and `ffi`: every compiled
+//              program must free every heap object it allocates
 
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
@@ -178,6 +180,19 @@ function suiteRun(): void {
   }
 }
 
+/**
+ * M4 — the escape pass exists so the backend frees what it allocates. The
+ * runtime counts live heap objects, which makes this a measurement rather than
+ * a claim. A double free would already have crashed the binary.
+ */
+function checkLeaks(suite: string, name: string, stderr: string): void {
+  const m = /halka: (\d+) heap object\(s\) still live at exit, of (\d+) allocated/.exec(stderr);
+  if (!m) { bad(suite, `${name} (leaks)`, "the binary printed no allocation report"); return; }
+  const live = Number(m[1]);
+  if (live === 0) ok(suite, `${name} (no leaks, ${m[2]} allocations)`);
+  else bad(suite, `${name} (leaks)`, `${live} heap object(s) still live at exit, of ${m[2]} allocated`);
+}
+
 function diffText(want: string, got: string): string {
   const w = want.split("\n");
   const g = got.split("\n");
@@ -268,7 +283,7 @@ function suiteNative(): void {
     const outcome = buildNative(c, f, { out: exe, release: false, keepC: false, emitOnly: false, quiet: true });
     if (!outcome.ok) { bad("native", name, outcome.message ?? "build failed"); continue; }
 
-    const r = spawnSync(exe, [], { encoding: "utf8" });
+    const r = spawnSync(exe, [], { encoding: "utf8", env: { ...process.env, HALKA_REPORT_LEAKS: "1" } });
     if (r.status !== 0) {
       bad("native", name, `the binary exited with ${r.status}
 ${r.stdout ?? ""}${r.stderr ?? ""}`);
@@ -330,11 +345,12 @@ function suiteFfi(): void {
     });
     if (!outcome.ok) { bad("ffi", name, outcome.message ?? "build failed"); continue; }
 
-    const r = spawnSync(exe, [], { encoding: "utf8" });
+    const r = spawnSync(exe, [], { encoding: "utf8", env: { ...process.env, HALKA_REPORT_LEAKS: "1" } });
     if (r.status !== 0) {
       bad("ffi", name, `the binary exited with ${r.status}\n${r.stdout ?? ""}${r.stderr ?? ""}`);
       continue;
     }
+    checkLeaks("ffi", name, r.stderr ?? "");
     const got = (r.stdout ?? "").split("\r\n").join("\n").replace(/\s+$/, "");
     const expectFile = join(dir, name + ".out");
     if (!existsSync(expectFile)) { bad("ffi", name, `missing expected output: ffi/${name}.out`); continue; }

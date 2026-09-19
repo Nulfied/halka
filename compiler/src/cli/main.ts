@@ -13,6 +13,7 @@ import { format } from "../fmt/format.ts";
 import { check } from "../sema/check.ts";
 import { inferTypes } from "../sema/infer.ts";
 import { checkOwnership } from "../sema/ownership.ts";
+import { analyseEscapes } from "../sema/escape.ts";
 import { emitC } from "../backend/c/emit.ts";
 import { buildNative, describeToolchains, findPython } from "../backend/c/build.ts";
 import { show as showTy } from "../sema/types.ts";
@@ -254,16 +255,22 @@ function cmdBuild(args: string[]): void {
 
   const inferred = inferTypes(main);
   for (const d of inferred.diags.items) diags.items.push(d);
+  let owningParams = new Map<string, boolean[]>();
   if (!inferred.diags.hasErrors) {
     const own = checkOwnership(main, inferred.types, inferred.structFields);
     for (const d of own.diags.items) diags.items.push(d);
+    owningParams = own.owningParams;
   }
   if (diags.hasErrors) { report(diags.items, sources); process.exit(1); }
+
+  // M4 — turn the ownership proof into deallocation.
+  const escapes = analyseEscapes(main, inferred.types, inferred.structFields, owningParams);
 
   const { c, diags: emitDiags, links, needsPython } = emitC(main, inferred.types, {
     release: flags.has("--release"),
     file: basename(file),
     foreignImports: inferred.foreignImports,
+    escapes,
   });
   if (emitDiags.hasErrors) {
     report(emitDiags.items, sources);

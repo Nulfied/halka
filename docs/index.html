@@ -262,9 +262,9 @@ halka repl</code></pre>
     </p>
     <table style="margin-top:14px">
       <tr><th>kernel</th><th>Halka</th><th>C /O2</th><th>Python</th><th>vs C</th></tr>
-      <tr><td>recursive calls, fib(35)</td><td><strong>158 ms</strong></td><td>157 ms</td><td>9 660 ms</td><td><strong>1.01x</strong></td></tr>
-      <tr><td>integer arithmetic, 200M</td><td><strong>452 ms</strong></td><td>389 ms</td><td>27 906 ms</td><td><strong>1.16x</strong></td></tr>
-      <tr><td>floating point, 900&times;900</td><td><strong>660 ms</strong></td><td>702 ms</td><td>40 423 ms</td><td><strong>~1.0x</strong></td></tr>
+      <tr><td>recursive calls, fib(35)</td><td><strong>153 ms</strong></td><td>141 ms</td><td>9 344 ms</td><td><strong>1.08x</strong></td></tr>
+      <tr><td>integer arithmetic, 200M</td><td><strong>424 ms</strong></td><td>349 ms</td><td>26 606 ms</td><td><strong>1.21x</strong></td></tr>
+      <tr><td>floating point, 900&times;900</td><td><strong>593 ms</strong></td><td>638 ms</td><td>39 158 ms</td><td><strong>0.93x</strong></td></tr>
     </table>
     <h3 style="margin-top:26px">What the GIL costs</h3>
     <p class="note">The same workload, single-threaded and then across 8 threads.</p>

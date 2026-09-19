@@ -197,14 +197,24 @@ design smell the compiler will point out, not the default path.
 
 ## M4 — The compiler removes the cost
 
+**Implemented for deallocation; the optimisations below are in progress.**
+
 The safety rules above are enforced statically, so the generated C contains:
 
-- **No refcount traffic for owned values.** M1 means ownership is known at
-  compile time; the backend emits a plain `free` at the owner's scope exit.
+- **No refcount traffic for owned values.** ✅ M1 means ownership is known at
+  compile time, so the backend emits a plain `free` at the owner's scope exit —
+  at the end of the *block* that declared the value, so something built inside
+  a loop is freed every iteration rather than accumulating. Values created
+  inside an expression and never named are freed when their statement ends.
+  The runtime counts live heap objects, so this is a test rather than a claim:
+  every compiled program in the repo exits with zero live objects.
 - **No bounds checks where the index is provably in range.** Loop-invariant
-  index analysis covers the common `for i in 0..len(xs)` case entirely.
+  index analysis covers the common `for i in 0..len(xs)` case entirely. *Not
+  yet implemented; `--release` currently drops every bounds check, which is the
+  blunt version of the same thing.*
 - **Stack allocation wherever escape analysis proves a value does not outlive
-  its frame** — which, given M2, is most values.
+  its frame** — which, given M2, is most values. *The analysis identifies these;
+  the backend does not yet place them on the stack.*
 - **Refcounting only for `shared`**, and non-atomic unless the value escapes to
   another task.
 
@@ -213,6 +223,21 @@ equivalent C program would produce, with the bounds checks that C omits and
 Halka can prove away. Where a check cannot be proven away it stays, and
 `halka build --explain-checks` lists every one that survived, so the cost is
 auditable instead of invisible.
+
+### Checking it yourself
+
+"The compiler frees what it allocates" is the kind of claim that rots quietly,
+so the runtime keeps two counters and any compiled binary will report them:
+
+```
+$ HALKA_REPORT_LEAKS=1 ./myprogram
+halka: 0 heap object(s) still live at exit, of 4021 allocated
+```
+
+String literals are interned and excluded from the live count, since they are
+never freed by design. The test suite runs every native and FFI test this way
+and fails the build on a non-zero count, which is why the analysis cannot
+regress without someone noticing.
 
 ---
 

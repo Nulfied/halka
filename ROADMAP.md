@@ -21,9 +21,9 @@ Measured, same compiler and flags for both, all outputs identical:
 
 | kernel | Halka | C `/O2` | Python | vs C |
 |---|---|---|---|---|
-| recursive calls, `fib(35)` | 158 ms | 157 ms | 9 660 ms | 1.01x |
-| integer arithmetic, 200M | 452 ms | 389 ms | 27 906 ms | 1.16x |
-| floating point, 900×900 | 660 ms | 702 ms | 40 423 ms | ~1.0x |
+| recursive calls, `fib(35)` | 153 ms | 141 ms | 9 344 ms | 1.08x |
+| integer arithmetic, 200M | 424 ms | 349 ms | 26 606 ms | 1.21x |
+| floating point, 900×900 | 593 ms | 638 ms | 39 158 ms | 0.93x |
 
 And the parallelism the wedge depends on: 3.20x from 8 threads, where the same
 workload in Python threads runs at 0.51x — *slower* than one thread.
@@ -66,11 +66,18 @@ at joins, because a borrow that cannot escape never requires relating two
 lifetimes. 18 tests cover it and six of those assert that ordinary code is
 *not* rejected. Every .hk file in the repo passes.
 
+**Escape analysis** (M4) shipped with it. The backend now frees what it
+allocates: at the end of the block that declared a value, so something built
+inside a loop is freed each iteration, and at statement end for values created
+inside an expression and never named. The runtime counts live heap objects, so
+the test suite asserts it — **every compiled program in the repo exits with
+zero live objects**, including the ones that embed CPython.
+
 Still open from this milestone:
 
-- **Escape analysis** (M4) — stack-allocate what does not outlive its frame and
-  free what does at the owner's scope exit. This is what removes the v1
-  backend's leak, and the ownership information it needs now exists.
+- **Stack promotion** — the analysis already identifies values that neither
+  escape nor grow; the backend does not yet place them on the stack.
+- **Bounds-check elision** for the `for i in 0..len(xs)` shape.
 - **`shared(T)`** and the reference-cycle warning.
 
 ## v0.4 — The rest of the language, natively

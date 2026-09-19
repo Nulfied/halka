@@ -17,7 +17,7 @@ Counts today: **16 done · 12 partial · 23 not started · 4 ecosystem**
 | 1 | Language core | 🟡 | All 54 locked syntax rules parse and run. Domains like embedded, graphics and OS work are *reachable* but unproven. |
 | 2 | Compiler toolchain | 🟡 | Lexer, parser, AST, name resolution, scope analysis, type analysis, backend lowering, native codegen, linking, diagnostics. Missing: IR stage, optimization stage, incremental builds, debug info. |
 | 3 | Intermediate representation | ⬜ | The backend lowers AST → C directly. No IR means no target-independent optimization and no second backend. **This is a multiplier — see below.** |
-| 4 | Optimization system | 🟡 | Delegated to the C compiler, which does inlining, DCE, constant folding and vectorisation for us. That is a deliberate choice, not an omission — but Halka-level optimizations (bounds-check elision, monomorphisation, refcount elision) need #3 first. |
+| 4 | Optimization system | 🟡 | Delegated to the C compiler, which does inlining, DCE, constant folding and vectorisation. Halka-level work so far is escape analysis (M4), which places every deallocation. Bounds-check elision and monomorphisation need #3. |
 | 5 | Memory, ownership & lifetimes | ✅ | **Enforced statically.** Move checking with flow-sensitive branch merging and loop detection, lexical non-escaping borrows, one-writer-or-many-readers aliasing, and task-capture checking. A parameter's ownership is *inferred* from whether the body keeps it, so there are no annotations and no lifetime syntax anywhere. |
 | 6 | Raw memory & unsafe | 🟡 | `raw`, `unsafe:` parse; the interpreter enforces that deref requires `unsafe`. The backend does not implement raw pointers yet. |
 | 7 | Type system | ✅ | Hindley-Milner-style inference, optionals as a real constructor with narrowing, generics, structs, enums, traits, match exhaustiveness. |
@@ -28,7 +28,7 @@ Counts today: **16 done · 12 partial · 23 not started · 4 ecosystem**
 | 12 | Native programming & ABI | 🟡 | The backend emits C99, links native binaries, and links extra libraries via `extern: link:`. No calling-convention control or callbacks yet. |
 | 13 | **Foreign function interface** | ✅ | **C works.** `import c "header.h"` includes it, `c f(x)` calls it, declarations are type-checked, strings cross as `const char *` with no copy, `extern: link:` links libraries, and C compiler warnings are surfaced rather than hidden. C++ still errors (`E0716`). |
 | 14 | Python interoperability | ✅ | **Works.** The binary embeds CPython. Modules, attribute chains, `from py "m" import f`, lists both ways, GIL taken per call so `parallel:` keeps every core busy. Crossing back is explicit with `as` (#15). Measured against the same program in Python: 44x single-threaded, 153x on four threads. |
-| 15 | Runtime system | ✅ | `libhalka`: 564 lines of C99 — strings, lists, threads, mutexes, atomics, panics, timing. No dependencies. |
+| 15 | Runtime system | ✅ | `libhalka`: C99, no dependencies — strings, lists, threads, mutexes, atomics, panics, timing, and live-allocation accounting so leaks are testable. |
 
 ## Libraries
 
@@ -57,7 +57,7 @@ Counts today: **16 done · 12 partial · 23 not started · 4 ecosystem**
 | 25 | Language server / IntelliSense | ✅ | LSP 3.17 over stdio, zero dependencies: diagnostics, hover, completion, go-to-definition, document symbols, rename, highlight, formatting. |
 | 26 | Code formatting | ✅ | Canonical, idempotent, comment-preserving, behaviour-preserving — all four properties are tested. |
 | 27 | Linting & static analysis | ✅ | Name resolution, arity, locked-absence checks, naming conventions, type errors, match exhaustiveness, and full ownership and borrow analysis. No unused-code detection yet. |
-| 28 | Testing ecosystem | ✅ | `halka test` for user projects; 154 internal tests across spec conformance, rejection, golden output, formatter, native-vs-interpreter equivalence, real C and Python FFI calls, and ownership. |
+| 28 | Testing ecosystem | ✅ | `halka test` for user projects; 160 internal tests across spec conformance, rejection, golden output, formatter, native-vs-interpreter equivalence, real C and Python FFI calls, ownership, and a zero-leak assertion on every compiled binary. |
 | 29 | Build system | 🟡 | `halka build` compiles one file to a binary. No multi-file project build, no incremental compilation, no cross-compilation yet. |
 | 30 | Package management | ⬜ | Module resolution over a search path only. No manifest resolution, no versions, no lockfile. **Second-biggest multiplier.** |
 | 31 | Package registry | ⬜ | Nothing. |

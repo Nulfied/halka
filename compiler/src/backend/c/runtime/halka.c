@@ -1,5 +1,11 @@
 /* libhalka — implementation. C99, no dependencies. */
 
+/* getenv is the portable spelling; MSVC deprecates it in favour of a
+   non-standard alternative, and we only read one debug-only variable. */
+#if defined(_MSC_VER) && !defined(_CRT_SECURE_NO_WARNINGS)
+  #define _CRT_SECURE_NO_WARNINGS 1
+#endif
+
 #include "halka.h"
 
 #include <stdio.h>
@@ -24,15 +30,31 @@ void hk_panic(const char *msg, const char *file, hk_int line) {
   exit(101);
 }
 
+/* Live and cumulative heap objects, for the leak test. */
+static hk_int hk_alive = 0;
+static hk_int hk_total = 0;
+
+hk_int hk_live_allocs(void) { return hk_alive; }
+hk_int hk_total_allocs(void) { return hk_total; }
+
 static void *hk_alloc(size_t n) {
   void *p = malloc(n);
   if (!p) hk_panic("out of memory", __FILE__, __LINE__);
+  hk_alive++;
+  hk_total++;
   return p;
+}
+
+static void hk_dealloc(void *p) {
+  if (!p) return;
+  hk_alive--;
+  free(p);
 }
 
 static void *hk_realloc(void *old, size_t n) {
   void *p = realloc(old, n);
   if (!p) hk_panic("out of memory", __FILE__, __LINE__);
+  if (!old) hk_alive++, hk_total++;   /* growing from nothing is a new object */
   return p;
 }
 
@@ -52,6 +74,7 @@ hk_str *hk_str_lit(const char *cstr) {
   hk_int len = (hk_int)strlen(cstr);
   hk_str *s = hk_str_new(cstr, len);
   s->rc = -1;
+  hk_alive--;   /* interned for the life of the program, not a leak */
   return s;
 }
 
@@ -62,7 +85,7 @@ hk_str *hk_str_retain(hk_str *s) {
 
 void hk_str_release(hk_str *s) {
   if (!s || s->rc < 0) return;
-  if (--s->rc == 0) free(s);
+  if (--s->rc == 0) hk_dealloc(s);
 }
 
 hk_str *hk_str_cat(hk_str *a, hk_str *b) {
@@ -73,6 +96,22 @@ hk_str *hk_str_cat(hk_str *a, hk_str *b) {
   memcpy(s->data, a->data, (size_t)a->len);
   memcpy(s->data + a->len, b->data, (size_t)b->len);
   s->data[n] = '\0';
+  return s;
+}
+
+hk_str *hk_str_join(int n, hk_str **parts) {
+  hk_int total = 0;
+  for (int i = 0; i < n; i++) total += parts[i]->len;
+  hk_str *s = (hk_str *)hk_alloc(sizeof(hk_str) + (size_t)total);
+  s->rc = 1;
+  s->len = total;
+  hk_int at = 0;
+  for (int i = 0; i < n; i++) {
+    memcpy(s->data + at, parts[i]->data, (size_t)parts[i]->len);
+    at += parts[i]->len;
+    hk_str_release(parts[i]);
+  }
+  s->data[total] = '\0';
   return s;
 }
 
@@ -178,7 +217,7 @@ hk_list *hk_list_retain(hk_list *l) {
 
 void hk_list_release(hk_list *l) {
   if (!l || l->rc < 0) return;
-  if (--l->rc == 0) { free(l->data); free(l); }
+  if (--l->rc == 0) { hk_dealloc(l->data); hk_dealloc(l); }
 }
 
 hk_int hk_list_check(hk_list *l, hk_int i, const char *file, hk_int line) {
@@ -275,7 +314,7 @@ void *hk_join(hk_thread *t) {
   pthread_join(t->h, NULL);
 #endif
   void *r = t->result;
-  free(t);
+  hk_dealloc(t);
   return r;
 }
 
@@ -331,7 +370,7 @@ void hk_mutex_free(hk_mutex *m) {
 #else
   pthread_mutex_destroy(&m->m);
 #endif
-  free(m);
+  hk_dealloc(m);
 }
 
 /* ---- atomics ------------------------------------------------------------ */
@@ -372,4 +411,11 @@ hk_float hk_now_ms(void) {
 /* ---- entry -------------------------------------------------------------- */
 
 void hk_init(int argc, char **argv) { (void)argc; (void)argv; }
-void hk_shutdown(void) { fflush(stdout); }
+
+void hk_shutdown(void) {
+  fflush(stdout);
+  if (getenv("HALKA_REPORT_LEAKS")) {
+    fprintf(stderr, "halka: %lld heap object(s) still live at exit, of %lld allocated\n",
+            (long long)hk_alive, (long long)hk_total);
+  }
+}

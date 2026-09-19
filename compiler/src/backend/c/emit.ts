@@ -16,6 +16,7 @@
 import type * as A from "../../parser/ast.ts";
 import { DiagnosticBag, type Span } from "../../util/diagnostics.ts";
 import type { TypeMap, ForeignImport } from "../../sema/infer.ts";
+import type { EscapeInfo, Owned } from "../../sema/escape.ts";
 import { type Ty, prune, show, C_SCALARS } from "../../sema/types.ts";
 import { PY_RUNTIME, pyConverter, pyLifter } from "./pyruntime.ts";
 
@@ -26,6 +27,8 @@ export interface EmitOptions {
   file: string;
   /** `import c "..."` / `import py "..."` collected by inference (#35-#37). */
   foreignImports?: ForeignImport[];
+  /** Which locals each frame must free, from the escape pass (M4). */
+  escapes?: EscapeInfo;
 }
 
 export interface EmitResult {
@@ -61,8 +64,16 @@ export class CEmitter {
   private structs = new Map<string, StructDef>();
   private fnRet = new Map<string, Ty>();
   private strLits = new Map<string, string>();
-  /** Locals in the current function that own a heap value and do not escape. */
-  private owned: { name: string; ty: Ty }[] = [];
+  /**
+   * One entry per open block. `owned` is what the escape pass says this block
+   * must free; `live` is the subset already declared at the current point, so
+   * an early `give` never frees something C has not seen yet.
+   */
+  private blockStack: { owned: Set<string>; kinds: Map<string, "str" | "list">; live: Owned[]; isLoopBody: boolean }[] = [];
+  /** Owning parameters of the current function, freed when it returns. */
+  private frameParams: Owned[] = [];
+  /** Values built inside the current statement, freed once it completes. */
+  private stmtTemps: Owned[] = [];
   private inMain = false;
   private includes: string[] = [];
   private links: string[] = [];
@@ -114,14 +125,11 @@ export class CEmitter {
     this.out.push("int main(int argc, char **argv) {");
     this.inMain = true;
     this.depth = 1;
-    const savedOwned = this.owned;
-    this.owned = [];
+    this.frameParams = [];
     this.line("hk_init(argc, argv);");
-    for (const s of top) this.stmt(s);
-    for (const o of this.owned.slice().reverse()) this.releaseLocal(o);
+    this.suite({ kind: "Block", span: mod.span, stmts: top }, false, this.opts.escapes?.topLevel);
     this.line("hk_shutdown();");
     this.line("return 0;");
-    this.owned = savedOwned;
     this.inMain = false;
     this.out.push("}");
 
@@ -322,8 +330,7 @@ export class CEmitter {
     this.out.push("");
     this.out.push(this.signature(f) + " {");
     this.depth = 1;
-    const savedOwned = this.owned;
-    this.owned = [];
+    this.frameParams = this.opts.escapes?.params.get(f.name) ?? [];
 
     const sig = this.tyOf(f);
     const ret = sig ? retOf(sig) : undefined;
@@ -336,35 +343,85 @@ export class CEmitter {
     if (needsCleanup && !isVoid) this.line(`${this.cty(ret, "return", f.span)} hk_result = 0;`);
 
     this.fnCtx = { isVoid, needsCleanup, retTy: ret };
-    for (const s of f.body!.stmts) this.stmt(s);
+    this.suite(f.body!);
 
     if (needsCleanup) {
       this.depth--;
       this.line("hk_cleanup:;");
       this.depth++;
       for (const d of defers.slice().reverse()) this.stmt(d.stmt);
-      for (const o of this.owned.slice().reverse()) this.releaseLocal(o);
+      for (const o of this.frameParams.slice().reverse()) this.releaseLocal(o);
       this.line(isVoid ? "return;" : "return hk_result;");
     } else {
-      for (const o of this.owned.slice().reverse()) this.releaseLocal(o);
+      for (const o of this.frameParams.slice().reverse()) this.releaseLocal(o);
       if (!isVoid) this.line(`return ${zeroOf(this.cty(ret, "return", f.span))};`);
     }
 
-    this.owned = savedOwned;
+    this.frameParams = [];
     this.out.push("}");
   }
 
   private fnCtx: { isVoid: boolean; needsCleanup: boolean; retTy: Ty | undefined } =
     { isVoid: true, needsCleanup: false, retTy: undefined };
 
-  private releaseLocal(o: { name: string; ty: Ty }): void {
-    if (this.isStr(o.ty)) this.line(`hk_str_release(${mangle(o.name)});`);
-    else if (this.isList(o.ty)) this.line(`hk_list_release(${mangle(o.name)});`);
+  private releaseLocal(o: Owned): void {
+    this.line(o.kind === "str" ? `hk_str_release(${mangle(o.name)});` : `hk_list_release(${mangle(o.name)});`);
+  }
+
+  /** Emit a block's statements, freeing what it owns on the way out (M4). */
+  private suite(b: A.Block, isLoopBody = false, override?: Owned[]): void {
+    const owned = override ?? this.opts.escapes?.blocks.get(b) ?? [];
+    const frame = {
+      owned: new Set(owned.map((o) => o.name)),
+      kinds: new Map(owned.map((o) => [o.name, o.kind] as const)),
+      live: [] as Owned[],
+      isLoopBody,
+    };
+    this.blockStack.push(frame);
+    for (const st of b.stmts) this.stmt(st);
+    for (const o of frame.live.slice().reverse()) this.releaseLocal(o);
+    this.blockStack.pop();
+  }
+
+  /** Free everything in scope before returning; the returned value is kept. */
+  private releaseForReturn(keep?: string): void {
+    for (let i = this.blockStack.length - 1; i >= 0; i--) {
+      for (const o of this.blockStack[i]!.live.slice().reverse()) {
+        if (o.name !== keep) this.releaseLocal(o);
+      }
+    }
+    for (const o of this.frameParams.slice().reverse()) if (o.name !== keep) this.releaseLocal(o);
+  }
+
+  /** Free everything down to and including the nearest loop body. */
+  private releaseForLoopExit(): void {
+    for (let i = this.blockStack.length - 1; i >= 0; i--) {
+      for (const o of this.blockStack[i]!.live.slice().reverse()) this.releaseLocal(o);
+      if (this.blockStack[i]!.isLoopBody) return;
+    }
   }
 
   // ---- statements ----------------------------------------------------------
 
   private stmt(s: A.Stmt): void {
+    // A value built inside an expression and never bound to a name is this
+    // statement's responsibility, so it is freed as soon as the statement ends.
+    const saved = this.stmtTemps;
+    this.stmtTemps = [];
+    this.stmtInner(s);
+    for (const t of this.stmtTemps.slice().reverse()) this.releaseLocal(t);
+    this.stmtTemps = saved;
+  }
+
+  /** Bind a freshly built value so the statement can free it again. */
+  private holdTemp(cExpr: string, kind: "str" | "list"): string {
+    const v = this.fresh(kind === "str" ? "tstr" : "tlst");
+    this.line(`${kind === "str" ? "hk_str *" : "hk_list *"}${v} = ${cExpr};`);
+    this.stmtTemps.push({ name: v, kind });
+    return v;
+  }
+
+  private stmtInner(s: A.Stmt): void {
     switch (s.kind) {
       case "FnDecl": case "StructDecl": case "EnumDecl": case "TraitDecl":
       case "ImplDecl": case "TypeAliasDecl": case "CapabilityDecl":
@@ -389,8 +446,9 @@ export class CEmitter {
         const ct = this.cty(t, `\`${s.pattern.name}\``, s.span);
         const init = s.value ? this.expr(s.value) : zeroOf(ct);
         this.line(`${ct} ${mangle(s.pattern.name)} = ${init};`);
-        if (this.isHeap(t) && s.value && allocates(s.value) && !escapes(s.pattern.name)) {
-          this.owned.push({ name: s.pattern.name, ty: t! });
+        const here = this.blockStack[this.blockStack.length - 1];
+        if (here?.owned.has(s.pattern.name)) {
+          here.live.push({ name: s.pattern.name, kind: here.kinds.get(s.pattern.name) ?? "list" });
         }
         return;
       }
@@ -425,48 +483,57 @@ export class CEmitter {
 
       case "SayStmt": {
         if (!s.args.length) { this.line(`hk_say_cstr("");`); return; }
-        if (s.args.length === 1) { this.line(`hk_say(${this.asStr(s.args[0]!)});`); return; }
-        let acc = this.asStr(s.args[0]!);
-        for (const a of s.args.slice(1)) acc = `hk_str_cat(hk_str_cat(${acc}, hk_str_lit(" ")), ${this.asStr(a)})`;
-        this.line(`hk_say(${acc});`);
+        // `say` builds a string; bind it so the frame can free it again.
+        const pieces: string[] = [];
+        s.args.forEach((a, i) => {
+          if (i) pieces.push(this.strLitConst(" "));
+          pieces.push(this.asStrOwned(a));
+        });
+        const acc = pieces.length === 1 ? pieces[0]! : `hk_str_join(${pieces.length}, (hk_str *[]){ ${pieces.join(", ")} })`;
+        const t = this.fresh("say");
+        this.line(`hk_str *${t} = ${acc};`);
+        this.line(`hk_say(${t});`);
+        this.line(`hk_str_release(${t});`);
         return;
       }
 
       case "GiveStmt": {
+        const keep = s.value?.kind === "Ident" ? s.value.name : undefined;
         if (this.inMain) {
+          this.releaseForReturn(keep);
           this.line("hk_shutdown();");
           this.line("return 0;");
           return;
         }
         if (this.fnCtx.needsCleanup) {
           if (s.value && !this.fnCtx.isVoid) this.line(`hk_result = ${this.expr(s.value)};`);
+          // Block-scoped values must go before the jump; C scopes end here.
+          this.releaseForReturn(keep);
           this.line("goto hk_cleanup;");
           return;
         }
-        for (const o of this.owned.slice().reverse()) {
-          // A returned value must not be released.
-          if (s.value?.kind === "Ident" && s.value.name === o.name) continue;
-          this.releaseLocal(o);
-        }
-        this.line(s.value && !this.fnCtx.isVoid ? `return ${this.expr(s.value)};` : "return;");
+        const value = s.value && !this.fnCtx.isVoid ? this.expr(s.value) : null;
+        this.releaseForReturn(keep);
+        this.line(value !== null ? `return ${value};` : "return;");
         return;
       }
 
-      case "BreakStmt": this.line("break;"); return;
-      case "ContinueStmt": this.line("continue;"); return;
+      // Both leave the loop body, so its values are freed first.
+      case "BreakStmt": this.releaseForLoopExit(); this.line("break;"); return;
+      case "ContinueStmt": this.releaseForLoopExit(); this.line("continue;"); return;
 
       case "IfStmt": {
         this.open(`if (${this.expr(s.cond)}) {`);
-        for (const x of s.then.stmts) this.stmt(x);
+        this.suite(s.then);
         for (const e of s.elifs) {
           this.close(`} else if (${this.expr(e.cond)}) {`);
           this.depth++;
-          for (const x of e.block.stmts) this.stmt(x);
+          this.suite(e.block);
         }
         if (s.else) {
           this.close("} else {");
           this.depth++;
-          for (const x of s.else.stmts) this.stmt(x);
+          this.suite(s.else);
         }
         this.close();
         return;
@@ -474,7 +541,7 @@ export class CEmitter {
 
       case "WhileStmt": {
         this.open(`while (${this.expr(s.cond)}) {`);
-        for (const x of s.body.stmts) this.stmt(x);
+        this.suite(s.body, true);
         this.close();
         return;
       }
@@ -483,7 +550,7 @@ export class CEmitter {
 
       case "UnsafeStmt": {
         this.open("{");
-        for (const x of s.body.stmts) this.stmt(x);
+        this.suite(s.body);
         this.close();
         return;
       }
@@ -599,7 +666,7 @@ export class CEmitter {
       this.line(`const hk_int ${hi} = ${this.expr(it.hi)};`);
       const step = it.step ? this.expr(it.step) : "1";
       this.open(`for (hk_int ${v} = ${lo}; ${v} ${cmp} ${hi}; ${v} += ${step}) {`);
-      for (const x of s.body.stmts) this.stmt(x);
+      this.suite(s.body, true);
       this.close();
       return;
     }
@@ -612,7 +679,7 @@ export class CEmitter {
       this.line(`hk_list *${lst} = ${this.expr(it)};`);
       this.open(`for (hk_int ${i} = 0; ${i} < ${lst}->len; ${i}++) {`);
       this.line(`${et} ${v} = HK_AT(${lst}, ${et}, ${i});`);
-      for (const x of s.body.stmts) this.stmt(x);
+      this.suite(s.body, true);
       this.close();
       return;
     }
@@ -794,8 +861,10 @@ export class CEmitter {
     const ct = this.cty(t, "python argument", e.span);
     if (ct === "hk_list *") {
       const elem = this.cty(this.elemOf(t), "element", e.span);
-      if (elem === "hk_int") return `hk_py_from_list_int(${this.expr(e)})`;
-      if (elem === "hk_float") return `hk_py_from_list_float(${this.expr(e)})`;
+      const isRead = e.kind === "Ident" || e.kind === "MemberExpr" || e.kind === "IndexExpr";
+      const lv = isRead ? this.expr(e) : this.holdTemp(this.expr(e), "list");
+      if (elem === "hk_int") return `hk_py_from_list_int(${lv})`;
+      if (elem === "hk_float") return `hk_py_from_list_float(${lv})`;
     }
     const lift = pyLifter(ct);
     if (!lift) {
@@ -841,7 +910,7 @@ export class CEmitter {
     // Strings
     if (this.isStr(lt) || this.isStr(rt)) {
       switch (e.op) {
-        case "+": return `hk_str_cat(${this.asStr(e.lhs)}, ${this.asStr(e.rhs)})`;
+        case "+": return `hk_str_join(2, (hk_str *[]){ ${this.asStrOwned(e.lhs)}, ${this.asStrOwned(e.rhs)} })`;
         case "==": return `hk_str_eq(${l}, ${r})`;
         case "!=": return `(!hk_str_eq(${l}, ${r}))`;
         case "<": return `(hk_str_cmp(${l}, ${r}) < 0)`;
@@ -962,7 +1031,13 @@ export class CEmitter {
       if (this.isList(ot)) {
         const et = this.cty(this.elemOf(ot), "element", e.span);
         switch (m) {
-          case "push": return `(HK_PUSH(${this.expr(obj)}, ${et}, ${args[0]}), 0)`;
+          case "push": {
+            // `push` is an expression here, so it cannot expand to a
+            // do/while. Bind the receiver first, then use the comma form.
+            const lv = this.fresh("lst");
+            this.line(`hk_list *${lv} = ${this.expr(obj)};`);
+            return `HK_PUSH_E(${lv}, ${et}, ${args[0]})`;
+          }
           case "is_empty": return `((${this.expr(obj)})->len == 0)`;
           default: break;
         }
@@ -1021,6 +1096,19 @@ export class CEmitter {
     return `((${target})(${this.expr(e.expr)}))`;
   }
 
+  /**
+   * A string the caller owns, for handing to a consuming join. A value that is
+   * merely *read* (a variable, a field, an element) is retained first, so the
+   * join's release leaves it exactly as it found it.
+   */
+  private asStrOwned(e: A.Expr): string {
+    const t = this.tyOf(e);
+    const p = t ? prune(t) : undefined;
+    const isRead = e.kind === "Ident" || e.kind === "MemberExpr" || e.kind === "IndexExpr";
+    if (isRead && p?.k === "prim" && p.name === "string") return `hk_str_retain(${this.expr(e)})`;
+    return this.asStr(e);
+  }
+
   /** Produce an `hk_str *` for any expression (used by `say` and `+`). */
   private asStr(e: A.Expr): string {
     const t = this.tyOf(e);
@@ -1031,7 +1119,15 @@ export class CEmitter {
     if (p?.k === "list" || p?.k === "array") {
       const elem = this.cty(this.elemOf(t), "element", e.span);
       const kind = elem === "hk_float" ? 1 : elem === "hk_bool" ? 2 : elem === "hk_char" ? 3 : elem === "hk_str *" ? 4 : 0;
-      return `hk_str_from_list(${this.expr(e)}, ${kind})`;
+      const isRead = e.kind === "Ident" || e.kind === "MemberExpr" || e.kind === "IndexExpr";
+      if (isRead) return `hk_str_from_list(${this.expr(e)}, ${kind})`;
+      // A list built just to be printed is freed again straight away.
+      const lv = this.fresh("plst");
+      const sv = this.fresh("pstr");
+      this.line(`hk_list *${lv} = ${this.expr(e)};`);
+      this.line(`hk_str *${sv} = hk_str_from_list(${lv}, ${kind});`);
+      this.line(`hk_list_release(${lv});`);
+      return sv;
     }
 
     // A C scalar prints as its Halka counterpart (#35).
@@ -1068,16 +1164,16 @@ export class CEmitter {
       if (!name) { name = `hk_s${this.strLits.size}`; this.strLits.set(text, name); }
       return name;
     }
-    // Interpolation (#2) concatenates left to right.
-    let acc: string | null = null;
+    // Interpolation (#2) — one join, which consumes every piece, so no
+    // intermediate concatenation is left behind.
+    const pieces: string[] = [];
     for (const p of e.parts) {
-      const piece = p.kind === "text"
-        ? (p.text ? this.strLitConst(p.text) : null)
-        : this.asStr(p.expr!);
-      if (piece === null) continue;
-      acc = acc === null ? piece : `hk_str_cat(${acc}, ${piece})`;
+      if (p.kind === "text") { if (p.text) pieces.push(this.strLitConst(p.text)); }
+      else pieces.push(this.asStrOwned(p.expr!));
     }
-    return acc ?? `hk_str_lit("")`;
+    if (!pieces.length) return `hk_str_lit("")`;
+    if (pieces.length === 1) return pieces[0]!;
+    return `hk_str_join(${pieces.length}, (hk_str *[]){ ${pieces.join(", ")} })`;
   }
 
   private strLitConst(text: string): string {

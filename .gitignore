@@ -25,3 +25,9 @@ bench/*.c
 examples/ffi/*.exe
 examples/ffi/*.c
 examples/ffi/*.obj
+
+# native build products left beside the compiler
+compiler/*.exe
+compiler/*.obj
+compiler/*.pdb
+compiler/*.ilk

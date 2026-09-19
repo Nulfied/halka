@@ -135,6 +135,9 @@ typedef struct hk_str {
 hk_str *hk_str_new(const char *bytes, hk_int len);
 hk_str *hk_str_lit(const char *cstr);          /* static literal, rc = -1 */
 hk_str *hk_str_cat(hk_str *a, hk_str *b);
+/* Concatenates `n` parts and releases each of them. The caller owns every
+   part it passes in, so interpolation leaves no intermediates behind. */
+hk_str *hk_str_join(int n, hk_str **parts);
 hk_str *hk_str_from_int(hk_int v);
 hk_str *hk_str_from_float(hk_float v);
 hk_str *hk_str_from_bool(hk_bool v);
@@ -176,6 +179,11 @@ hk_int   hk_list_check(hk_list *l, hk_int i, const char *file, hk_int line);
     ((T *)hk__l->data)[hk__l->len++] = (v);   \
   } while (0)
 
+/* Expression form, for a push used where a value is expected. `l` is
+   evaluated more than once, so the generated code binds it to a temporary. */
+#define HK_PUSH_E(l, T, v) \
+  (hk_list_reserve((l), (l)->len + 1), ((T *)(l)->data)[(l)->len++] = (v), 0)
+
 /* ---- output ------------------------------------------------------------- */
 
 void hk_say(hk_str *s);
@@ -203,6 +211,14 @@ void    hk_atomic_store(volatile hk_int *p, hk_int v);
 hk_int  hk_atomic_add(volatile hk_int *p, hk_int delta);
 hk_int  hk_atomic_exchange(volatile hk_int *p, hk_int v);
 hk_bool hk_atomic_cas(volatile hk_int *p, hk_int expect, hk_int desired);
+
+/* ---- allocation accounting ---------------------------------------------- */
+
+/* Live heap objects. Two counters cost nothing measurable and turn "does the
+ * compiler actually free what it allocates" into a test rather than a claim.
+ * Set HALKA_REPORT_LEAKS=1 to have the program report on exit. */
+hk_int hk_live_allocs(void);
+hk_int hk_total_allocs(void);
 
 /* ---- timing (for benchmarks) -------------------------------------------- */
 

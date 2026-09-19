@@ -1,0 +1,34 @@
+# Allocates in a loop; nothing escapes, so nothing should be live at exit.
+build(n: int): list(int),
+    let out: [],
+    for i in 0..n,
+        out.push(i),
+    give out
+
+label(i: int): string,
+    give "item {i}"
+
+let total: 0
+for round in 0..2000,
+    let xs: build(20),
+    total: total + len(xs),
+    let name: label(round),
+    total: total + len(name)
+say "total = {total}"
+
+# Two sibling blocks declaring the same name hold two different values, and
+# each block has to free its own. Keying releases by name alone leaked here.
+let shadowed: 0
+for i in 0..3,
+    let xs: [i, i, i],
+    shadowed: shadowed + len(xs)
+for i in 0..3,
+    let xs: [i, i],
+    shadowed: shadowed + len(xs)
+if shadowed > 0,
+    let s: "a{shadowed}",
+    shadowed: shadowed + len(s)
+if shadowed > 0,
+    let s: "b{shadowed}",
+    shadowed: shadowed + len(s)
+say "shadowed = {shadowed}"
