@@ -13,7 +13,7 @@ import { format } from "../fmt/format.ts";
 import { check } from "../sema/check.ts";
 import { inferTypes } from "../sema/infer.ts";
 import { emitC } from "../backend/c/emit.ts";
-import { buildNative, describeToolchains } from "../backend/c/build.ts";
+import { buildNative, describeToolchains, findPython } from "../backend/c/build.ts";
 import { show as showTy } from "../sema/types.ts";
 import { inspect, display, type Value, NOTHING } from "../runtime/value.ts";
 import type * as A from "../parser/ast.ts";
@@ -137,7 +137,13 @@ function cmdRun(args: string[]): void {
 
 function reportRuntime(e: unknown, sources: Map<string, string>): void {
   if (e instanceof HalkaRuntimeError) {
-    report([{ code: e.code, severity: "error", message: e.msg, span: e.span ?? anonSpan() }], sources);
+    report([{
+      code: e.code,
+      severity: "error",
+      message: e.msg,
+      span: e.span ?? anonSpan(),
+      help: e.code === "R0030" ? "build it instead: `halka build --release <file.hk>`" : undefined,
+    }], sources);
     if (e.trace.length) {
       process.stderr.write("\ncall stack (innermost last):\n");
       for (const f of e.trace) process.stderr.write(`  ${f}\n`);
@@ -236,9 +242,10 @@ function cmdBuild(args: string[]): void {
   for (const d of inferred.diags.items) diags.items.push(d);
   if (diags.hasErrors) { report(diags.items, sources); process.exit(1); }
 
-  const { c, diags: emitDiags } = emitC(main, inferred.types, {
+  const { c, diags: emitDiags, links, needsPython } = emitC(main, inferred.types, {
     release: flags.has("--release"),
     file: basename(file),
+    foreignImports: inferred.foreignImports,
   });
   if (emitDiags.hasErrors) {
     report(emitDiags.items, sources);
@@ -252,15 +259,29 @@ function cmdBuild(args: string[]): void {
     keepC: flags.has("--keep-c") || flags.has("--emit-c"),
     emitOnly: flags.has("--emit-c"),
     quiet: flags.has("--quiet"),
+    libs: links,
+    needsPython,
   });
 
   if (!outcome.ok) die(outcome.message ?? "the build failed");
+  for (const w of outcome.warnings ?? []) {
+    process.stderr.write(`warning from the C compiler: ${w}` + NL);
+  }
+  if ((outcome.warnings ?? []).length) {
+    process.stderr.write("  these usually mean a `c` declaration does not match the real symbol" + NL);
+  }
   if (outcome.cFile && flags.has("--emit-c")) {
     process.stdout.write(`wrote ${outcome.cFile}` + NL);
     return;
   }
   if (!flags.has("--quiet")) {
-    process.stdout.write(`built ${outcome.binary}  (${outcome.toolchain}${flags.has("--release") ? ", release" : ", debug"})` + NL);
+    const extra = [
+      outcome.toolchain,
+      flags.has("--release") ? "release" : "debug",
+      ...(outcome.python ? [`CPython ${outcome.python.version}`] : []),
+      ...(links.length ? [`links ${links.join(" ")}`] : []),
+    ].join(", ");
+    process.stdout.write(`built ${outcome.binary}  (${extra})` + NL);
     if (outcome.cFile) process.stdout.write(`  C source kept at ${outcome.cFile}` + NL);
   }
 }
@@ -272,6 +293,12 @@ function defaultBinaryName(file: string): string {
 
 function cmdToolchain(): void {
   process.stdout.write(`C compilers found: ${describeToolchains()}` + NL);
+  const py = findPython();
+  process.stdout.write(
+    py
+      ? `CPython for embedding: ${py.version} (${py.include})` + NL
+      : "CPython for embedding: not found — install python3-dev to use `py` interop" + NL,
+  );
 }
 
 function cmdAst(args: string[]): void {

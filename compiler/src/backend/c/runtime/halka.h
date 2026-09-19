@@ -123,6 +123,8 @@ static inline hk_float hk_fdiv(hk_int a, hk_int b, const char *file, hk_int line
 
 /* ---- strings ------------------------------------------------------------ */
 
+struct hk_list;
+
 /* Immutable, reference counted, UTF-8, NUL-terminated for cheap C interop. */
 typedef struct hk_str {
   hk_int rc;
@@ -138,6 +140,7 @@ hk_str *hk_str_from_float(hk_float v);
 hk_str *hk_str_from_bool(hk_bool v);
 hk_str *hk_str_from_char(hk_char v);
 hk_int  hk_str_len_chars(hk_str *s);           /* code points, not bytes */
+hk_str *hk_str_from_list(struct hk_list *l, int kind); /* 0=int 1=float 2=bool 3=char 4=str */
 hk_bool hk_str_eq(hk_str *a, hk_str *b);
 int     hk_str_cmp(hk_str *a, hk_str *b);
 hk_str *hk_str_retain(hk_str *s);

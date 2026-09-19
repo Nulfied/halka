@@ -1,0 +1,11 @@
+# #37 — calling Python. Crossing back into Halka is explicit, with `as`.
+import py math
+import py builtins
+from py statistics import mean
+
+say "sqrt {py math.sqrt(2.0) as float}"
+say "fact {py math.factorial(6) as int}"
+say "gcd {py math.gcd(48, 18) as int}"
+say "mean {mean([1.0, 2.0, 3.0, 4.0]) as float}"
+say "sorted {py builtins.sorted([3, 1, 2]) as list(int)}"
+say "upper {py builtins.str.upper("halka") as string}"

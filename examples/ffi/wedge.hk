@@ -1,0 +1,68 @@
+### wedge.hk — the case for Halka, in one file.
+
+A realistic shape for numeric Python: load and prepare data with NumPy, then
+run a hot loop over it. In Python the hot loop is the bottleneck and threads
+do not help, because the GIL serialises them.
+
+Here the same program keeps NumPy and compiles the hot loop to native code
+that runs on every core. Nobody has to choose.
+
+Build it:  halka build --release examples/ffi/wedge.hk -o wedge
+###
+
+import py numpy
+
+# --- the part that stays in Python -----------------------------------------
+
+# NumPy is good at this and there is no reason to reimplement it.
+
+let n: 400000
+let data: list(float): py numpy.linspace(0.0, 6.28318, n) as list(float)
+say "prepared {len(data)} samples with NumPy {py numpy.__version__ as string}"
+
+# --- the part that becomes native ------------------------------------------
+
+# A numerical kernel Python would run one bytecode at a time.
+
+# 40 refinement steps per sample: compute-bound, the shape of a real kernel.
+kernel_sum(xs: list(float), lo: int, hi: int): float,
+    let acc: 0.0,
+    for i in lo..hi,
+        let x: xs[i],
+        let t: x,
+        for step in 0..40,
+            t: t - (t * t - x) / (2.0 * t + 1.0),
+        acc: acc + t / (1.0 + t * t),
+    give acc
+
+let t0: now_ms()
+let single: kernel_sum(data, 0, n)
+let t1: now_ms()
+
+# --- and it runs on every core ---------------------------------------------
+
+# `parallel:` lowers to real OS threads. There is no interpreter lock.
+
+let q: div(n, 4)
+let a: 0.0
+let b: 0.0
+let c: 0.0
+let d: 0.0
+
+parallel:
+    a: kernel_sum(data, 0, q),
+    b: kernel_sum(data, q, q * 2),
+    c: kernel_sum(data, q * 2, q * 3),
+    d: kernel_sum(data, q * 3, n)
+let t2: now_ms()
+let threaded: a + b + c + d
+
+say "kernel, 1 thread : {round(t1 - t0)} ms"
+say "kernel, 4 threads: {round(t2 - t1)} ms"
+say "speedup          : {round_to((t1 - t0) / (t2 - t1), 2)}x"
+say "result           : {round_to(single, 6)}"
+assert(round_to(single, 6) == round_to(threaded, 6), "both paths must agree")
+
+# --- and the result goes back to Python ------------------------------------
+
+say "back in NumPy    : {py numpy.round(single, 6) as float}"

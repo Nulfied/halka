@@ -17,7 +17,7 @@
 export type Ty =
   | Prim | Opt | ListT | ArrayT | MapT | SetT | TupleT | FnT
   | NamedT | RefT | RawT | SharedT | TaskT | ChanT | AtomicT
-  | MutexT | RangeT | CapT | ModuleT | TypeT | VarT | AnyT | NeverT;
+  | MutexT | RangeT | CapT | ModuleT | TypeT | VarT | AnyT | NeverT | CTy;
 
 export type PrimName = "int" | "float" | "bool" | "string" | "char" | "byte" | "nothing" | "null";
 
@@ -47,6 +47,13 @@ export interface VarT { k: "var"; id: number; ref: Ty | null; bounds: string[]; 
 export interface AnyT { k: "any"; why?: string }
 /** The type of an expression that never produces a value (`give`, `panic`). */
 export interface NeverT { k: "never" }
+/**
+ * A type that belongs to a foreign language (#35-#37): `c double`, `cpp string`,
+ * a Python object. `name` is spelled exactly as the foreign language spells it,
+ * because the whole point of the FFI is that it does not reinterpret the other
+ * language's types.
+ */
+export interface CTy { k: "cty"; lang: "c" | "cpp" | "py"; name: string }
 
 // ---------------------------------------------------------------------------
 // constructors
@@ -85,6 +92,41 @@ export function resetVarCounter(): void { nextVarId = 1; }
 
 /** The standard Result<T> shape (#22). */
 export function resultOf(inner: Ty): NamedT { return named("Result", [inner]); }
+
+export function cty(lang: "c" | "cpp" | "py", name: string): CTy { return { k: "cty", lang, name }; }
+
+/**
+ * The boundary conversion table (#35). A Halka scalar crossing into C converts
+ * implicitly; a narrowing conversion is range-checked in a debug build. Anything
+ * not in this table needs an explicit `as`.
+ */
+export const C_SCALARS: Record<string, PrimName> = {
+  char: "int", "signed char": "int", "unsigned char": "int",
+  short: "int", "unsigned short": "int",
+  int: "int", unsigned: "int", "unsigned int": "int",
+  long: "int", "unsigned long": "int",
+  "long long": "int", "unsigned long long": "int",
+  size_t: "int", ssize_t: "int", ptrdiff_t: "int",
+  int8_t: "int", int16_t: "int", int32_t: "int", int64_t: "int",
+  uint8_t: "int", uint16_t: "int", uint32_t: "int", uint64_t: "int",
+  float: "float", double: "float", "long double": "float",
+  bool: "bool", _Bool: "bool",
+  void: "nothing",
+};
+
+/** True when a Halka scalar and a C scalar may cross the boundary implicitly. */
+export function cBoundaryCompatible(c: CTy, other: Ty): boolean {
+  const p = prune(other);
+  const want = C_SCALARS[c.name];
+  if (!want) {
+    // A pointer or an opaque handle: only a raw pointer or null may cross.
+    return p.k === "raw" || p.k === "cty" || (p.k === "prim" && p.name === "null");
+  }
+  if (p.k !== "prim") return false;
+  if (p.name === want) return true;
+  // int and float mix at the boundary exactly as they do in Halka.
+  return (want === "float" && p.name === "int") || (want === "int" && p.name === "byte");
+}
 
 // ---------------------------------------------------------------------------
 // resolution
@@ -203,6 +245,13 @@ export function unify(a: Ty, b: Ty): void {
   if (x.k === "opt") return unify(x.inner, y);
   if (y.k === "opt") throw new UnifyError(x, y, "this value may be null");
 
+  // A foreign scalar and its Halka counterpart cross the boundary implicitly (#35).
+  if (x.k === "cty" && y.k !== "cty") {
+    if (cBoundaryCompatible(x, y)) return;
+    throw new UnifyError(x, y, `no automatic conversion across the ${x.lang} boundary`);
+  }
+  if (y.k === "cty" && x.k !== "cty") return unify(y, x);
+
   if (x.k !== y.k) {
     // `int` widens to `float` in a numeric context.
     if (isNumeric(x) && isNumeric(y)) return;
@@ -239,6 +288,11 @@ export function unify(a: Ty, b: Ty): void {
     case "cap": return;
     case "module": return;
     case "type": return;
+    case "cty": {
+      const yy = y as CTy;
+      if (x.lang === yy.lang && x.name === yy.name) return;
+      throw new UnifyError(x, y);
+    }
     case "named": {
       const yy = y as NamedT;
       if (x.name !== yy.name) throw new UnifyError(x, y);
@@ -331,6 +385,7 @@ export function show(t: Ty): string {
     case "var": return p.origin ? p.origin : `_${p.id}`;
     case "any": return "_";
     case "never": return "never";
+    case "cty": return `${p.lang} ${p.name}`;
   }
 }
 

@@ -1,0 +1,24 @@
+### c_math.hk — calling C directly (#35).
+
+`import c "<header>"` includes the header, so every symbol it declares is
+callable. No bindings file, no marshalling layer: the backend emits C, so a
+C call is just a C call.
+###
+
+import c math.h
+import c stdio.h
+
+# Declaring the Halka side of a symbol lets the checker verify the call.
+c hypot(x: c double, y: c double): c double
+
+c cos(x: c double): c double
+
+area_of_circle(r: float): float,
+    give 3.141592653589793 * r * r
+
+say "C hypot(3, 4)  = {c hypot(3.0, 4.0)}"
+say "C cos(0)       = {c cos(0.0)}"
+say "halka area(2)  = {area_of_circle(2.0)}"
+
+# printf comes from stdio.h; a Halka string crosses as a `const char *`.
+c printf("printed by C: %s\n", "hello from halka")

@@ -744,12 +744,14 @@ export class Interpreter {
         return { t: "capability", name: e.capability, perms: decl?.perms ?? [] };
       }
 
-      case "ForeignExpr":
-        this.fail(
-          `\`${e.lang}\` interop needs the native backend; the reference interpreter cannot call ${e.lang.toUpperCase()} code`,
-          e.span, "R0030",
+      case "ForeignExpr": {
+        const how = e.lang === "py" ? "embeds CPython" : `links ${e.lang.toUpperCase()} directly`;
+        throw new HalkaRuntimeError(
+          `\`${e.lang}\` interop is a compiled feature — the reference interpreter cannot call ${e.lang.toUpperCase()} code`,
+          e.span, "R0030", [...this.callTrace],
         );
-        break;
+        void how;
+      }
 
       case "FnRefExpr": {
         const b = env.lookup(e.name);

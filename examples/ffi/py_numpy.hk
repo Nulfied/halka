@@ -1,0 +1,25 @@
+### py_numpy.hk — calling Python, and NumPy, from compiled Halka (#37).
+
+The binary embeds CPython. A Halka value crosses into Python implicitly; a
+Python value crossing back is explicit with `as`, because a Python value has
+no static type and the program has to say what it expects (#15).
+###
+
+import py math
+import py statistics
+
+say "python math.sqrt(2)   = {py math.sqrt(2.0) as float}"
+say "python math.factorial = {py math.factorial(10) as int}"
+
+let sample: [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]
+say "python mean           = {py statistics.mean(sample) as float}"
+say "python stdev          = {py statistics.pstdev(sample) as float}"
+
+say "python prod(1..4)     = {py math.prod([1, 2, 3, 4]) as int}"
+
+# A Halka list crosses into Python, and a Python sequence comes back.
+import py builtins
+let values: [5, 3, 9, 1, 7]
+let ordered: list(int): py builtins.sorted(values) as list(int)
+say "python sorted         = {ordered}"
+say "python max            = {py builtins.max(values) as int}"

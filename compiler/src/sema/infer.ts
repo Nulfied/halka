@@ -15,7 +15,7 @@ import {
   type Ty, type FnT, type FnParam,
   INT, FLOAT, BOOL, STRING, CHAR, BYTE, NOTHING, NULL, NEVER,
   any, opt, list, arr, map, set, tup, named, fn, param, fresh,
-  prune, unify, tryUnify, instantiate, show, isNumeric, UnifyError, resultOf,
+  prune, unify, tryUnify, instantiate, show, isNumeric, UnifyError, resultOf, cty,
 } from "./types.ts";
 
 export type TypeMap = Map<A.Node, Ty>;
@@ -36,11 +36,15 @@ class Scope {
   child(): Scope { return new Scope(this); }
 }
 
+export interface ForeignImport { lang: "c" | "cpp" | "py"; path: string; names: string[] }
+
 export interface InferResult {
   types: TypeMap;
   diags: DiagnosticBag;
   /** Expressions that stayed `any`, for `--explain`. */
   unknowns: { span: Span; why: string }[];
+  /** `import c "stdio.h"` / `import py "numpy"` (#35-#37). */
+  foreignImports: ForeignImport[];
 }
 
 export class Inferencer {
@@ -55,6 +59,12 @@ export class Inferencer {
   private impls = new Map<string, Map<string, FnT>>();
   private fns = new Map<string, FnT>();
   private generics = new Set<string>();
+  /** `c printf(...)`-style declarations, keyed "lang name" (#35-#37). */
+  private foreignFns = new Map<string, FnT>();
+  /** `c struct Point:` declarations, keyed "lang Name". */
+  private foreignTypes = new Set<string>();
+  /** Modules brought in by `import c "stdio.h"` / `import py "numpy"`. */
+  readonly foreignImports: { lang: "c" | "cpp" | "py"; path: string; names: string[] }[] = [];
   /** Return type of the function currently being checked, for `give`. */
   private retStack: Ty[] = [];
 
@@ -68,7 +78,7 @@ export class Inferencer {
     this.collectSignatures(mod.stmts, global);
     this.checkStmts(mod.stmts, global);
 
-    return { types: this.types, diags: this.diags, unknowns: this.unknowns };
+    return { types: this.types, diags: this.diags, unknowns: this.unknowns, foreignImports: this.foreignImports };
   }
 
   private err(code: string, msg: string, span: Span, extra?: Record<string, unknown>): void {
@@ -152,13 +162,22 @@ export class Inferencer {
     for (const s of stmts) {
       switch (s.kind) {
         case "FnDecl": {
-          if (s.foreign || !s.body) break;
+          if (s.foreign) {
+            // A foreign declaration types the Halka side of the boundary; the
+            // foreign side comes from its own header (#35).
+            const fsig = this.signatureOf(s);
+            this.foreignFns.set(`${s.foreign} ${s.name}`, fsig);
+            this.types.set(s, fsig);
+            break;
+          }
+          if (!s.body) break;
           const sig = this.signatureOf(s);
           this.fns.set(s.name, sig);
           scope.set(s.name, sig);
           break;
         }
         case "StructDecl":
+          if (s.foreign) { this.foreignTypes.add(`${s.foreign} ${s.name}`); break; }
           scope.set(s.name, { k: "type", name: s.name });
           break;
         case "EnumDecl":
@@ -185,6 +204,18 @@ export class Inferencer {
           for (const m of s.members) {
             // Trait methods are available on every implementor.
             for (const [, table] of this.impls) if (!table.has(m.name)) { /* filled at impl time */ }
+          }
+          break;
+        case "ImportDecl":
+          if (s.foreign) {
+            this.foreignImports.push({ lang: s.foreign, path: s.path, names: s.names.map((n) => n.name) });
+            // `from py "math" import sqrt` binds the names locally.
+            for (const n of s.names) {
+              scope.set(n.alias ?? n.name, s.foreign === "py"
+                ? fn([param("args", any("python argument"), { variadic: true })], cty("py", "object"))
+                : any(`${s.foreign} import`));
+            }
+            if (s.form === "module") scope.set(s.alias ?? lastSegment(s.path), { k: "module", name: s.path });
           }
           break;
         case "GenerateDecl":
@@ -216,7 +247,12 @@ export class Inferencer {
       case "RefType": return { k: "ref", inner: this.toTy(t.inner), mut: t.mut };
       case "RawPtrType": return { k: "raw", inner: this.toTy(t.inner) };
       case "TupleType": return tup(t.elements.map((e) => this.toTy(e)));
-      case "ForeignType": return any("foreign type");
+      case "ForeignType": {
+        const inner = t.inner;
+        if (inner.kind === "NamedType") return cty(t.lang, inner.name);
+        if (inner.kind === "RawPtrType") return { k: "raw", inner: this.toTy(inner.inner) };
+        return cty(t.lang, "void *");
+      }
       case "NamedType": {
         const args = t.args.map((a) => this.toTy(a));
         switch (t.name) {
@@ -739,9 +775,48 @@ export class Inferencer {
       case "CompileExpr": return this.infer(e.expr, scope);
       case "DeviceExpr": return this.infer(e.expr, scope);
       case "LaunchExpr": return this.infer(e.call, scope);
-      case "ForeignExpr": return any(`${e.lang} interop`);
+      case "ForeignExpr": return this.inferForeign(e, scope);
       case "FnRefExpr": return scope.get(e.name) ?? any("function reference");
     }
+  }
+
+  /** `c malloc(100)`, `py numpy.array(...)` — a call across a foreign boundary. */
+  private inferForeign(e: A.ForeignExpr, scope: Scope): Ty {
+    const inner = e.expr;
+
+    if (inner.kind === "CallExpr") {
+      // Resolve the callee's name without inferring it as a Halka value.
+      const name = inner.callee.kind === "Ident" ? inner.callee.name
+        : inner.callee.kind === "MemberExpr" ? memberPath(inner.callee)
+        : null;
+      const argTys = inner.args.map((a) => (a.value.kind === "EllipsisExpr" ? any("elided") : this.infer(a.value, scope)));
+
+      const sig = name ? this.foreignFns.get(`${e.lang} ${name}`) : undefined;
+      if (!sig) {
+        // Python is dynamically typed, so the result is a Python value until
+        // `as` says what it should become (#15, #37).
+        if (e.lang === "py") return cty("py", "object");
+        // For C the foreign compiler checks the call, not us.
+        return any(`undeclared ${e.lang} function${name ? ` \`${name}\`` : ""}`);
+      }
+      const inst = instantiate(sig) as FnT;
+      argTys.forEach((t, i) => {
+        const p = inst.params[i];
+        if (p && !p.variadic) this.expect(t, p.ty, inner.args[i]!.span, `argument \`${p.name}\``);
+      });
+      return inst.ret;
+    }
+
+    if (inner.kind === "Ident") {
+      const sig = this.foreignFns.get(`${e.lang} ${inner.name}`);
+      if (sig) return sig;
+      if (this.foreignTypes.has(`${e.lang} ${inner.name}`)) return cty(e.lang, inner.name);
+      if (e.lang === "py") return cty("py", "object");
+      return any(`${e.lang} symbol \`${inner.name}\``);
+    }
+
+    if (inner.kind === "MemberExpr") return e.lang === "py" ? cty("py", "object") : any(`${e.lang} member`);
+    return e.lang === "py" ? cty("py", "object") : any(`${e.lang} interop`);
   }
 
   private inferBinary(e: A.BinaryExpr, scope: Scope): Ty {
@@ -1043,6 +1118,20 @@ function isEmptyContract(b: A.Block): boolean {
   if (b.stmts.length !== 1) return false;
   const only = b.stmts[0]!;
   return only.kind === "GiveStmt" && (!only.value || only.value.kind === "NothingLit");
+}
+
+function memberPath(e: A.MemberExpr): string {
+  const parts = [e.name];
+  let cur: A.Expr = e.obj;
+  while (cur.kind === "MemberExpr") { parts.unshift(cur.name); cur = cur.obj; }
+  if (cur.kind === "Ident") parts.unshift(cur.name);
+  return parts.join(".");
+}
+
+function lastSegment(path: string): string {
+  const p = path.replace(/\.(h|hpp|hxx)$/, "");
+  const parts = p.split(/[./\\]/);
+  return parts[parts.length - 1] || p;
 }
 
 function patName(p: A.Pattern): string {

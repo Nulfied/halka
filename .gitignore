@@ -22,3 +22,6 @@ bench/*.c
 !bench/fib.c
 !bench/loop.c
 !bench/mandel.c
+examples/ffi/*.exe
+examples/ffi/*.c
+examples/ffi/*.obj

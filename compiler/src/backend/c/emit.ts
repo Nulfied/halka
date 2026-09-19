@@ -15,19 +15,26 @@
 
 import type * as A from "../../parser/ast.ts";
 import { DiagnosticBag, type Span } from "../../util/diagnostics.ts";
-import type { TypeMap } from "../../sema/infer.ts";
-import { type Ty, prune, show } from "../../sema/types.ts";
+import type { TypeMap, ForeignImport } from "../../sema/infer.ts";
+import { type Ty, prune, show, C_SCALARS } from "../../sema/types.ts";
+import { PY_RUNTIME, pyConverter, pyLifter } from "./pyruntime.ts";
 
 export interface EmitOptions {
   /** Release builds drop overflow and bounds checks the optimiser proved safe. */
   release?: boolean;
   /** Source file name, used in panic messages. */
   file: string;
+  /** `import c "..."` / `import py "..."` collected by inference (#35-#37). */
+  foreignImports?: ForeignImport[];
 }
 
 export interface EmitResult {
   c: string;
   diags: DiagnosticBag;
+  /** Libraries the program asked to link against, via `extern: link: "..."`. */
+  links: string[];
+  /** True when the program embeds CPython and needs its headers and import lib. */
+  needsPython: boolean;
 }
 
 interface StructDef { name: string; fields: { name: string; ty: Ty }[] }
@@ -57,6 +64,15 @@ export class CEmitter {
   /** Locals in the current function that own a heap value and do not escape. */
   private owned: { name: string; ty: Ty }[] = [];
   private inMain = false;
+  private includes: string[] = [];
+  private links: string[] = [];
+  private needsPython = false;
+  /** `c struct Point:` — referenced as `struct Point`, never redefined by us. */
+  private foreignStructs = new Set<string>();
+  /** `import py "numpy"` -> the static holding the imported module. */
+  private pyModules = new Map<string, string>();
+  /** `from py "math" import sqrt` -> the static holding that attribute. */
+  private pyNames = new Map<string, { mod: string; attr: string; slot: string }>();
 
   constructor(types: TypeMap, opts: EmitOptions) {
     this.types = types;
@@ -71,10 +87,25 @@ export class CEmitter {
     const top = mod.stmts.filter((s) => !DECL_KINDS.has(s.kind));
 
     for (const s of structs) this.declareStruct(s);
+    this.collectForeign(mod);
     for (const f of fns) this.fnRet.set(f.name, this.tyOf(f) ? retOf(this.tyOf(f)!) : { k: "any" });
 
     // Forward declarations so order does not matter.
     for (const f of fns) this.decls.push(this.signature(f) + ";");
+
+    // A foreign declaration with an explicit return type also emits a C
+    // prototype, so a symbol without a header can still be called (#35).
+    for (const s of mod.stmts) {
+      if (s.kind !== "FnDecl" || s.foreign !== "c" || !s.retType) continue;
+      const sig = this.types.get(s);
+      if (!sig) continue; // never guess a prototype — a wrong one is worse than none
+      const ret = this.cty(retOf(sig), "return", s.span);
+      const ps = s.params.map((pp, i) => {
+        if (pp.name === "...") return "...";
+        return this.cty(paramOf(sig, i), `parameter \`${pp.name}\``, pp.span);
+      });
+      this.decls.push(`extern ${ret} ${s.name}(${ps.length ? ps.join(", ") : "void"});`);
+    }
 
     for (const f of fns) this.emitFunction(f);
 
@@ -94,15 +125,51 @@ export class CEmitter {
     this.inMain = false;
     this.out.push("}");
 
-    return { c: this.assemble(), diags: this.diags };
+    return { c: this.assemble(), diags: this.diags, links: this.links, needsPython: this.needsPython };
+  }
+
+  /** Turn `import c "stdio.h"` into an include, and `extern: link:` into -l flags. */
+  private collectForeign(mod: A.Module): void {
+    for (const imp of this.opts.foreignImports ?? []) {
+      if (imp.lang === "py") {
+        this.needsPython = true;
+        const path = imp.path.replace(/^"|"$/g, "");
+        if (!this.pyModules.has(path)) this.pyModules.set(path, `hk_pymod${this.pyModules.size}`);
+        const modSlot = this.pyModules.get(path)!;
+        for (const n of imp.names) {
+          if (!this.pyNames.has(n)) this.pyNames.set(n, { mod: modSlot, attr: n, slot: `hk_pyfn${this.pyNames.size}` });
+        }
+        continue;
+      }
+      const path = imp.path.replace(/^"|"$/g, "");
+      const angled = !path.startsWith(".") && !path.includes("/") && !path.includes("\\");
+      const inc = angled ? `#include <${path}>` : `#include "${path}"`;
+      // string.h and math.h are already pulled in by the preamble.
+      if (BUILTIN_INCLUDES.has(path)) continue;
+      if (!this.includes.includes(inc)) this.includes.push(inc);
+    }
+    const walk = (stmts: A.Stmt[]): void => {
+      for (const s of stmts) {
+        if (s.kind === "StructDecl" && s.foreign) this.foreignStructs.add(s.name);
+        else if (s.kind === "ExternDecl" && s.abi) {
+          for (const key of ["link", "links", "library"]) {
+            const v = s.abi[key];
+            if (v) for (const lib of v.split(/[,\s]+/).filter(Boolean)) if (!this.links.includes(lib)) this.links.push(lib);
+          }
+        } else if (s.kind === "GenerateDecl") walk(s.body.stmts);
+      }
+    };
+    walk(mod.stmts);
   }
 
   private assemble(): string {
     const head = [
       `/* Generated by the Halka compiler from ${this.opts.file}. Do not edit. */`,
+      ...(this.needsPython ? ["#define PY_SSIZE_T_CLEAN", "#include <Python.h>"] : []),
       `#include "halka.h"`,
       `#include <string.h>`,
       `#include <math.h>`,
+      ...(this.includes.length ? ["", "/* foreign headers (#35) */", ...this.includes] : []),
       "",
     ];
     const lits: string[] = [];
@@ -110,18 +177,34 @@ export class CEmitter {
       lits.push(`static hk_str *${name};`);
       void text;
     }
+    for (const slot of this.pyModules.values()) lits.push(`static PyObject *${slot};`);
+    for (const n of this.pyNames.values()) lits.push(`static PyObject *${n.slot};`);
     const init: string[] = [];
+    if (this.needsPython) {
+      init.push("static void hk_init_python(void) {");
+      init.push("  hk_py_start();");
+      for (const [path, slot] of this.pyModules) {
+        init.push(`  ${slot} = hk_py_import(${cString(path)}, ${cString(this.opts.file)}, 0);`);
+      }
+      for (const n of this.pyNames.values()) {
+        init.push(`  ${n.slot} = hk_py_attr(${n.mod}, ${cString(n.attr)}, ${cString(this.opts.file)}, 0);`);
+      }
+      init.push("}");
+      init.push("");
+    }
     if (this.strLits.size) {
       init.push("static void hk_init_literals(void) {");
       for (const [text, name] of this.strLits) init.push(`  ${name} = hk_str_lit(${cString(text)});`);
       init.push("}");
       init.push("");
     }
-    const body = this.out.join("\n").replace(
-      "  hk_init(argc, argv);",
-      this.strLits.size ? "  hk_init(argc, argv);\n  hk_init_literals();" : "  hk_init(argc, argv);",
-    );
-    return [...head, ...this.structDecls(), ...lits, "", ...this.decls, "", ...this.aux, ...init, body, ""].join("\n");
+    const bootstrap = ["  hk_init(argc, argv);"];
+    if (this.strLits.size) bootstrap.push("  hk_init_literals();");
+    if (this.needsPython) bootstrap.push("  hk_init_python();");
+    let body = this.out.join("\n").replace("  hk_init(argc, argv);", bootstrap.join("\n"));
+    if (this.needsPython) body = body.split("  hk_shutdown();").join("  hk_py_stop();\n  hk_shutdown();");
+    const pyrt = this.needsPython ? [PY_RUNTIME] : [];
+    return [...head, ...this.structDecls(), ...lits, "", ...this.decls, "", ...pyrt, ...this.aux, ...init, body, ""].join("\n");
   }
 
   private structDecls(): string[] {
@@ -172,7 +255,12 @@ export class CEmitter {
       case "list": case "array": return "hk_list *";
       case "named":
         if (this.structs.has(p.name)) return mangleType(p.name);
+        if (this.foreignStructs.has(p.name)) return `struct ${p.name}`;
         break;
+      case "cty":
+        if (p.lang === "py") return "PyObject *";
+        if (this.foreignStructs.has(p.name)) return `struct ${p.name}`;
+        return p.name;
       case "mutex": return "hk_mutex *";
       case "atomic": return "volatile hk_int";
       case "range": return "hk_int";
@@ -325,8 +413,13 @@ export class CEmitter {
 
       case "ExprStmt": {
         const t = this.tyOf(s.expr);
+        const p = t ? prune(t) : undefined;
         const e = this.expr(s.expr);
-        this.line(this.cty(t, "value", s.span) === "void" ? `${e};` : `(void)(${e});`);
+        const isVoid = p?.k === "prim" && (p.name === "nothing" || p.name === "null");
+        const isUnknown = !p || p.k === "any" || p.k === "var";
+        // `(void)` discards the result; a foreign call for its side effect is
+        // fine even when we cannot name its type.
+        this.line(isVoid ? `${e};` : isUnknown ? `(void)(${e});` : `(void)(${e});`);
         return;
       }
 
@@ -585,6 +678,8 @@ export class CEmitter {
       case "CompileExpr": return this.expr(e.expr);
       case "DeviceExpr": return this.expr(e.expr);
 
+      case "ForeignExpr": return this.foreignExpr(e);
+
       case "IsExpr":
         if (e.test === "null") return `((${this.expr(e.expr)}) == NULL)`;
         this.err("E0708", `the native backend cannot test \`is ${e.test}\` yet`, e.span);
@@ -595,6 +690,130 @@ export class CEmitter {
           "run it with `halka run` while the backend catches up");
         return "0";
     }
+  }
+
+  /** `c malloc(100)`, `c Point`, `py numpy.array(...)` (#35-#37). */
+  private foreignExpr(e: A.ForeignExpr): string {
+    if (e.lang === "cpp") {
+      this.err("E0716", "C++ interop needs the cpp shim, which is not built yet", e.span,
+        "use the C boundary (`c ...`) for now");
+      return "0";
+    }
+    if (e.lang === "py") return this.pyExpr(e);
+
+    const inner = e.expr;
+    if (inner.kind === "CallExpr") {
+      const name = inner.callee.kind === "Ident" ? inner.callee.name
+        : inner.callee.kind === "MemberExpr" ? this.expr(inner.callee)
+        : null;
+      if (!name) { this.err("E0717", "a `c` call must name a function", e.span); return "0"; }
+      const args = inner.args
+        .filter((a) => a.value.kind !== "EllipsisExpr")
+        .map((a) => this.toC(a.value));
+      return `${name}(${args.join(", ")})`;
+    }
+    if (inner.kind === "Ident") return inner.name;
+    if (inner.kind === "MemberExpr") return this.expr(inner);
+    this.err("E0717", "this is not something the `c` boundary can express", e.span);
+    return "0";
+  }
+
+  /** `py numpy.array(...)`, `py math.sqrt(25)`, `py mod.attr` (#37). */
+  private pyExpr(e: A.ForeignExpr): string {
+    const inner = e.expr;
+
+    if (inner.kind === "CallExpr") {
+      const args = inner.args
+        .filter((a) => a.value.kind !== "EllipsisExpr")
+        .map((a) => this.toPy(a.value));
+      const argv = args.length ? `(PyObject *[]){ ${args.join(", ")} }` : "NULL";
+
+      // `py a.b.c(...)` — resolve the receiver, then call the final attribute
+      // as a method, so attribute chains of any depth work.
+      if (inner.callee.kind === "MemberExpr") {
+        const recv = this.pyResolve(inner.callee.obj, e.span);
+        if (recv) {
+          return `hk_py_call_method(${recv}, ${cString(inner.callee.name)}, ${argv}, ${args.length}, ${this.loc(e.span)})`;
+        }
+      }
+      const fn = this.pyResolve(inner.callee, e.span);
+      if (fn) {
+        const what = inner.callee.kind === "Ident" ? cString(inner.callee.name) : '"call"';
+        return `hk_py_call(${fn}, ${argv}, ${args.length}, ${what}, ${this.loc(e.span)})`;
+      }
+      this.err("E0718", "this python callee cannot be resolved", e.span,
+        "call a module function (`py math.sqrt(x)`) or an attribute of one");
+      return "Py_None";
+    }
+
+    const resolved = this.pyResolve(inner, e.span);
+    if (resolved) return resolved;
+    this.err("E0718", "this is not something the `py` boundary can express yet", e.span,
+      "call a module function (`py math.sqrt(x)`) or read an attribute");
+    return "Py_None";
+  }
+
+  /** C for any Python-rooted expression: a module, a bound name, or `a.b.c`. */
+  private pyResolve(e: A.Expr, span: Span): string | null {
+    if (e.kind === "Ident") {
+      const bound = this.pyNames.get(e.name);
+      if (bound) return bound.slot;
+      const modSlot = this.pyModuleSlot(e.name);
+      if (modSlot) return modSlot;
+      // A local already holding a Python value.
+      const t = this.tyOf(e);
+      const p = t ? prune(t) : undefined;
+      if (p?.k === "cty" && p.lang === "py") return mangle(e.name);
+      return null;
+    }
+    if (e.kind === "MemberExpr") {
+      const obj = this.pyResolve(e.obj, span);
+      if (!obj) return null;
+      return `hk_py_attr(${obj}, ${cString(e.name)}, ${this.loc(span)})`;
+    }
+    if (e.kind === "ForeignExpr" && e.lang === "py") return this.pyExpr(e);
+    const t = this.tyOf(e);
+    const p = t ? prune(t) : undefined;
+    if (p?.k === "cty" && p.lang === "py") return this.expr(e);
+    return null;
+  }
+
+  private pyModuleSlot(name: string): string | null {
+    for (const [path, slot] of this.pyModules) {
+      const base = path.split(/[./]/).pop();
+      if (path === name || base === name) return slot;
+    }
+    return null;
+  }
+
+  /** Lift a Halka value into a Python object (implicit, #37). */
+  private toPy(e: A.Expr): string {
+    const t = this.tyOf(e);
+    const p = t ? prune(t) : undefined;
+    if (p?.k === "cty" && p.lang === "py") return this.expr(e);
+    const ct = this.cty(t, "python argument", e.span);
+    if (ct === "hk_list *") {
+      const elem = this.cty(this.elemOf(t), "element", e.span);
+      if (elem === "hk_int") return `hk_py_from_list_int(${this.expr(e)})`;
+      if (elem === "hk_float") return `hk_py_from_list_float(${this.expr(e)})`;
+    }
+    const lift = pyLifter(ct);
+    if (!lift) {
+      this.err("E0719", `the py boundary cannot yet pass ${show(p ?? ({ k: "any" } as Ty))}`, e.span,
+        "pass a number, string, bool, or a list of numbers");
+      return "Py_None";
+    }
+    return `${lift}(${this.expr(e)})`;
+  }
+
+  /** Convert a Halka value to its C representation at a boundary (#35). */
+  private toC(e: A.Expr): string {
+    const t = this.tyOf(e);
+    const p = t ? prune(t) : undefined;
+    // A Halka string is length-prefixed but NUL-terminated, so `.data` is a
+    // valid `const char *` with no copy.
+    if (p?.k === "prim" && p.name === "string") return `(${this.expr(e)})->data`;
+    return this.expr(e);
   }
 
   private binary(e: A.BinaryExpr): string {
@@ -661,6 +880,13 @@ export class CEmitter {
   private call(e: A.CallExpr): string {
     if (e.callee.kind === "Ident") {
       const n = e.callee.name;
+      // `from py "math" import sqrt` then `sqrt(2.0)` (#37).
+      const pyBound = this.pyNames.get(n);
+      if (pyBound) {
+        const pargs = e.args.filter((a) => a.value.kind !== "EllipsisExpr").map((a) => this.toPy(a.value));
+        const argv = pargs.length ? `(PyObject *[]){ ${pargs.join(", ")} }` : "NULL";
+        return `hk_py_call(${pyBound.slot}, ${argv}, ${pargs.length}, ${cString(n)}, ${this.loc(e.span)})`;
+      }
       const args = e.args.map((a) => this.expr(a.value));
 
       // Prelude functions with a direct C equivalent.
@@ -766,6 +992,26 @@ export class CEmitter {
     }
     const target = this.cty(this.tyOf(e), "conversion target", e.span);
     const src = this.tyOf(e.expr);
+    const sp = src ? prune(src) : undefined;
+
+    // A Python value crossing back into Halka is an explicit conversion (#15, #37).
+    if (sp?.k === "cty" && sp.lang === "py") {
+      if (target === "hk_list *") {
+        const elem = this.cty(this.elemOf(this.tyOf(e)), "element", e.span);
+        if (elem === "hk_int") return `hk_py_to_list_int(${this.expr(e.expr)}, ${this.loc(e.span)})`;
+        if (elem === "hk_float") return `hk_py_to_list_float(${this.expr(e.expr)}, ${this.loc(e.span)})`;
+      }
+      const conv = pyConverter(target);
+      if (!conv) {
+        this.err("E0720", `a python value cannot be converted to ${show(prune(this.tyOf(e) ?? ({ k: "any" } as Ty)))} yet`, e.span,
+          "convert to int, float, bool, string, list(int) or list(float)");
+        return "0";
+      }
+      return target === "hk_bool"
+        ? `${conv}(${this.expr(e.expr)})`
+        : `${conv}(${this.expr(e.expr)}, ${this.loc(e.span)})`;
+    }
+
     if (target === "hk_str *") return this.asStr(e.expr);
     if (this.isStr(src)) {
       this.err("E0713", "converting a string with `as` is not supported by the native backend yet", e.span,
@@ -780,6 +1026,21 @@ export class CEmitter {
     const t = this.tyOf(e);
     const p = t ? prune(t) : undefined;
     if (e.kind === "StrLit") return this.strLit(e);
+
+    // A list prints as `[a, b, c]`, matching `inspect` (#53).
+    if (p?.k === "list" || p?.k === "array") {
+      const elem = this.cty(this.elemOf(t), "element", e.span);
+      const kind = elem === "hk_float" ? 1 : elem === "hk_bool" ? 2 : elem === "hk_char" ? 3 : elem === "hk_str *" ? 4 : 0;
+      return `hk_str_from_list(${this.expr(e)}, ${kind})`;
+    }
+
+    // A C scalar prints as its Halka counterpart (#35).
+    if (p?.k === "cty" && p.lang !== "py") {
+      const mapped = C_SCALARS[p.name];
+      if (mapped === "int") return `hk_str_from_int((hk_int)(${this.expr(e)}))`;
+      if (mapped === "float") return `hk_str_from_float((hk_float)(${this.expr(e)}))`;
+      if (mapped === "bool") return `hk_str_from_bool((hk_bool)(${this.expr(e)}))`;
+    }
     if (p?.k === "prim") {
       switch (p.name) {
         case "string": return this.expr(e);
@@ -789,6 +1050,11 @@ export class CEmitter {
         case "char": return `hk_str_from_char(${this.expr(e)})`;
         default: break;
       }
+    }
+    if (e.kind === "ForeignExpr" || (p?.k === "any" && /\b(c|cpp|py)\b/.test(p.why ?? ""))) {
+      this.err("E0714", "this foreign value has no declared type, so it cannot be printed", e.span,
+        "declare it (`c cos(x: c double): c double`) or convert it (`... as float`)");
+      return `hk_str_lit("")`;
     }
     this.err("E0714", `the native backend cannot print ${show(p ?? ({ k: "any" } as Ty))} yet`, e.span);
     return `hk_str_lit("")`;
@@ -824,6 +1090,9 @@ export class CEmitter {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+/** Headers the generated preamble already includes. */
+const BUILTIN_INCLUDES = new Set(["string.h", "math.h"]);
 
 const DECL_KINDS = new Set([
   "FnDecl", "StructDecl", "EnumDecl", "TraitDecl", "ImplDecl", "TypeAliasDecl",

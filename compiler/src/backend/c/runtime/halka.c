@@ -192,6 +192,34 @@ hk_int hk_list_check(hk_list *l, hk_int i, const char *file, hk_int line) {
   return j;
 }
 
+/* A list prints the way `inspect` prints it: [1, 2, 3] (#53). */
+hk_str *hk_str_from_list(struct hk_list *l, int kind) {
+  hk_str *acc = hk_str_new("[", 1);
+  for (hk_int i = 0; i < l->len; i++) {
+    if (i) {
+      hk_str *sep = hk_str_new(", ", 2);
+      hk_str *t = hk_str_cat(acc, sep);
+      hk_str_release(acc); hk_str_release(sep);
+      acc = t;
+    }
+    hk_str *piece;
+    switch (kind) {
+      case 1:  piece = hk_str_from_float(HK_AT(l, hk_float, i)); break;
+      case 2:  piece = hk_str_from_bool(HK_AT(l, hk_bool, i)); break;
+      case 3:  piece = hk_str_from_char(HK_AT(l, hk_char, i)); break;
+      case 4:  piece = hk_str_retain(HK_AT(l, hk_str *, i)); break;
+      default: piece = hk_str_from_int(HK_AT(l, hk_int, i)); break;
+    }
+    hk_str *t = hk_str_cat(acc, piece);
+    hk_str_release(acc); hk_str_release(piece);
+    acc = t;
+  }
+  hk_str *close = hk_str_new("]", 1);
+  hk_str *out = hk_str_cat(acc, close);
+  hk_str_release(acc); hk_str_release(close);
+  return out;
+}
+
 /* ---- output ------------------------------------------------------------- */
 
 void hk_say(hk_str *s) { fwrite(s->data, 1, (size_t)s->len, stdout); fputc('\n', stdout); }

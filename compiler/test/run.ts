@@ -6,6 +6,7 @@
 //   run      — test/cases/*.hk must print exactly test/cases/*.out
 //   fmt      — formatting is idempotent and never changes what a program prints
 //   native   — R23: the compiled binary prints exactly what the interpreter does
+//   ffi      — #35/#37: C and Python interop, built and run for real
 
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
@@ -18,7 +19,7 @@ import { format } from "../src/fmt/format.ts";
 import { Interpreter, HalkaRuntimeError } from "../src/interp/interpreter.ts";
 import { renderAll } from "../src/util/diagnostics.ts";
 import { emitC } from "../src/backend/c/emit.ts";
-import { buildNative, findToolchain } from "../src/backend/c/build.ts";
+import { buildNative, findToolchain, findPython } from "../src/backend/c/build.ts";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 
@@ -281,12 +282,73 @@ ${r.stdout ?? ""}${r.stderr ?? ""}`);
   }
 }
 
+/**
+ * #35 / #37 — the FFI is only meaningful if it really calls the other language,
+ * so these build a binary and run it. A case declares its expected output in a
+ * `.out` file next to it. Skipped when the toolchain is not present.
+ */
+function suiteFfi(): void {
+  const dir = join(HERE, "ffi");
+  if (!existsSync(dir)) return;
+  const tc = findToolchain();
+  if (!tc) return;
+  const py = findPython();
+
+  for (const f of readdirSync(dir).filter((x) => x.endsWith(".hk")).sort()) {
+    const name = basename(f, ".hk");
+    const src = readFileSync(join(dir, f), "utf8");
+    const needsPy = /\bimport\s+py\b|\bpy\s+\w/.test(src);
+    if (needsPy && !py) {
+      process.stdout.write(`note: skipping ffi/${name} — no CPython development files\n`);
+      continue;
+    }
+
+    const { module, diags } = parse(src, f);
+    const sema = check(module);
+    if (diags.hasErrors || sema.hasErrors) {
+      bad("ffi", name, renderAll([...diags.items, ...sema.items].slice(0, 2), { source: src }));
+      continue;
+    }
+    const inferred = inferTypes(module);
+    if (inferred.diags.hasErrors) {
+      bad("ffi", name, renderAll(inferred.diags.items.slice(0, 2), { source: src }));
+      continue;
+    }
+    const { c, diags: emitDiags, links, needsPython } = emitC(module, inferred.types, {
+      release: true, file: f, foreignImports: inferred.foreignImports,
+    });
+    if (emitDiags.hasErrors) {
+      bad("ffi", name, renderAll(emitDiags.items.slice(0, 2), { source: src }));
+      continue;
+    }
+
+    const exe = join(tmpdir(), `halka-ffi-${name}-${process.pid}${process.platform === "win32" ? ".exe" : ""}`);
+    const outcome = buildNative(c, f, {
+      out: exe, release: true, keepC: false, emitOnly: false, quiet: true, libs: links, needsPython,
+    });
+    if (!outcome.ok) { bad("ffi", name, outcome.message ?? "build failed"); continue; }
+
+    const r = spawnSync(exe, [], { encoding: "utf8" });
+    if (r.status !== 0) {
+      bad("ffi", name, `the binary exited with ${r.status}\n${r.stdout ?? ""}${r.stderr ?? ""}`);
+      continue;
+    }
+    const got = (r.stdout ?? "").split("\r\n").join("\n").replace(/\s+$/, "");
+    const expectFile = join(dir, name + ".out");
+    if (!existsSync(expectFile)) { bad("ffi", name, `missing expected output: ffi/${name}.out`); continue; }
+    const want = readFileSync(expectFile, "utf8").split("\r\n").join("\n").replace(/\s+$/, "");
+    if (got === want) ok("ffi", name);
+    else bad("ffi", name, diffText(want, got));
+  }
+}
+
 const t0 = Date.now();
 suiteSpec();
 suiteReject();
 suiteRun();
 suiteFmt();
 suiteNative();
+suiteFfi();
 const ms = Date.now() - t0;
 
 if (failures.length) {

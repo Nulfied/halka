@@ -1,0 +1,14 @@
+# #35 — calling C, with the Halka side of each symbol declared.
+import c math.h
+import c stdio.h
+
+c hypot(x: c double, y: c double): c double
+
+c fabs(x: c double): c double
+
+c strlen(s: c char): c int
+
+say "hypot {c hypot(3.0, 4.0)}"
+say "fabs {c fabs(-2.5)}"
+say "cos0 {c cos(0.0) as float}"
+c printf("from C: %d\n", 42)

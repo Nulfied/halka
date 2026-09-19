@@ -17,8 +17,50 @@ export interface Toolchain {
   /** Human-readable name for diagnostics. */
   name: string;
   /** Compile+link: returns the command and args for a given source set. */
-  compile(sources: string[], out: string, opts: { release: boolean; includeDirs: string[] }): { cmd: string; args: string[]; env?: NodeJS.ProcessEnv };
+  compile(sources: string[], out: string, opts: CompileOpts): { cmd: string; args: string[]; env?: NodeJS.ProcessEnv };
 }
+
+export interface CompileOpts {
+  release: boolean;
+  includeDirs: string[];
+  /** Extra libraries, from `extern: link: "..."` (#38). */
+  libs?: string[];
+  /** CPython embedding, when the program uses `py` (#37). */
+  python?: PythonConfig | null;
+}
+
+export interface PythonConfig {
+  include: string;
+  /** sys.base_prefix, baked in so the embedded interpreter finds its stdlib. */
+  prefix: string;
+  /** Windows: the .lib to link. POSIX: the -L directory. */
+  libDir: string;
+  libName: string;
+  version: string;
+}
+
+/** Locate the CPython development files needed to embed the interpreter. */
+export function findPython(): PythonConfig | null {
+  for (const exe of [process.env["HALKA_PYTHON"], "python", "python3", "py"].filter(Boolean) as string[]) {
+    try {
+      const out = execFileSync(exe, ["-c", PY_PROBE], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      const cfg = JSON.parse(out.trim()) as PythonConfig & { ok: boolean };
+      if (cfg && cfg.ok && existsSync(join(cfg.include, "Python.h"))) return cfg;
+    } catch { /* try the next candidate */ }
+  }
+  return null;
+}
+
+const PY_PROBE = [
+  "import json,os,sys,sysconfig",
+  "inc=sysconfig.get_paths()['include']",
+  "v='%d.%d'%sys.version_info[:2]",
+  "if os.name=='nt':",
+  "    d=os.path.join(sys.base_prefix,'libs'); n='python%d%d'%sys.version_info[:2]",
+  "else:",
+  "    d=sysconfig.get_config_var('LIBDIR') or ''; n='python'+v+(sysconfig.get_config_var('ABIFLAGS') or '')",
+  "print(json.dumps({'ok':os.path.isdir(inc),'include':inc,'libDir':d,'libName':n,'version':v,'prefix':sys.base_prefix.replace(chr(92),'/')}))",
+].join("\n");
 
 // ---------------------------------------------------------------------------
 // toolchain discovery
@@ -88,14 +130,18 @@ function findMsvc(): Toolchain | null {
     kind: "msvc",
     name: `MSVC (${basename(installRoot)})`,
     compile(sources, out, opts) {
+      const py = opts.python;
       const args = [
         "/nologo", "/std:c11", "/W3",
         opts.release ? "/O2" : "/Od", opts.release ? "/DNDEBUG" : "/Zi",
         ...opts.includeDirs.map((d) => `/I${d}`),
+        ...(py ? [`/I${py.include}`, `/DHK_PYTHONHOME=\"${py.prefix}\"`] : []),
         ...sources,
         `/Fe:${out}`,
         `/Fo:${join(dirname(out), "")}\\`,
         "/link", "/INCREMENTAL:NO",
+        ...(py ? [`/LIBPATH:${py.libDir}`, `${py.libName}.lib`] : []),
+        ...(opts.libs ?? []).map((l) => (l.endsWith(".lib") ? l : `${l}.lib`)),
       ];
       return { cmd: "cl.exe", args, env: env ?? undefined };
     },
@@ -111,11 +157,15 @@ function findUnixCc(): Toolchain | null {
       kind: "unix",
       name: isZig ? "zig cc" : cand,
       compile(sources, out, opts) {
+        const py = opts.python;
         const flags = [
           "-std=c99", "-Wall",
           opts.release ? "-O2" : "-O0", opts.release ? "-DNDEBUG" : "-g",
           ...opts.includeDirs.map((d) => `-I${d}`),
+          ...(py ? [`-I${py.include}`, `-DHK_PYTHONHOME="${py.prefix}"`] : []),
           ...sources, "-o", out, "-lm",
+          ...(py ? [`-L${py.libDir}`, `-l${py.libName}`] : []),
+          ...(opts.libs ?? []).map((l) => (l.startsWith("-") ? l : `-l${l}`)),
         ];
         if (process.platform !== "win32") flags.push("-pthread");
         return isZig ? { cmd: path, args: ["cc", ...flags] } : { cmd: path, args: flags };
@@ -146,6 +196,10 @@ export interface BuildOptions {
   /** Output binary path. */
   out: string;
   release: boolean;
+  /** Libraries requested by `extern: link: "..."`. */
+  libs?: string[];
+  /** True when the program uses `py` and must embed CPython (#37). */
+  needsPython?: boolean;
   /** Keep the generated C next to the binary. */
   keepC: boolean;
   /** Print the C instead of compiling it. */
@@ -159,6 +213,9 @@ export interface BuildOutcome {
   cFile?: string;
   message?: string;
   toolchain?: string;
+  python?: PythonConfig | null;
+  /** Warnings from the C compiler, which usually mean an FFI declaration is wrong. */
+  warnings?: string[];
 }
 
 export function buildNative(cSource: string, sourceName: string, opts: BuildOptions): BuildOutcome {
@@ -192,8 +249,33 @@ export function buildNative(cSource: string, sourceName: string, opts: BuildOpti
   copyFileSync(join(RUNTIME_DIR, "halka.c"), rtC);
   copyFileSync(join(RUNTIME_DIR, "halka.h"), rtH);
 
+  let python: PythonConfig | null = null;
+  if (opts.needsPython) {
+    python = findPython();
+    if (!python) {
+      return {
+        ok: false,
+        cFile,
+        toolchain: tc.name,
+        message:
+          "this program uses `py` interop, but CPython's development headers were not found.\n" +
+          "  Install them, then build again:\n" +
+          "    Debian/Ubuntu  apt install python3-dev\n" +
+          "    Fedora         dnf install python3-devel\n" +
+          "    macOS          the python.org installer includes them\n" +
+          "    Windows        the python.org installer includes them\n" +
+          "  Set HALKA_PYTHON to pick a specific interpreter.",
+      };
+    }
+  }
+
   const outPath = resolve(opts.out);
-  const { cmd, args, env } = tc.compile([cFile, rtC], outPath, { release: opts.release, includeDirs: [workDir] });
+  const { cmd, args, env } = tc.compile([cFile, rtC], outPath, {
+    release: opts.release,
+    includeDirs: [workDir],
+    libs: opts.libs,
+    python,
+  });
 
   const r = spawnSync(cmd, args, { cwd: workDir, encoding: "utf8", env: env ?? process.env });
   if (r.error) {
@@ -208,10 +290,31 @@ export function buildNative(cSource: string, sourceName: string, opts: BuildOpti
     };
   }
 
+  const warnings = collectWarnings((r.stdout ?? "") + (r.stderr ?? ""));
+
   if (!opts.keepC) {
     try { rmSync(workDir, { recursive: true, force: true }); } catch { /* best effort */ }
   }
-  return { ok: true, binary: outPath, cFile: opts.keepC ? cFile : undefined, toolchain: tc.name };
+  return {
+    ok: true,
+    binary: outPath,
+    cFile: opts.keepC ? cFile : undefined,
+    toolchain: tc.name,
+    python,
+    warnings,
+  };
+}
+
+/** C compiler warnings worth showing — an FFI mismatch surfaces here first. */
+function collectWarnings(output: string): string[] {
+  const out: string[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    if (!/\bwarning\b/i.test(line)) continue;
+    // Noise from the platform headers is not the program's problem.
+    if (/include[\\/].*\.h\(/i.test(line) && !/halka\.h/.test(line)) continue;
+    out.push(line.trim());
+  }
+  return [...new Set(out)];
 }
 
 function mkdtemp(): string {

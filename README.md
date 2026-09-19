@@ -221,7 +221,7 @@ made those languages hard to learn.
 | True multicore parallelism, no GIL | — | `parallel:` lowers to real OS threads (#32) |
 | Traits, generics, pattern matching | Rust/ML | `trait`, `f<T>(...)`, `match` with guards (#10, #16) |
 | Compile-time execution and macros | Zig/Lisp | `compile`, `macro`, `generate`, `reflect` (#39–#42) |
-| Direct C / C++ / Python interop | Zig/Cython | `c`, `cpp`, `py` boundary markers (#35–#37) |
+| Direct C and Python interop | Zig/Cython | `c` links C directly; `py` embeds CPython — [see the FFI](docs/ffi.md) (#35, #37) |
 | GPU and device targets as first-class | CUDA/Mojo | `kernel`, `launch`, `device` (#44) |
 | Capability-based security | Pony/Deno | `capability`, `requires`, `with capability` (#45) |
 
@@ -322,6 +322,9 @@ What works today:
   control flow, `defer`, and `parallel:` on real threads. Anything it cannot
   compile yet produces an `E07xx` diagnostic naming the expression, never a
   silently slow binary.
+- **C and Python interop** — `import c "math.h"` then `c hypot(3.0, 4.0)`;
+  `import py "numpy"` embeds CPython so NumPy stays available while the hot
+  loop compiles to native code on every core ([details](docs/ffi.md)).
 - **Tooling** — formatter, REPL, language server, VS Code extension,
   Tree-sitter grammar, package-free module resolution.
 
@@ -343,8 +346,8 @@ support, documentation, examples — is open.
 
 ```bash
 cd compiler
-npm test          # 98 tests: spec conformance, rejections, golden output,
-                  #            formatter, and native-vs-interpreter equivalence
+npm test          # 111 tests: spec conformance, rejections, golden output,
+                  #            formatter, native-vs-interpreter equivalence, C and Python FFI
 npm run typecheck
 ```
 

@@ -6,7 +6,7 @@ and it is updated in the same commit as the work it describes.
 
 **Legend** — ✅ done · 🟡 partial · ⬜ not started · 🔗 belongs in the ecosystem, not the core
 
-Counts today: **13 done · 12 partial · 26 not started · 4 ecosystem**
+Counts today: **14 done · 14 partial · 23 not started · 4 ecosystem**
 
 ---
 
@@ -25,9 +25,9 @@ Counts today: **13 done · 12 partial · 26 not started · 4 ecosystem**
 | 9 | Pattern matching & control flow | 🟡 | Complete in the interpreter (literals, variants, tuples, collections, guards, `else`). The backend does not compile `match` yet. |
 | 10 | Functions & program structure | ✅ | Functions, defaults, variadics, recursion, function values, modules. |
 | 11 | Compile-time programming | 🟡 | `compile`, `macro`, `generate`, `reflect`, `specialize` all parse and run, but in the interpreter they evaluate eagerly rather than in a separate compile-time tier. |
-| 12 | Native programming & ABI | 🟡 | The backend emits C99 and links native binaries. No ABI attribute control yet. |
-| 13 | **Foreign function interface** | ⬜ | `c` / `cpp` / `py` markers parse; calling them errors. **This is the biggest multiplier in the list.** |
-| 14 | Python interoperability | ⬜ | Nothing yet. Needs #13. |
+| 12 | Native programming & ABI | 🟡 | The backend emits C99, links native binaries, and links extra libraries via `extern: link:`. No calling-convention control or callbacks yet. |
+| 13 | **Foreign function interface** | ✅ | **C works.** `import c "header.h"` includes it, `c f(x)` calls it, declarations are type-checked, strings cross as `const char *` with no copy, `extern: link:` links libraries, and C compiler warnings are surfaced rather than hidden. C++ still errors (`E0716`). |
+| 14 | Python interoperability | ✅ | **Works.** The binary embeds CPython. Modules, attribute chains, `from py "m" import f`, lists both ways, GIL taken per call so `parallel:` keeps every core busy. Crossing back is explicit with `as` (#15). Measured against the same program in Python: 44x single-threaded, 153x on four threads. |
 | 15 | Runtime system | ✅ | `libhalka`: 564 lines of C99 — strings, lists, threads, mutexes, atomics, panics, timing. No dependencies. |
 
 ## Libraries
@@ -57,7 +57,7 @@ Counts today: **13 done · 12 partial · 26 not started · 4 ecosystem**
 | 25 | Language server / IntelliSense | ✅ | LSP 3.17 over stdio, zero dependencies: diagnostics, hover, completion, go-to-definition, document symbols, rename, highlight, formatting. |
 | 26 | Code formatting | ✅ | Canonical, idempotent, comment-preserving, behaviour-preserving — all four properties are tested. |
 | 27 | Linting & static analysis | 🟡 | Name resolution, arity, locked-absence checks, naming conventions, type errors, match exhaustiveness. No unused-code detection, no ownership analysis. |
-| 28 | Testing ecosystem | ✅ | `halka test` for user projects; 109 internal tests across spec conformance, rejection, golden output, formatter, and native-vs-interpreter equivalence. |
+| 28 | Testing ecosystem | ✅ | `halka test` for user projects; 111 internal tests across spec conformance, rejection, golden output, formatter, native-vs-interpreter equivalence, and real C and Python FFI calls. |
 | 29 | Build system | 🟡 | `halka build` compiles one file to a binary. No multi-file project build, no incremental compilation, no cross-compilation yet. |
 | 30 | Package management | ⬜ | Module resolution over a search path only. No manifest resolution, no versions, no lockfile. **Second-biggest multiplier.** |
 | 31 | Package registry | ⬜ | Nothing. |
@@ -118,8 +118,8 @@ So the list is a correct and coherent **vision**. It is not a checklist.
 
 The 55 items are not independent. A handful unlock most of the rest:
 
-**#13 — the C FFI.** This is the big one. Almost everything in the "libraries
-and platforms" section already exists as a C library. With a working FFI:
+**#13 — the C FFI. ✅ Built.** Almost everything in the "libraries and
+platforms" section already exists as a C library, and now it is reachable:
 
 - #19 networking → bind the platform sockets API
 - #37 cryptography → bind libsodium (and *never* write our own)
@@ -131,7 +131,8 @@ and platforms" section already exists as a C library. With a working FFI:
 
 That is **seven ecosystem areas from one compiler feature**, and the generated
 code is already C, so the binding is a declaration rather than a marshalling
-layer.
+layer. Each of those rows is now a library someone can write, not a compiler
+change someone has to make first.
 
 **#30/#31 — package manager and registry.** These turn every 🔗 row from *our*
 work into *someone else's* work. A language without a package manager has to
@@ -154,7 +155,11 @@ people who are not us.
 
 The wedge does not need 55 areas. It needs a person with a slow Python training
 loop to be able to rewrite that loop in Halka **without giving up NumPy**, and
-have it be faster and use all their cores. That is: #13 FFI, #14 Python interop,
-#41 notebook, plus the ownership checker so the safety claim is real.
+have it be faster and use all their cores.
 
-Everything else is what the ecosystem grows into after that works.
+That now works — see [`examples/ffi/wedge.hk`](examples/ffi/wedge.hk) and
+[`docs/ffi.md`](docs/ffi.md). What remains of the wedge is #41, a Jupyter
+kernel, so trying it costs ten minutes; and the ownership checker, so the
+safety claim is a compiler guarantee rather than a design document.
+
+Everything else is what the ecosystem grows into after that.
