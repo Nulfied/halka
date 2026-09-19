@@ -48,6 +48,12 @@ export interface EmitOptions {
   enumVariants?: Map<string, Map<string, { fields: Ty[]; names: string[] }>>;
   /** Enum name -> type parameters. A generic enum gets a C type per use. */
   enumGenerics?: Map<string, string[]>;
+  /**
+   * Which parameters of each function take ownership of their argument
+   * (M2.2). A caller keeps ownership of everything else, so a freshly built
+   * argument it passes is still the caller's to release.
+   */
+  owningParams?: Map<string, boolean[]>;
 }
 
 export interface EmitResult {
@@ -725,6 +731,25 @@ export class CEmitter {
     this.stmtInner(s);
     for (const t of this.stmtTemps.slice().reverse()) this.releaseLocal(t);
     this.stmtTemps = saved;
+  }
+
+  /**
+   * Give the statement ownership of any argument the callee only borrows.
+   * A parameter borrows unless ownership analysis says the callee moves it
+   * (M2.2), so a list or string built for the call is still the caller's to
+   * free -- without this `f([1, 2, 3])` leaked the literal on every call.
+   * `owning` is absent for a prelude function, which borrows everything.
+   */
+  private holdArgs(e: A.CallExpr, args: string[], owning?: boolean[]): void {
+    e.args.forEach((a, i) => {
+      if (owning?.[i]) return; // the callee frees it
+      const k = a.value.kind;
+      if (k === "Ident" || k === "MemberExpr" || k === "IndexExpr") return; // borrowed from elsewhere
+      const at = this.tyOf(a.value);
+      const ac = at ? this.cty(at, "argument") : "";
+      if (ac === "hk_list *") args[i] = this.holdTemp(args[i]!, "list");
+      else if (ac === "hk_str *") args[i] = this.holdTemp(args[i]!, "str");
+    });
   }
 
   /** Bind a freshly built value so the statement can free it again. */
@@ -1426,6 +1451,7 @@ export class CEmitter {
           .map(({ f, a }) => `.as.${mangle(n)}.${mangle(f.name)} = ${a ?? zeroOf(this.cty(f.ty, f.name))}`);
         return `((${mangleType(inst.key)}){ .tag = ${variantTag(inst.key, n)}${payload.length ? ", " + payload.join(", ") : ""} })`;
       }
+      this.holdArgs(e, args, this.opts.owningParams?.get(n));
       return `${mangle(n)}(${args.join(", ")})`;
     }
 
@@ -1452,16 +1478,8 @@ export class CEmitter {
         }
         this.usePrelude(op.name);
         // A prelude function copies what it is given and retains anything
-        // it keeps, so a freshly built argument is still the caller's to
-        // release. Without this `lists.concat([1, 2], [3])` leaked both
-        // literals.
-        e.args.forEach((a, i) => {
-          if (a.value.kind === "Ident" || a.value.kind === "MemberExpr" || a.value.kind === "IndexExpr") return;
-          const at = this.tyOf(a.value);
-          const ac = at ? this.cty(at, "argument") : "";
-          if (ac === "hk_list *") args[i] = this.holdTemp(args[i]!, "list");
-          else if (ac === "hk_str *") args[i] = this.holdTemp(args[i]!, "str");
-        });
+        // it keeps, so every argument is borrowed.
+        this.holdArgs(e, args);
         // File operations are gated on a capability at run time (#45), and
         // a compiled program has to refuse on the same terms or the gate
         // would mean nothing once built.
@@ -1813,7 +1831,7 @@ export function emitOptionsFrom(
     enumVariants: Map<string, Map<string, { fields: Ty[]; names: string[] }>>;
     enumGenerics: Map<string, string[]>;
   },
-  o: { file: string; release: boolean; escapes?: EscapeInfo },
+  o: { file: string; release: boolean; escapes?: EscapeInfo; owningParams?: Map<string, boolean[]> },
 ): EmitOptions {
   return {
     release: o.release,
@@ -1823,6 +1841,7 @@ export function emitOptionsFrom(
     structFields: inferred.structFields,
     enumVariants: inferred.enumVariants,
     enumGenerics: inferred.enumGenerics,
+    owningParams: o.owningParams,
   };
 }
 

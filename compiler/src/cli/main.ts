@@ -308,7 +308,7 @@ function cmdBuild(args: string[]): void {
   const escapes = analyseEscapes(linked, inferred.types, inferred.structFields, owningParams, inferred.enumVariants);
 
   const { c, diags: emitDiags, links, needsPython } = emitC(linked, inferred.types,
-    emitOptionsFrom(inferred, { file: basename(file), release: flags.has("--release"), escapes }));
+    emitOptionsFrom(inferred, { file: basename(file), release: flags.has("--release"), escapes, owningParams }));
   if (emitDiags.hasErrors) {
     report(emitDiags.items, sources);
     process.stderr.write(NL + "the native backend is still growing; `halka run` executes the whole language today." + NL);

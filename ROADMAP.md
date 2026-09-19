@@ -73,6 +73,14 @@ inside an expression and never named. The runtime counts live heap objects, so
 the test suite asserts it — **every compiled program in the repo exits with
 zero live objects**, including the ones that embed CPython.
 
+That claim only became true for calls into user code once the emitter learned
+which parameters are owning. A parameter borrows unless the callee keeps its
+argument (M2.2), so a list or string built at the call site is the caller's to
+free — but the emitter had no access to the inference, so it freed such a value
+only when the callee was a prelude function. `total([1, 2, 3])` in a loop leaked
+every literal. Passing the inferred flags through to the backend closes it
+without a second analysis, and without freeing what an owning callee took.
+
 **Packages** (#29/#30/#31) shipped too: `halka.pkg` manifests, semver
 requirements in two forms, Minimal Version Selection, a hash-pinned
 `halka.lock`, a per-user cache and path dependencies, against any static

@@ -1,0 +1,39 @@
+# A parameter borrows by default (M2.2), so a value built at the call site
+# belongs to the caller's statement. The emitter used to free such a value
+# only when the callee was a prelude function, so every literal passed to a
+# *user* function leaked — and nothing tested the shape.
+import lists
+
+total(xs: list(int)): int,
+    let s: 0,
+    for v in xs,
+        s: s + v,
+    give s
+
+width(s: string): int,
+    give len(s)
+
+# This one moves its parameter into the list it gives back, so ownership
+# analysis marks it owning and the caller must not free the argument.
+keep(xs: list(int)): list(int),
+    give xs
+
+main(),
+    # Borrowed: the literal is the statement's to free.
+    say total([1, 2, 3]),
+    say width("hello"),
+
+    # Built in a loop, so a leak here would accumulate rather than hide.
+    let n: 0,
+    for i in 0..40,
+        n: n + total([i, i + 1]),
+        n: n + width("row {i}"),
+    say n,
+
+    # Nested calls: the inner list is the caller's too.
+    say total(lists.concat([1, 2], [3, 4])),
+
+    # Owning: `keep` takes the list over, so the caller frees nothing.
+    let k: keep([5, 6, 7]),
+    say total(k),
+    say len(k)

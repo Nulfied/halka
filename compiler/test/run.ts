@@ -49,6 +49,7 @@ function buildOpts(module: Parameters<typeof emitC>[0], inferred: ReturnType<typ
     file,
     release,
     escapes: analyseEscapes(module, inferred.types, inferred.structFields, own.owningParams, inferred.enumVariants),
+    owningParams: own.owningParams,
   });
 }
 const ROOT = join(HERE, "..", "..");
