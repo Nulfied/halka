@@ -193,7 +193,7 @@ function diffText(want: string, got: string): string {
 
 function suiteFmt(): void {
   const targets: { name: string; src: string }[] = [];
-  for (const dir of [join(ROOT, "examples"), join(HERE, "cases")]) {
+  for (const dir of [join(ROOT, "examples"), join(HERE, "cases"), join(HERE, "native")]) {
     if (!existsSync(dir)) continue;
     for (const f of readdirSync(dir).filter((x) => x.endsWith(".hk")).sort()) {
       targets.push({ name: f, src: readFileSync(join(dir, f), "utf8") });

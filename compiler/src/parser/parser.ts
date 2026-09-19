@@ -1474,12 +1474,12 @@ export class Parser {
       const operand = this.parseExpr(2); // binds looser than comparison
       return { kind: "UnaryExpr", span: this.sp(kw), op: "not", operand };
     }
-    return this.parseConversion();
+    return this.parseAdditive();
   }
 
-  /** Level 4: `as` / `to` (#15). */
+  /** Level 4: `as` / `to` (#15) — binds tighter than `*`, looser than unary. */
   private parseConversion(): A.Expr {
-    let e = this.parseAdditive();
+    let e = this.parseUnary();
     for (;;) {
       if (this.isKw("as")) {
         this.next();
@@ -1505,10 +1505,10 @@ export class Parser {
   }
 
   private parseMultiplicative(): A.Expr {
-    let lhs = this.parseUnary();
+    let lhs = this.parseConversion();
     while (this.is(T.Star) || this.is(T.Slash) || this.is(T.Percent)) {
       const op = this.next().text as A.BinaryOp;
-      const rhs = this.parseUnary();
+      const rhs = this.parseConversion();
       lhs = { kind: "BinaryExpr", span: spanOf(lhs.span, rhs.span), op, lhs, rhs };
     }
     return lhs;

@@ -1,0 +1,21 @@
+# R8 / #51 — the locked precedence table, exercised where it actually bites.
+let w: 900
+let x: 3
+let v: 3.9
+
+# `as` binds tighter than `*`, so this is 3.0 * (x as float) / (w as float).
+say 3.0 * x as float / w as float
+say 2 + 3 as float
+say v as int + 1
+
+# Arithmetic before comparison, comparison before `not`, `not` before `and`.
+say 2 + 3 * 4
+say (2 + 3) * 4
+say not 1 == 2
+say 1 + 1 == 2
+say 1 < 2 and 3 > 2
+say false or 1 < 2
+
+# Unary minus binds tighter than `*`.
+say -2 * 3
+say 10 - -2

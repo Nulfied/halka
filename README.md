@@ -175,7 +175,7 @@ compiler underneath. Best of 5, all three producing identical output.
 |---|---|---|---|---|---|
 | `fib` | recursive calls, `fib(35)` | **158 ms** | 157 ms | 9 660 ms | **1.01x** |
 | `loop` | integer arithmetic, 200M iterations | **452 ms** | 389 ms | 27 906 ms | **1.16x** |
-| `mandel` | floating point, 900×900×500 | **660 ms** | 702 ms | 40 423 ms | **0.94x** |
+| `mandel` | floating point, 900×900×500 | **660 ms** | 702 ms | 40 423 ms | **0.94–1.04x** |
 
 The `loop` gap is a correctness cost, not an inefficiency: Halka's `%` is
 floored, so `-7 % 3` is `2` and `div(a,b)*b + a%b == a` holds for every sign.

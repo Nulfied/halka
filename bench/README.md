@@ -28,7 +28,7 @@ Best of 5 runs, wall clock including process start.
 |---|---|---|---|---|---|---|
 | `fib` | recursive calls, `fib(35)` | **158 ms** | 157 ms | 9 660 ms | **1.01x** | 61x faster |
 | `loop` | integer arithmetic, 200M iterations | **452 ms** | 389 ms | 27 906 ms | **1.16x** | 62x faster |
-| `mandel` | floating point, 900×900×500 | **660 ms** | 702 ms | 40 423 ms | **0.94x** | 61x faster |
+| `mandel` | floating point, 900×900×500 | **660 ms** | 702 ms | 40 423 ms | **0.94–1.04x** | 61x faster |
 
 All three implementations produce identical output; the harness asserts it
 before printing any timing.
@@ -43,8 +43,10 @@ before printing any timing.
   measurement was stable. **Treat any sub-100 ms benchmark result, here or
   anywhere, as noise.**
 
-- **`mandel` at 0.94x** — Halka came out slightly *ahead* of the C. This is
-  within run-to-run variance; the right conclusion is parity, not superiority.
+- **`mandel` at 0.94–1.04x** — repeated runs put Halka on either side of the
+  hand-written C. The honest conclusion is **parity**, not superiority. A single
+  run showing 0.94x would be a flattering way to report a tie, so the range is
+  given instead. Expect roughly ±10% run-to-run variance on this machine.
 
 - **`loop` at 1.16x is a real, explainable gap, and it is a correctness cost,
   not an inefficiency.** Halka's `%` is *floored*: the sign of the result
