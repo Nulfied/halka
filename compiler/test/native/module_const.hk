@@ -1,0 +1,24 @@
+# A top-level `const` is a module-level binding, visible inside functions.
+# It used to belong to the block the top-level statements run in, so no
+# function could see one and `halka build` rejected the program outright.
+const limit: 10
+const label: "rows"
+const scale: 2.5
+
+double_limit(): int,
+    give limit * 2
+
+describe(): string,
+    give "{label} up to {limit}"
+
+scaled(n: int): float,
+    give n as float * scale
+
+main(),
+    say double_limit(),
+    say describe(),
+    say scaled(4),
+
+    # Still readable at the top level too.
+    say limit,
+    say label

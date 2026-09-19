@@ -5,12 +5,12 @@
 # the same computation written by hand in C and against NumPy, which is the
 # real competition here — NumPy's inner loop is already C, so "faster than
 # Python" is not the claim being tested. The claim is "as fast as C".
-#
-# The sizes are locals passed down rather than module constants, because
-# Halka has no module-level constants yet: a top-level `const` belongs to
-# the top-level block and is not in scope inside a function.
 
 import time
+
+const rows: 4096
+const feats: 512
+const classes: 32
 
 dot(x: list(float), w: list(float), xoff: int, woff: int, n: int): float,
     let acc: 0.0,
@@ -19,10 +19,6 @@ dot(x: list(float), w: list(float), xoff: int, woff: int, n: int): float,
     give acc
 
 main(),
-    let rows: 4096,
-    let feats: 512,
-    let classes: 32,
-
     # Deterministic inputs, so all three implementations compute the same
     # thing and the checksum can be compared across them.
     let w: [],

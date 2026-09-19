@@ -104,6 +104,13 @@ export class CEmitter {
   /** Values built inside the current statement, freed once it completes. */
   private stmtTemps: Owned[] = [];
   private inMain = false;
+  /**
+   * Top-level `const` names. They are module-level bindings, so they are
+   * emitted at file scope rather than as locals of `main` — otherwise a
+   * function cannot see them, which is how a compiled program came to
+   * reject a constant the interpreter accepted.
+   */
+  private moduleConsts = new Set<string>();
   private includes: string[] = [];
   private links: string[] = [];
   private needsPython = false;
@@ -130,6 +137,14 @@ export class CEmitter {
     const structs = mod.stmts.filter((s): s is A.StructDecl => s.kind === "StructDecl" && !s.foreign);
     const top = mod.stmts.filter((s) => !DECL_KINDS.has(s.kind));
 
+    // A top-level `const` becomes a file-scope static, declared before any
+    // function so every function can reach it, and assigned where the
+    // statement sits so its initialiser still runs in order.
+    for (const st of top) {
+      if (st.kind !== "LetStmt" || !st.isConst || st.pattern.kind !== "BindPat") continue;
+      this.moduleConsts.add(st.pattern.name);
+    }
+
     for (const s of structs) this.declareStruct(s);
     this.registerEnums();
     this.collectForeign(mod);
@@ -138,6 +153,12 @@ export class CEmitter {
       // An unmapped declaration, or one whose type is not a function, has no
       // return type to record — fall back to `any` rather than dropping it.
       this.fnRet.set(f.name, (sig && retOf(sig)) ?? { k: "any" });
+    }
+
+    for (const st of top) {
+      if (st.kind !== "LetStmt" || !st.isConst || st.pattern.kind !== "BindPat") continue;
+      const t = this.tyOf(st.pattern as unknown as A.Node) ?? (st.value ? this.tyOf(st.value) : undefined);
+      this.decls.push(`static ${this.cty(t, `\`${st.pattern.name}\``, st.span)} ${mangle(st.pattern.name)};`);
     }
 
     // Forward declarations so order does not matter.
@@ -738,6 +759,11 @@ export class CEmitter {
         const t = this.tyOf(s.pattern as unknown as A.Node) ?? (s.value ? this.tyOf(s.value) : undefined);
         const ct = this.cty(t, `\`${s.pattern.name}\``, s.span);
         const init = s.value ? this.expr(s.value) : zeroOf(ct);
+        // A module-level constant is already declared at file scope.
+        if (this.inMain && this.moduleConsts.has(s.pattern.name)) {
+          this.line(`${mangle(s.pattern.name)} = ${init};`);
+          return;
+        }
         this.line(`${ct} ${mangle(s.pattern.name)} = ${init};`);
         const here = this.blockStack[this.blockStack.length - 1];
         if (here?.owned.has(s.pattern.name)) {

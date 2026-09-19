@@ -82,6 +82,8 @@ export class Interpreter {
 
   /** Dynamic capability set, one entry per active call (#45). */
   private capStack: Set<string>[] = [new Set()];
+  /** The environment the module's own top-level statements run in. */
+  private topLevelEnv: Env | null = null;
   private callTrace: string[] = [];
   private moved = new WeakSet<object>();
 
@@ -145,6 +147,7 @@ export class Interpreter {
     this.bindImports(mod.stmts, this.globals);
     const frame: Frame = { fnName: "<main>", defers: [], capabilities: new Set(), unsafeDepth: 0 };
     const env = new Env(this.globals, frame);
+    this.topLevelEnv = env;
     const self = this;
 
     function* body(): Ev {
@@ -333,6 +336,14 @@ export class Interpreter {
       // --- bindings ---------------------------------------------------------
       case "LetStmt": {
         const v = s.value ? yield* this.eval(env, s.value) : NULL;
+        // A top-level `const` belongs to the module, not to the block the
+        // top-level statements happen to run in. Functions close over
+        // globals, so binding it anywhere else made every module-level
+        // constant invisible inside every function.
+        if (s.isConst && env === this.topLevelEnv && s.pattern.kind === "BindPat") {
+          this.globals.define(s.pattern.name, v, false);
+          return;
+        }
         this.bindPattern(env, s.pattern, v, true, s.span);
         return;
       }
