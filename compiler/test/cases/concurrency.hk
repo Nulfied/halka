@@ -46,3 +46,15 @@ let bad: start boom()
 let res: await bad
 if res is error,
     say "task failed as expected"
+# Closing a channel must wake senders parked on a full buffer, not just receivers.
+let full: make channel(int): 1
+send full : 1
+
+stuck(c),
+    send c : 2,
+    give "sender resumed"
+
+let s: start stuck(full)
+yield_now()
+close full
+say await s

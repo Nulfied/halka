@@ -34,7 +34,7 @@ function classify(t: Ty | undefined, fields: Fields, seen = new Set<string>()): 
     case "prim":
       // Only `string` owns heap memory among the primitives.
       return p.name === "string" ? "owned" : "copy";
-    case "list": case "array": case "map": case "set": case "record":
+    case "list": case "array": case "map": case "set":
       return "owned";
     case "tuple": {
       const kinds = p.elems.map((e) => classify(e, fields, seen));

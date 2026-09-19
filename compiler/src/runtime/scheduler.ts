@@ -218,7 +218,7 @@ export class Scheduler {
     ch.closed = true;
     for (const rx of ch.recvQueue) this.unblock(rx, NULL);
     ch.recvQueue = [];
-    for (const tx of ch.sendQueue) this.unblock(tx, NOTHING);
+    for (const tx of ch.sendQueue) this.unblock(tx.fiber, NOTHING);
     ch.sendQueue = [];
   }
 

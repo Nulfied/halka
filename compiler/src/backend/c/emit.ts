@@ -99,7 +99,12 @@ export class CEmitter {
 
     for (const s of structs) this.declareStruct(s);
     this.collectForeign(mod);
-    for (const f of fns) this.fnRet.set(f.name, this.tyOf(f) ? retOf(this.tyOf(f)!) : { k: "any" });
+    for (const f of fns) {
+      const sig = this.tyOf(f);
+      // An unmapped declaration, or one whose type is not a function, has no
+      // return type to record — fall back to `any` rather than dropping it.
+      this.fnRet.set(f.name, (sig && retOf(sig)) ?? { k: "any" });
+    }
 
     // Forward declarations so order does not matter.
     for (const f of fns) this.decls.push(this.signature(f) + ";");

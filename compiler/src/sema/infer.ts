@@ -499,7 +499,6 @@ export class Inferencer {
     switch (p.k) {
       case "list": case "array": case "set": return p.elem;
       case "range": return INT;
-      case "string": return CHAR;
       case "map": return tup([p.key, p.val]);
       case "tuple": return p.elems.length ? p.elems[0]! : any("empty tuple");
       case "prim": if (p.name === "string") return CHAR; break;

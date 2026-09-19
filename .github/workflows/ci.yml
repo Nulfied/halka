@@ -61,7 +61,7 @@ jobs:
         with:
           node-version: '24.x'
       - working-directory: compiler
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
       - working-directory: compiler
         run: npx tsc -p tsconfig.json --noEmit
 
