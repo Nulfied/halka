@@ -1274,13 +1274,20 @@ export class CEmitter {
     }
 
     const isFloat = this.isFloat(lt) || this.isFloat(rt) || this.isFloat(this.tyOf(e));
+    // `atom` leaves a bare identifier unwrapped. MSVC treats explicit
+    // parentheses as a reassociation barrier even under /fp:fast, so
+    // `acc = ((acc) + ...)` told it not to reorder the reduction — which is
+    // exactly what vectorising a dot product requires. Writing
+    // `acc = acc + (...)` instead is what lets the loop vectorise at all.
+    const la = atom(l);
+    const ra = atom(r);
     switch (e.op) {
-      case "==": return `((${l}) == (${r}))`;
-      case "!=": return `((${l}) != (${r}))`;
-      case "<": return `((${l}) < (${r}))`;
-      case "<=": return `((${l}) <= (${r}))`;
-      case ">": return `((${l}) > (${r}))`;
-      case ">=": return `((${l}) >= (${r}))`;
+      case "==": return `(${la} == ${ra})`;
+      case "!=": return `(${la} != ${ra})`;
+      case "<": return `(${la} < ${ra})`;
+      case "<=": return `(${la} <= ${ra})`;
+      case ">": return `(${la} > ${ra})`;
+      case ">=": return `(${la} >= ${ra})`;
       case "/":
         // R21: `/` always yields a float.
         if (isFloat) return `((hk_float)(${l}) / (hk_float)(${r}))`;
@@ -1289,8 +1296,12 @@ export class CEmitter {
         if (isFloat) return `fmod((hk_float)(${l}), (hk_float)(${r}))`;
         return `hk_mod(${l}, ${r}, ${this.loc(e.span)})`;
       case "+": case "-": case "*": {
-        if (isFloat) return `((${l}) ${e.op} (${r}))`;
-        if (this.opts.release) return `((${l}) ${e.op} (${r}))`;
+        // No outer parentheses either: `acc = acc + x` vectorises where
+        // `acc = (acc + x)` does not, for the same reassociation reason.
+        // Nesting stays correct because every operand goes through `atom`,
+        // which parenthesises anything that is not a bare identifier.
+        if (isFloat) return `${la} ${e.op} ${ra}`;
+        if (this.opts.release) return `${la} ${e.op} ${ra}`;
         const f = e.op === "+" ? "hk_add_chk" : e.op === "-" ? "hk_sub_chk" : "hk_mul_chk";
         return `${f}(${l}, ${r}, ${this.loc(e.span)})`;
       }
@@ -1594,6 +1605,16 @@ const DECL_KINDS = new Set([
 function mangle(name: string): string {
   if (C_RESERVED.has(name)) return `hk_u_${name}`;
   return name.replace(/[^A-Za-z0-9_]/g, "_");
+}
+
+/**
+ * Parenthesise an emitted operand only when the grouping carries meaning.
+ * A single identifier never needs it, and leaving it off matters: an
+ * explicit parenthesis is a reassociation barrier to the C compiler, so
+ * wrapping a reduction's accumulator silently costs auto-vectorisation.
+ */
+function atom(s: string): string {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(s) ? s : `(${s})`;
 }
 
 function mangleType(name: string): string { return `hk_T_${name}`; }

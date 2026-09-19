@@ -466,15 +466,30 @@ class Formatter {
         const st = e.step ? `:${this.flat(e.step)}` : "";
         return `${this.flat(e.obj)}[${s}:${en}${st}]`;
       }
-      case "UnaryExpr": return e.op === "not" ? `not ${this.flat(e.operand)}` : `${e.op}${this.flat(e.operand)}`;
-      case "BinaryExpr": return `${this.wrap(e.lhs, e)} ${e.op} ${this.wrap(e.rhs, e)}`;
+      case "UnaryExpr": {
+        // `-(a + b)` is not `-a + b`: unary `-` binds tighter than every
+        // binary operator, so its operand needs the parentheses back. `not`
+        // binds looser than all of them, so `not a == b` already reads
+        // correctly and wrapping it would only add noise.
+        const inner = this.flat(e.operand);
+        if (e.op === "not") return `not ${inner}`;
+        return e.operand.kind === "BinaryExpr" ? `${e.op}(${inner})` : `${e.op}${inner}`;
+      }
+      case "BinaryExpr": return `${this.wrap(e.lhs, e, "left")} ${e.op} ${this.wrap(e.rhs, e, "right")}`;
       case "RangeExpr": {
         const lo = e.lo ? this.flat(e.lo) : "";
         const hi = e.hi ? this.flat(e.hi) : "";
         const base = `${lo}..${e.inclusive ? "=" : ""}${hi}`;
         return e.step ? `range ${base} step ${this.flat(e.step)}` : base;
       }
-      case "CastExpr": return `${this.flat(e.expr)} ${e.fallible ? "to" : "as"} ${typeText(e.type)}`;
+      case "CastExpr": {
+        // `as` binds tighter than every binary operator (R8), so
+        // `(7 / 2) as int` is 3 while `7 / 2 as int` is 3.5. Printing the
+        // operand bare dropped that distinction and changed the result.
+        const inner = this.flat(e.expr);
+        const body = e.expr.kind === "BinaryExpr" ? `(${inner})` : inner;
+        return `${body} ${e.fallible ? "to" : "as"} ${typeText(e.type)}`;
+      }
       case "IsExpr": return `${this.flat(e.expr)} is ${e.test}`;
       case "BorrowExpr": return `borrow ${e.mut ? "mut " : ""}${this.flat(e.expr)}`;
       case "MoveExpr": return `move ${this.flat(e.expr)}`;
@@ -504,13 +519,24 @@ class Formatter {
     }
   }
 
-  /** Parenthesise a child only when precedence requires it (#51). */
-  private wrap(child: A.Expr, parent: A.BinaryExpr): string {
+  /**
+   * Parenthesise a child only when precedence requires it (#51).
+   *
+   * Equal precedence on the *right* requires it too: every operator here is
+   * left-associative, so `a - (b - c)` is not `a - b - c`. The rule used to
+   * be `pc < pp` alone, which meant `halka fmt --write` silently changed
+   * what a program computed — the worst thing a formatter can do.
+   *
+   * It also holds for `+` and `*`, where reassociation is harmless for
+   * integers but not for floats.
+   */
+  private wrap(child: A.Expr, parent: A.BinaryExpr, side: "left" | "right"): string {
     const s = this.flat(child);
     if (child.kind !== "BinaryExpr") return s;
     const pc = PREC[child.op] ?? 0;
     const pp = PREC[parent.op] ?? 0;
-    return pc < pp ? `(${s})` : s;
+    if (pc < pp || (pc === pp && side === "right")) return `(${s})`;
+    return s;
   }
 }
 

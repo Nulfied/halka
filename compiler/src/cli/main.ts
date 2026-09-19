@@ -318,6 +318,8 @@ function cmdBuild(args: string[]): void {
   const outcome = buildNative(c, file, {
     out: outName,
     release: flags.has("--release"),
+    fastMath: flags.has("--fast-math"),
+    nativeCpu: flags.has("--cpu-native"),
     keepC: flags.has("--keep-c") || flags.has("--emit-c"),
     emitOnly: flags.has("--emit-c"),
     quiet: flags.has("--quiet"),
@@ -340,6 +342,8 @@ function cmdBuild(args: string[]): void {
     const extra = [
       outcome.toolchain,
       flags.has("--release") ? "release" : "debug",
+      ...(flags.has("--fast-math") ? ["fast-math"] : []),
+      ...(flags.has("--cpu-native") ? ["cpu-native"] : []),
       ...(outcome.python ? [`CPython ${outcome.python.version}`] : []),
       ...(links.length ? [`links ${links.join(" ")}`] : []),
     ].join(", ");
@@ -755,6 +759,12 @@ commands:
   run <file.hk>          run a program (reference interpreter)
   build <file.hk>        compile to a native binary via C99
                            --release  optimise, drop overflow/bounds checks
+                           --fast-math  let the C compiler reassociate
+                             floating point, which is what lets it
+                             vectorise a reduction. Results may differ
+                             from the interpreter; measure before trusting
+                           --cpu-native  target this machine's instruction
+                             set; the binary may not run elsewhere
                            --emit-c   write the generated C and stop
                            --keep-c   keep the generated C beside the binary
                            -o <path>  output path

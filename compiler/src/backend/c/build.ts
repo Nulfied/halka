@@ -22,6 +22,20 @@ export interface Toolchain {
 
 export interface CompileOpts {
   release: boolean;
+  /**
+   * Let the C compiler reassociate floating-point arithmetic, which is what
+   * unlocks auto-vectorisation of a reduction like a dot product. It is off
+   * by default and has to be asked for, because reassociation can change
+   * results: R23 promises the compiled program behaves like the interpreted
+   * one, and this is the one switch that can break that promise.
+   */
+  fastMath?: boolean;
+  /**
+   * Target the building machine's instruction set. Off by default because
+   * the binary then requires those instructions to run, which is a
+   * portability decision the person shipping it should make, not us.
+   */
+  nativeCpu?: boolean;
   includeDirs: string[];
   /**
    * Where intermediate object files go. This must be unique per build: MSVC
@@ -139,6 +153,8 @@ function findMsvc(): Toolchain | null {
       const py = opts.python;
       const args = [
         "/nologo", "/std:c11", "/W3",
+        ...(opts.fastMath ? ["/fp:fast"] : []),
+        ...(opts.nativeCpu ? ["/arch:AVX2"] : []),
         // A `c` declaration that contradicts the real symbol is a hole in
         // the safety claim, not a style issue: it silently produces garbage
         // at run time. gcc and clang reject it outright, MSVC only warns, so
@@ -176,6 +192,8 @@ function findUnixCc(): Toolchain | null {
         const py = opts.python;
         const flags = [
           "-std=c99", "-Wall",
+          ...(opts.fastMath ? ["-ffast-math"] : []),
+          ...(opts.nativeCpu ? ["-march=native"] : []),
           // Same reasoning as the MSVC block: a `c` declaration that does not
           // match the real symbol must stop the build on every toolchain.
           "-Werror=implicit-function-declaration",
@@ -217,6 +235,10 @@ export interface BuildOptions {
   /** Output binary path. */
   out: string;
   release: boolean;
+  /** `--fast-math`: reassociation, and the vectorisation it unlocks. */
+  fastMath?: boolean;
+  /** `--cpu-native`: target this machine's instruction set. */
+  nativeCpu?: boolean;
   /** Libraries requested by `extern: link: "..."`. */
   libs?: string[];
   /** True when the program uses `py` and must embed CPython (#37). */
@@ -293,6 +315,8 @@ export function buildNative(cSource: string, sourceName: string, opts: BuildOpti
   const outPath = resolve(opts.out);
   const { cmd, args, env } = tc.compile([cFile, rtC], outPath, {
     objDir: workDir,
+    fastMath: opts.fastMath,
+    nativeCpu: opts.nativeCpu,
     release: opts.release,
     includeDirs: [workDir],
     libs: opts.libs,

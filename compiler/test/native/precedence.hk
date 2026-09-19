@@ -19,3 +19,24 @@ say false or 1 < 2
 # Unary minus binds tighter than `*`.
 say -2 * 3
 say 10 - -2
+
+# Formatting must not change what these compute. `halka fmt --write` used to
+# drop the parentheses from `a - (b - c)`, `-(a + b)` and `(7 / 2) as int`,
+# silently turning each into a different expression. The fmt suite runs this
+# file through the formatter and re-runs it, so a regression shows up as a
+# changed answer rather than a changed file.
+let p: 2
+let q: 3
+let r: 4
+say p - (q - r)
+say p - q - r
+say -(p + q) * r
+say -p + q * r
+say (p + q) * (r - p)
+say p * (q + r * (r - p))
+say (7 / 2) as int
+say 7 / 2 as int
+let s: 1.5
+let t: 2.5
+say s - (t - s)
+say -(s + t) * s

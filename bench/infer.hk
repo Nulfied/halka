@@ -13,41 +13,40 @@
 import time
 
 dot(x: list(float), w: list(float), xoff: int, woff: int, n: int): float,
-    let acc: 0.0
+    let acc: 0.0,
     for j in 0..n,
-        acc: acc + x[xoff + j] * w[woff + j]
+        acc: acc + x[xoff + j] * w[woff + j],
     give acc
 
 main(),
-    let rows: 4096
-    let feats: 512
-    let classes: 32
+    let rows: 4096,
+    let feats: 512,
+    let classes: 32,
 
     # Deterministic inputs, so all three implementations compute the same
     # thing and the checksum can be compared across them.
-    let w: []
-    for i in 0..(feats * classes),
-        w.push(0.001 * (((i % 7) as float) - 3.0))
-    let b: []
+    let w: [],
+    for i in 0..feats * classes,
+        w.push(0.001 * ((i % 7) as float - 3.0)),
+    let b: [],
     for c in 0..classes,
-        b.push(0.01 * (c as float))
-    let x: []
-    for i in 0..(rows * feats),
-        x.push(0.5 * (((i % 13) as float) - 6.0))
-
-    let t_start: time.monotonic()
-    let total: 0
+        b.push(0.01 * c as float),
+    let x: [],
+    for i in 0..rows * feats,
+        x.push(0.5 * ((i % 13) as float - 6.0)),
+    let t_start: time.monotonic(),
+    let total: 0,
     for r in 0..rows,
-        let best: 0
-        let bestv: -1000000.0
+        let best: 0,
+        let bestv: -1000000.0,
         for c in 0..classes,
-            let v: dot(x, w, r * feats, c * feats, feats) + b[c]
+            let v: dot(x, w, r * feats, c * feats, feats) + b[c],
             if v < 0.0,
-                v: 0.0
+                v: 0.0,
             if v > bestv,
                 bestv: v,
-                best: c
-        total: total + best
-    let elapsed: time.monotonic() - t_start
-    say "infer checksum {total}"
+                best: c,
+        total: total + best,
+    let elapsed: time.monotonic() - t_start,
+    say "infer checksum {total}",
     say "compute {round(elapsed)} ms"

@@ -124,8 +124,10 @@ process start and library import are excluded. Best of 5:
 | implementation | compute | note |
 |---|---|---|
 | hand-written C, 1 thread | 76 ms | `/O2`, same compiler |
-| **Halka, 1 thread** | **74 ms** | 0.97x the hand-written C |
-| **Halka, 8 threads** (`parallel:`) | **12 ms** | 6.2x on 4 physical cores + SMT |
+| Halka, 1 thread | 74 ms | 0.97x the hand-written C |
+| Halka, 8 threads (`parallel:`) | 12 ms | 6.2x on 4 physical cores + SMT |
+| Halka, 1 thread, `--fast-math --cpu-native` | 17 ms | vectorised; same as the C with those flags |
+| **Halka, 8 threads + `--fast-math --cpu-native`** | **4 ms** | |
 | NumPy (BLAS) | 7 ms | multi-threaded *and* SIMD |
 
 **The whole program**, one-shot, as a user would run it:
@@ -146,12 +148,19 @@ and it holds here.
 with SMT, from adding a `parallel:` block around work that was already
 written. No GIL, no processes, no serialisation of results.
 
-**NumPy still wins the arithmetic, and it is not close enough to wave
-away.** 7 ms against Halka's best of 12 ms — BLAS is roughly 1.7x faster
-than eight Halka threads, and 10x faster than one. The reason is not
-threading, which Halka now matches; it is SIMD. BLAS issues vector
-instructions that process several doubles per cycle, and Halka's generated
-C is scalar. **Vectorisation, not more threads, is the gap.**
+**With vectorisation enabled, Halka beats BLAS on this kernel** — 4 ms
+against 7 ms. That needs `--fast-math`, which is off by default and has to
+be asked for, because it lets the C compiler reassociate floating point and
+so can change results. Here it does not: all four implementations still
+print 122251. On your workload, measure before trusting it.
+
+Getting there took a codegen fix rather than a flag. The emitter used to
+write `acc = ((acc) + (...))`, and an explicit parenthesis is a
+reassociation barrier — MSVC honours it even under `/fp:fast`, so the
+reduction could not be vectorised and the flag bought nothing (74 ms with
+it, 74 ms without). Emitting `acc = acc + (...)` instead took the same
+kernel to 17 ms single-threaded. The parentheses were doing real harm and
+no work.
 
 **The 4x on wall clock is startup, not speed, and should not be quoted as
 speed.** `python -c "import numpy"` alone costs ~385 ms on this machine —

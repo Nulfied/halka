@@ -35,15 +35,14 @@ let feats: 512
 let classes: 32
 
 let w: []
-for i in 0..(feats * classes),
-    w.push(0.001 * (((i % 7) as float) - 3.0))
+for i in 0..feats * classes,
+    w.push(0.001 * ((i % 7) as float - 3.0))
 let b: []
 for c in 0..classes,
-    b.push(0.01 * (c as float))
+    b.push(0.01 * c as float)
 let x: []
-for i in 0..(rows * feats),
-    x.push(0.5 * (((i % 13) as float) - 6.0))
-
+for i in 0..rows * feats,
+    x.push(0.5 * ((i % 13) as float - 6.0))
 # Branches assign to outer bindings (#32), so the results outlive the block.
 let t0: 0
 let t1: 0
@@ -65,7 +64,6 @@ parallel:
     t5: band(x, w, b, 2560, 3072, feats, classes),
     t6: band(x, w, b, 3072, 3584, feats, classes),
     t7: band(x, w, b, 3584, 4096, feats, classes)
-
 let elapsed: time.monotonic() - t_start
 say "infer checksum {t0 + t1 + t2 + t3 + t4 + t5 + t6 + t7}"
 say "compute {round(elapsed)} ms"
