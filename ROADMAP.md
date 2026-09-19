@@ -10,96 +10,95 @@ achievable with free tooling and free infrastructure.
 
 ## Where we are
 
-**v0.1 — the language runs.** A complete reference implementation of the locked
-V49 specification: lexer, deterministic parser, static checks, a generator-based
-interpreter with real cooperative concurrency, a formatter, a REPL, and a
-language server. 77 tests green, including conformance against every executable
-code block in the specification.
+**v0.2 — it compiles, and it is fast.**
 
-The reference implementation is deliberately written for **clarity over speed**.
-It is the executable definition of what Halka *means*. Performance comes from
-the backends below, and the reference implementation stays as the oracle they
-are tested against.
+Shipped: the locked spec implemented end to end; static type inference with
+optional tracking and match exhaustiveness; a reference interpreter covering
+the whole language including tasks, channels and macros; and a **native backend
+that emits C99 and produces binaries at parity with hand-written C**.
+
+Measured, same compiler and flags for both, all outputs identical:
+
+| kernel | Halka | C `/O2` | Python | vs C |
+|---|---|---|---|---|
+| recursive calls, `fib(35)` | 158 ms | 157 ms | 9 660 ms | 1.01x |
+| integer arithmetic, 200M | 452 ms | 389 ms | 27 906 ms | 1.16x |
+| floating point, 900×900 | 660 ms | 702 ms | 40 423 ms | ~1.0x |
+
+And the parallelism the wedge depends on: 3.20x from 8 threads, where the same
+workload in Python threads runs at 0.51x — *slower* than one thread.
+See [bench/README.md](bench/README.md).
+
+The reference interpreter stays as the oracle. R23 makes them one language:
+the native tests compile each case and diff its output against the interpreter.
 
 ---
 
-## v0.2 — Types
+## The wedge, and what is left to build it
 
-The interpreter checks types at runtime. v0.2 moves that work to compile time.
+Interop, don't replace. Win one pain point measurably. Ship one benchmarkable
+artifact. Meet people in the tools they already use.
 
-- **Hindley–Milner inference with annotations optional** (#11, #13). Rule #11
-  makes annotations optional "whenever the compiler can infer the type
-  unambiguously" — that is a promise of real inference, not of local guessing.
-- **Optional types as a first-class check** — `T?` (#13) tracks nullability, so
-  `name.length` on a `string?` is a compile error and `name or "Unknown"`
-  narrows it to `string` (R11).
-- **Exhaustiveness checking for `match`** (#10) — a missing enum variant is an
-  error, not a silent fallthrough.
-- **Generic constraints via traits** (#16) — `max<T: Ord>(a: T, b: T)`.
-- **`Result` must be handled** — ignoring a `Result` value is a warning, then an
-  error. This is what makes "no exceptions" (#23) safe rather than merely
-  different.
-- **Ownership and borrow checking** (#14, #25) — currently ownership markers are
-  tracked dynamically. v0.2 makes `move` / `borrow` / `borrow mut` a static
-  analysis: one mutable borrow or many shared ones, no use after move.
-- **Capability checking at compile time** (#45) — `requires` becomes a static
-  obligation rather than a dynamic check.
+Two of the four pain points are now demonstrated rather than claimed —
+**C-level speed** and **real multicore parallelism**. These are what remains.
 
-**Why it matters:** this is the difference between "a nice scripting language"
-and "a language you can write a database in".
+## v0.3 — Ownership as a static pass
 
-## v0.3 — A bytecode VM
+The memory model ([spec/MEMORY-MODEL.md](spec/MEMORY-MODEL.md)) is designed and
+documented; the checker does not yet enforce it.
 
-- Lower the canonical AST to a register-based IR, then to bytecode.
-- Constant folding, dead-code elimination, inlining of small functions.
-- Monomorphise generics (#43 `specialize` becomes a hint the optimiser honours).
-- Replace the tree-walking evaluator behind the same CLI, keeping the
-  interpreter as the differential-testing oracle: every test must produce
-  identical output under both.
-- Target: 20–50× the reference interpreter on numeric and collection workloads.
+- **Move checking** (M1) — use-after-move becomes `E0504` at compile time, with
+  the move site pointed at.
+- **Borrow checking** (M2) — one `borrow mut` or many `borrow`, and a borrow may
+  not escape its block. One scope-depth comparison, no lifetime annotations, no
+  inference of lifetimes. This is the part that must stay small; if the error
+  messages ever need a tutorial, the design has failed.
+- **Task capture checking** (M5) — a task cannot capture a borrow, so data races
+  are rejected rather than documented.
+- **Escape analysis** (M4) — stack-allocate what does not outlive its frame, and
+  free what does at the owner's scope exit. This is also what removes the v1
+  backend's leak.
+- **`shared(T)`** and the cycle warning.
 
-## v0.4 — Native compilation, through C
+This is the largest remaining correctness piece, and it is what turns "memory
+safe by construction" from a design document into a compiler guarantee.
 
-`halka build --native app.hk` emits **C99** and invokes whatever C compiler is
-present.
+## v0.4 — The rest of the language, natively
 
-This is the deliberate choice over LLVM:
+The backend compiles scalars, strings, lists, structs, control flow, `defer`
+and `parallel:`. Still interpreter-only:
 
-- **$0 and no dependency.** Every platform already has a C compiler. No 2 GB
-  LLVM checkout, no version-matching pain, no multi-hour CI builds.
-- **Instant portability.** Anywhere C runs, Halka runs — including embedded
-  targets, WASM via Emscripten, and platforms LLVM does not prioritise.
-- **Free C/C++ interop.** Rules #35 and #36 stop being an FFI marshalling
-  problem and become ordinary C calls in the generated source.
-- It is the path Nim, V, early Haskell, Vala and Chicken Scheme took. An LLVM
-  backend can be added later for optimisation; it is not needed to ship.
+- enums and `match` (tagged unions and a jump table)
+- maps and sets
+- tasks, channels, `await` — a work-stealing scheduler over the thread pool
+- traits with dynamic dispatch, and monomorphised generics (#43 `specialize`
+  becomes a hint the optimiser honours)
+- closures over named functions as values (#17)
 
-Deliverables: the C backend, a small runtime library (`libhalka`: values,
-scheduler, channels, allocator), static-binary output, and cross-compilation.
+Each missing construct produces an `E07xx` diagnostic naming the expression, so
+the boundary is always visible rather than silently slow.
 
-## v0.5 — FFI made real
+## v0.5 — Interop, because nobody gives up their libraries
 
-With a native backend, the boundary markers stop being placeholders.
+This is the actual adoption blocker, and with a C backend it is mostly wiring.
 
-- **`c`** (#35) — direct C ABI calls, structs, callbacks, `c malloc`/`c free`
-  under the ownership rules.
-- **`cpp`** (#36) — classes, methods, namespaces, templates through a generated
-  shim; C++ exceptions converted to `Result` at the boundary.
-- **`py`** (#37) — embed CPython, marshal values both ways, release the GIL
-  around Halka tasks. This is the on-ramp for AI/ML: NumPy, PyTorch, pandas and
-  Hugging Face become callable from Halka on day one, while the numeric kernels
-  around them are written in Halka and compiled.
+- **`c`** (#35) — direct C ABI calls, structs, callbacks. The generated source
+  is C, so this is a declaration, not a marshalling layer.
+- **`cpp`** (#36) — classes, methods, templates through a generated shim; C++
+  exceptions converted to `Result` at the boundary.
+- **`py`** (#37) — embed CPython, marshal both ways, **release the GIL around
+  Halka tasks**. This is the on-ramp: NumPy, PyTorch, pandas and Hugging Face
+  stay available while the hot loop around them is Halka, compiled, and
+  parallel. Nobody has to choose.
+- A **Jupyter kernel**, so trying Halka costs ten minutes rather than a rewrite.
 
 ## v0.6 — Self-hosting
 
-Rewrite the compiler in Halka, compile it with the v0.5 toolchain, and compile
-itself. This is the Zig path exactly: stage 0 in a host language, stage 1 in the
-language itself.
+Rewrite the compiler in Halka and compile it with itself. The Zig path exactly:
+stage 0 in a host language, stage 1 in the language.
 
-Self-hosting is not vanity. It is the only honest proof that the language is
-good enough to write a compiler in, and it makes every compiler contributor a
-Halka programmer.
-
+Not vanity — it is the only honest proof the language is good enough to write a
+compiler in, and it turns every compiler contributor into a Halka programmer.
 The stage-0 TypeScript implementation is retained as the specification oracle.
 
 ## v0.7 — The AI/ML layer
@@ -108,7 +107,8 @@ The locked syntax already reserves what this needs: `kernel`, `launch`, `device`
 (#44), `parallel:` (#32), `compile` and `generate` (#39, #41).
 
 - **Tensors in the standard library** — n-dimensional arrays with broadcasting,
-  built on the slice syntax that #54 already locks.
+  built on the slice syntax that #54 already locks, and parallel by default
+  over the thread pool.
 - **GPU backends** — `kernel` compiles to CUDA / ROCm / Vulkan compute / Metal;
   `launch f(x): blocks: 64, threads: 256` is already the locked spelling.
 - **Automatic differentiation via `generate`** (#41) — compile-time source
