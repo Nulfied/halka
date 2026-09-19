@@ -1,0 +1,112 @@
+### ownership.hk — memory safety without lifetime annotations.
+
+Halka has no garbage collector and no lifetime syntax. Every heap value has one
+owner; borrows are lexical and cannot escape the block that made them. That is
+the whole model, and it is checked at compile time.
+
+The commented-out lines are the ones the compiler rejects, with the error it
+gives. Uncomment any of them to see it.
+
+Full design: spec/MEMORY-MODEL.md
+###
+
+# --- scalars copy, so there is nothing to think about -----------------------
+
+let count: 5
+let copy: count
+say "scalars copy freely: {count} and {copy}"
+
+# A struct of plain scalars copies too (M1.1) — no clone noise.
+Point:
+    x: int,
+    y: int
+
+let origin: Point(2, 3)
+let also: origin
+say "a plain struct copies: {origin.x} and {also.y}"
+
+# --- heap values have exactly one owner (M1) --------------------------------
+
+let names: ["alice", "bob"]
+
+# let stolen: names
+# say len(names)
+#   error[E0504]: `names` was moved and can no longer be used
+#      | let stolen: names
+#      |             ----- moved here
+
+# --- parameters borrow, so ordinary code never thinks about this (M2.2) -----
+
+describe(items),
+    give "a list of {len(items)}"
+
+say describe(names)
+say describe(names)
+say "still ours: {len(names)}"
+
+# --- ownership is inferred, never annotated (M2.2) --------------------------
+# `remember` keeps its argument, so the compiler makes that parameter owning
+# and every call site moves. Nothing had to be written down for it.
+
+Registry:
+    entries: list(string)
+
+remember(r, entry),
+    r.entries.push(entry)
+
+let registry: Registry([])
+let label: "first"
+remember(registry, label)
+
+# say label
+#   error[E0504]: `label` was moved and can no longer be used
+#      | remember(registry, label)
+#      |                    ----- moved here, because `remember` keeps its argument
+
+say "registry holds {len(registry.entries)}"
+
+# --- borrows are lexical and cannot escape (M2, M2.3) -----------------------
+
+total_of(numbers),
+    let sum: 0,
+    for n in numbers,
+        sum: sum + n,
+    give sum
+
+let readings: [3, 1, 4, 1, 5]
+say "sum through a borrow: {total_of(borrow readings)}"
+say "and we still have it: {len(readings)}"
+
+# first_of(items),
+#     give borrow items[0]
+#   error[E0510]: a borrow cannot be returned — it would outlive its block
+#     help: return the value itself, an index into it, or a `shared(T)`
+
+# --- one exclusive borrow, or many shared ones (M2.1) -----------------------
+# A named borrow lives to the end of its block, so these two share one.
+
+if true,
+    let shared_a: borrow readings,
+    let shared_b: borrow readings,
+    say "two shared borrows are fine: {len(readings)}"
+    # let writer: borrow mut readings
+    #   error[E0511]: `readings` cannot be borrowed mutably while it is borrowed
+
+# Both ended with that block, so an exclusive borrow is available now.
+if true,
+    let writer: borrow mut readings,
+    say "and now an exclusive one, because the shared ones ended"
+
+# This is why the model stays small: a borrow's life is a block you can see,
+# so the compiler never has to relate two lifetimes, or name either one.
+
+# --- the same rule prevents data races (M5) ---------------------------------
+
+work(data): int,
+    give len(data)
+
+# let t: start work(borrow readings)
+#   error[E0512]: a task cannot capture a borrow — it may outlive the value
+#     help: pass the value itself, or a `shared(T)` if several owners are needed
+
+say "done — no collector, no pauses, no lifetime annotations anywhere"

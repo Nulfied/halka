@@ -116,9 +116,28 @@ export function renderDiagnostic(d: Diagnostic, opts: RenderOptions = {}): strin
     const carets = "^".repeat(Math.max(1, endCol - startCol));
     out.push(`${pad} ${c(DIM, "|")} ${caretPad}${c(d.severity === "error" ? RED : YELLOW, carets)}`);
   }
-  if (d.rule) out.push(`  ${c(CYAN, "=")} ${c(DIM, "locked rule:")} ${d.rule}`);
+  // A note that points somewhere gets its own snippet. For an ownership
+  // error, *where* it moved is most of the answer.
+  for (const n of d.notes ?? []) {
+    if (!n.span || src === undefined) continue;
+    const lines = src.split(/\r\n|\r|\n/);
+    const nl = n.span.start.line;
+    const text = lines[nl - 1];
+    if (text === undefined) continue;
+    const gutter = String(Math.max(nl, d.span.start.line)).length;
+    out.push(`${" ".repeat(gutter)} ${c(DIM, "|")}`);
+    out.push(`${c(DIM, String(nl).padStart(gutter))} ${c(DIM, "|")} ${text}`);
+    const sc = Math.max(1, n.span.start.col);
+    const ec = n.span.end.line === nl ? Math.max(sc + 1, n.span.end.col) : text.length + 1;
+    out.push(`${" ".repeat(gutter)} ${c(DIM, "|")} ${" ".repeat(sc - 1)}${c(BLUE, "-".repeat(Math.max(1, ec - sc)))} ${c(BLUE, n.message)}`);
+  }
+
+  if (d.rule) out.push(`  ${c(CYAN, "=")} ${c(DIM, "rule:")} ${d.rule}`);
   if (d.help) out.push(`  ${c(CYAN, "=")} ${c(BOLD, "help:")} ${d.help}`);
-  for (const n of d.notes ?? []) out.push(`  ${c(CYAN, "=")} ${c(DIM, "note:")} ${n.message}`);
+  for (const n of d.notes ?? []) {
+    if (n.span && src !== undefined) continue; // already shown above
+    out.push(`  ${c(CYAN, "=")} ${c(DIM, "note:")} ${n.message}`);
+  }
   return out.join("\n");
 }
 

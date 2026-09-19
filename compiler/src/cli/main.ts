@@ -12,6 +12,7 @@ import { DiagnosticBag, renderAll, HalkaError, type Diagnostic } from "../util/d
 import { format } from "../fmt/format.ts";
 import { check } from "../sema/check.ts";
 import { inferTypes } from "../sema/infer.ts";
+import { checkOwnership } from "../sema/ownership.ts";
 import { emitC } from "../backend/c/emit.ts";
 import { buildNative, describeToolchains, findPython } from "../backend/c/build.ts";
 import { show as showTy } from "../sema/types.ts";
@@ -111,6 +112,10 @@ function cmdRun(args: string[]): void {
   if (!diags.hasErrors) {
     const inferred = inferTypes(main);
     for (const d of inferred.diags.items) diags.items.push(d);
+    if (!inferred.diags.hasErrors) {
+      const own = checkOwnership(main, inferred.types, inferred.structFields);
+      for (const d of own.diags.items) diags.items.push(d);
+    }
   }
 
   if (diags.hasErrors) {
@@ -164,7 +169,13 @@ function anonSpan() {
 
 function cmdCheck(args: string[]): void {
   const explain = args.includes("--explain");
-  const files = (args.filter((a) => !a.startsWith("-")).length ? args.filter((a) => !a.startsWith("-")) : discover("."));
+  // Accept files or directories, like `halka fmt` does.
+  const given = args.filter((a) => !a.startsWith("-"));
+  const files = (given.length ? given : ["."]).flatMap((a) => {
+    if (!existsSync(a)) die(`no such file or directory: ${a}`);
+    return statSync(a).isDirectory() ? discover(a) : [a];
+  });
+  if (!files.length) die("no .hk files found");
   let total = 0;
   const allSources = new Map<string, string>();
   const allDiags: Diagnostic[] = [];
@@ -177,6 +188,9 @@ function cmdCheck(args: string[]): void {
     if (!diags.hasErrors && !sema.hasErrors) {
       const inferred = inferTypes(main);
       allDiags.push(...inferred.diags.items);
+      if (!inferred.diags.hasErrors) {
+        allDiags.push(...checkOwnership(main, inferred.types, inferred.structFields).diags.items);
+      }
       if (explain) unknowns.push(...inferred.unknowns);
     }
     total++;
@@ -240,6 +254,10 @@ function cmdBuild(args: string[]): void {
 
   const inferred = inferTypes(main);
   for (const d of inferred.diags.items) diags.items.push(d);
+  if (!inferred.diags.hasErrors) {
+    const own = checkOwnership(main, inferred.types, inferred.structFields);
+    for (const d of own.diags.items) diags.items.push(d);
+  }
   if (diags.hasErrors) { report(diags.items, sources); process.exit(1); }
 
   const { c, diags: emitDiags, links, needsPython } = emitC(main, inferred.types, {

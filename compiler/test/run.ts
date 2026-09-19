@@ -7,6 +7,7 @@
 //   fmt      — formatting is idempotent and never changes what a program prints
 //   native   — R23: the compiled binary prints exactly what the interpreter does
 //   ffi      — #35/#37: C and Python interop, built and run for real
+//   own      — spec/MEMORY-MODEL.md: ownership and borrow checking
 
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
@@ -15,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { parse } from "../src/parser/parser.ts";
 import { check } from "../src/sema/check.ts";
 import { inferTypes } from "../src/sema/infer.ts";
+import { checkOwnership } from "../src/sema/ownership.ts";
 import { format } from "../src/fmt/format.ts";
 import { Interpreter, HalkaRuntimeError } from "../src/interp/interpreter.ts";
 import { renderAll } from "../src/util/diagnostics.ts";
@@ -342,6 +344,73 @@ function suiteFfi(): void {
   }
 }
 
+/**
+ * spec/MEMORY-MODEL.md — the ownership and borrow checker. Each case either
+ * must produce a given diagnostic, or (when the code is `null`) must produce
+ * none at all. The negative cases matter as much as the positive ones: a
+ * borrow checker that rejects ordinary code is the failure this design exists
+ * to avoid.
+ */
+const OWNERSHIP: { name: string; code: string | null; src: string }[] = [
+  { name: "M1 use after move", code: "E0504", src: "let a: [1, 2, 3]\nlet b: a\nsay len(a)\n" },
+  { name: "M1 explicit move", code: "E0504", src: 'let a: "hello"\nlet b: move a\nsay a\n' },
+  { name: "M1 move inside a loop", code: "E0504", src: "let a: [1, 2, 3]\nfor i in 0..3,\n    let b: a,\n    say len(b)\n" },
+  { name: "M2.2 moved into an owning parameter", code: "E0504", src: "keep(xs): list(int),\n    give xs\n\nlet a: [1, 2, 3]\nlet k: keep(a)\nsay len(a)\n" },
+  { name: "M2.3 return a borrow", code: "E0510", src: "first(xs),\n    give borrow xs\n" },
+  { name: "M2.3 store a borrow", code: "E0510", src: "let a: [1, 2, 3]\nlet holder: [borrow a]\nsay len(holder)\n" },
+  { name: "M2.1 two mutable borrows", code: "E0511", src: "let a: [1, 2, 3]\nlet p: borrow mut a\nlet q: borrow mut a\nsay len(a)\n" },
+  { name: "M2.1 mutable while shared", code: "E0511", src: "let a: [1, 2, 3]\nlet p: borrow a\nlet q: borrow mut a\nsay len(a)\n" },
+  { name: "M2.1 conflict in one call", code: "E0511", src: "both(x, y),\n    give 1\n\nlet a: [1, 2, 3]\nsay both(borrow mut a, borrow a)\n" },
+  { name: "M2.1 assign through a shared borrow", code: "E0509", src: "let n: 5\nlet r: &n\n*r: 6\n" },
+  { name: "M5 task captures a borrow", code: "E0512", src: "work(x),\n    give 1\n\nlet a: [1, 2, 3]\nlet t: start work(borrow a)\n" },
+
+  // --- must NOT be rejected -------------------------------------------------
+  { name: "scalars copy freely", code: null, src: "let a: 5\nlet b: a\nlet c: a\nsay a + b + c\n" },
+  { name: "M1.1 a struct of scalars copies", code: null, src: "Point:\n    x: int,\n    y: int\n\nlet p: Point(1, 2)\nlet q: p\nsay p.x + q.y\n" },
+  { name: "M2.2 parameters borrow", code: null, src: "render(xs),\n    say len(xs)\n\nlet a: [1, 2, 3]\nrender(a)\nrender(a)\nsay len(a)\n" },
+  { name: "a give in a branch does not move the rest", code: null, src: "build(n),\n    let out: [],\n    if n < 1,\n        give out,\n    out.push(1),\n    give out\n" },
+  { name: "M2.1 shared borrows coexist", code: null, src: "let a: [1, 2, 3]\nlet p: borrow a\nlet q: borrow a\nsay len(a)\n" },
+  { name: "M2 a borrow ends with its block", code: null, src: "let a: [1, 2, 3]\nif true,\n    let p: borrow mut a,\n    say len(a)\nlet q: borrow mut a\nsay len(a)\n" },
+  { name: "destructuring reads, it does not move", code: null, src: "let a: [1, 2, 3]\nlet [x, ...rest]: a\nsay len(a) + x\n" },
+];
+
+function suiteOwnership(): void {
+  for (const c of OWNERSHIP) {
+    const { module, diags } = parse(c.src, "own.hk");
+    if (diags.hasErrors) { bad("own", c.name, renderAll(diags.items.slice(0, 1), { source: c.src })); continue; }
+    const inf = inferTypes(module);
+    if (inf.diags.hasErrors) { bad("own", c.name, renderAll(inf.diags.items.slice(0, 1), { source: c.src })); continue; }
+    const r = checkOwnership(module, inf.types, inf.structFields);
+    const codes = r.diags.items.map((d) => d.code);
+    const good = c.code === null ? codes.length === 0 : codes.includes(c.code);
+    if (good) ok("own", c.name);
+    else {
+      bad("own", c.name,
+        `expected ${c.code ?? "no errors"}, got [${codes.join(", ") || "none"}]` +
+        (codes.length ? "\n" + renderAll(r.diags.items.slice(0, 1), { source: c.src }) : ""));
+    }
+  }
+}
+
+/** Every file we ship must pass the ownership checker with nothing to say. */
+function suiteOwnershipCorpus(): void {
+  const dirs = [join(ROOT, "examples"), join(ROOT, "stdlib"), join(HERE, "cases"), join(HERE, "native"), join(ROOT, "bench")];
+  for (const dir of dirs) {
+    if (!existsSync(dir)) continue;
+    for (const f of readdirSync(dir).filter((x) => x.endsWith(".hk")).sort()) {
+      const src = readFileSync(join(dir, f), "utf8");
+      const { module, diags } = parse(src, f);
+      if (diags.hasErrors) continue;
+      const inf = inferTypes(module);
+      if (inf.diags.hasErrors) continue;
+      const r = checkOwnership(module, inf.types, inf.structFields);
+      const errs = r.diags.items.filter((d) => d.severity === "error");
+      if (!errs.length) ok("own", `${f} is clean`);
+      else bad("own", `${f} is clean`, renderAll(errs.slice(0, 2), { source: src }));
+    }
+  }
+}
+
 const t0 = Date.now();
 suiteSpec();
 suiteReject();
@@ -349,6 +418,8 @@ suiteRun();
 suiteFmt();
 suiteNative();
 suiteFfi();
+suiteOwnership();
+suiteOwnershipCorpus();
 const ms = Date.now() - t0;
 
 if (failures.length) {

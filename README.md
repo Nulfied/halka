@@ -316,6 +316,10 @@ What works today:
   parses; `examples/tour.hk` exercises 30 of the 54 rules.
 - **Static type inference** (#11, #13) — annotations optional, optionals
   tracked and narrowed, match exhaustiveness checked.
+- **Ownership and borrow checking** — use-after-move, escaping borrows,
+  aliasing violations and data races rejected at compile time, with **no
+  lifetime annotations anywhere** ([the model](spec/MEMORY-MODEL.md),
+  [a worked example](examples/ownership.hk)).
 - **The reference interpreter** — the whole language, including tasks,
   channels, mutexes, atomics, cancellation, macros and `reflect`.
 - **The native backend** — scalars, strings, lists, structs, functions,
@@ -328,9 +332,9 @@ What works today:
 - **Tooling** — formatter, REPL, language server, VS Code extension,
   Tree-sitter grammar, package-free module resolution.
 
-What is next, in order: ownership and borrow checking as a static pass, then
-enums/match and maps in the backend, then C/C++/Python FFI, then self-hosting.
-See [ROADMAP.md](ROADMAP.md).
+What is next, in order: escape analysis so the backend frees what it
+allocates, enums/match and maps in the native backend, a package manager, then
+self-hosting. See [ROADMAP.md](ROADMAP.md).
 
 [STATUS.md](STATUS.md) maps all 55 planned ecosystem areas to what actually
 exists today, so "is that implemented or planned?" always has an answer.
@@ -346,8 +350,8 @@ support, documentation, examples — is open.
 
 ```bash
 cd compiler
-npm test          # 111 tests: spec conformance, rejections, golden output,
-                  #            formatter, native-vs-interpreter equivalence, C and Python FFI
+npm test          # 154 tests: spec conformance, rejections, golden output,
+                  #            formatter, native/interpreter equivalence, FFI, ownership
 npm run typecheck
 ```
 

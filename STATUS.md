@@ -6,7 +6,7 @@ and it is updated in the same commit as the work it describes.
 
 **Legend** — ✅ done · 🟡 partial · ⬜ not started · 🔗 belongs in the ecosystem, not the core
 
-Counts today: **14 done · 14 partial · 23 not started · 4 ecosystem**
+Counts today: **16 done · 12 partial · 23 not started · 4 ecosystem**
 
 ---
 
@@ -18,7 +18,7 @@ Counts today: **14 done · 14 partial · 23 not started · 4 ecosystem**
 | 2 | Compiler toolchain | 🟡 | Lexer, parser, AST, name resolution, scope analysis, type analysis, backend lowering, native codegen, linking, diagnostics. Missing: IR stage, optimization stage, incremental builds, debug info. |
 | 3 | Intermediate representation | ⬜ | The backend lowers AST → C directly. No IR means no target-independent optimization and no second backend. **This is a multiplier — see below.** |
 | 4 | Optimization system | 🟡 | Delegated to the C compiler, which does inlining, DCE, constant folding and vectorisation for us. That is a deliberate choice, not an omission — but Halka-level optimizations (bounds-check elision, monomorphisation, refcount elision) need #3 first. |
-| 5 | Memory, ownership & lifetimes | 🟡 | **Designed and documented** in `spec/MEMORY-MODEL.md`; enforced only dynamically by the interpreter. The static pass is the single largest correctness gap. |
+| 5 | Memory, ownership & lifetimes | ✅ | **Enforced statically.** Move checking with flow-sensitive branch merging and loop detection, lexical non-escaping borrows, one-writer-or-many-readers aliasing, and task-capture checking. A parameter's ownership is *inferred* from whether the body keeps it, so there are no annotations and no lifetime syntax anywhere. |
 | 6 | Raw memory & unsafe | 🟡 | `raw`, `unsafe:` parse; the interpreter enforces that deref requires `unsafe`. The backend does not implement raw pointers yet. |
 | 7 | Type system | ✅ | Hindley-Milner-style inference, optionals as a real constructor with narrowing, generics, structs, enums, traits, match exhaustiveness. |
 | 8 | Generics & abstraction | 🟡 | Parsed, inferred, and checked. **Not monomorphised** — the native backend cannot compile a generic function yet. |
@@ -56,8 +56,8 @@ Counts today: **14 done · 14 partial · 23 not started · 4 ecosystem**
 | 24 | Debugging | ⬜ | No debug info, no DAP adapter. `halka build` does emit `/Zi` in debug mode, so a C debugger sees the generated C. |
 | 25 | Language server / IntelliSense | ✅ | LSP 3.17 over stdio, zero dependencies: diagnostics, hover, completion, go-to-definition, document symbols, rename, highlight, formatting. |
 | 26 | Code formatting | ✅ | Canonical, idempotent, comment-preserving, behaviour-preserving — all four properties are tested. |
-| 27 | Linting & static analysis | 🟡 | Name resolution, arity, locked-absence checks, naming conventions, type errors, match exhaustiveness. No unused-code detection, no ownership analysis. |
-| 28 | Testing ecosystem | ✅ | `halka test` for user projects; 111 internal tests across spec conformance, rejection, golden output, formatter, native-vs-interpreter equivalence, and real C and Python FFI calls. |
+| 27 | Linting & static analysis | ✅ | Name resolution, arity, locked-absence checks, naming conventions, type errors, match exhaustiveness, and full ownership and borrow analysis. No unused-code detection yet. |
+| 28 | Testing ecosystem | ✅ | `halka test` for user projects; 154 internal tests across spec conformance, rejection, golden output, formatter, native-vs-interpreter equivalence, real C and Python FFI calls, and ownership. |
 | 29 | Build system | 🟡 | `halka build` compiles one file to a binary. No multi-file project build, no incremental compilation, no cross-compilation yet. |
 | 30 | Package management | ⬜ | Module resolution over a search path only. No manifest resolution, no versions, no lockfile. **Second-biggest multiplier.** |
 | 31 | Package registry | ⬜ | Nothing. |
@@ -90,7 +90,7 @@ Counts today: **14 done · 14 partial · 23 not started · 4 ecosystem**
 |---|---|---|---|
 | 49 | Self-hosting | ⬜ | Stage 0 in TypeScript. Nothing written in Halka yet beyond three stdlib modules. |
 | 51 | Formal verification | ⬜ | Nothing. Honestly: this is a research programme, not a feature. |
-| 52 | Security model | 🟡 | Capabilities (`requires`, `with capability`) enforced dynamically; `unsafe:` boundaries enforced in the interpreter. Not static, not enforced by the backend. |
+| 52 | Security model | 🟡 | Ownership, borrows and data-race freedom are now static. Capabilities (`requires`, `with capability`) are still dynamic, and `unsafe:` is enforced only by the interpreter. |
 | 53 | Developer experience | 🟡 | Language, runtime, CLI, formatter, diagnostics, testing, LSP and editor integration exist. Package manager, debugger and distribution do not. |
 | 54 | Ecosystem philosophy | — | The organising principle, not a feature. |
 | 55 | Interaction rule | ✅ | Honoured. This file is how implemented and planned are kept apart. |

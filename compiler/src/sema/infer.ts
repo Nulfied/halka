@@ -45,6 +45,8 @@ export interface InferResult {
   unknowns: { span: Span; why: string }[];
   /** `import c "stdio.h"` / `import py "numpy"` (#35-#37). */
   foreignImports: ForeignImport[];
+  /** Struct name -> field types, in declaration order. Used by the ownership pass. */
+  structFields: Map<string, Ty[]>;
 }
 
 export class Inferencer {
@@ -78,7 +80,15 @@ export class Inferencer {
     this.collectSignatures(mod.stmts, global);
     this.checkStmts(mod.stmts, global);
 
-    return { types: this.types, diags: this.diags, unknowns: this.unknowns, foreignImports: this.foreignImports };
+    const structFields = new Map<string, Ty[]>();
+    for (const [name, info] of this.structs) structFields.set(name, info.order.map((f) => info.fields.get(f)!));
+    return {
+      types: this.types,
+      diags: this.diags,
+      unknowns: this.unknowns,
+      foreignImports: this.foreignImports,
+      structFields,
+    };
   }
 
   private err(code: string, msg: string, span: Span, extra?: Record<string, unknown>): void {

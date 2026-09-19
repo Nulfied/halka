@@ -35,16 +35,23 @@ class Formatter {
   // ---- comments ---------------------------------------------------------
 
   /** Emit own-line comments that appear before `line`. */
-  private commentsBefore(line: number, depth: number): void {
-    for (const c of this.comments) {
-      if (this.used.has(c)) continue;
-      if (c.span.start.line >= line) break;
-      if (!c.ownLine) continue;
+  /**
+   * @param minCol only claim comments indented at least this far, so a comment
+   *   that trails a block is kept by that block and one at the outer level is
+   *   left for the statement that follows.
+   */
+  private commentsBefore(line: number, depth: number, minCol = 0): void {
+    const pending = this.comments.filter(
+      (c) => !this.used.has(c) && c.ownLine && c.span.start.line < line && c.span.start.col >= minCol,
+    );
+    pending.forEach((c, i) => {
       this.used.add(c);
       for (const l of c.text.split("\n")) this.push(depth, l.trim());
-      // A comment the author separated from the code keeps its blank line.
-      if (line - c.span.end.line >= 2) this.out.push("");
-    }
+      // Keep a blank line only where the author left one. What follows is the
+      // next comment in this run, or — for the last one — the statement.
+      const nextLine = pending[i + 1]?.span.start.line ?? line;
+      if (nextLine - c.span.end.line >= 2) this.out.push("");
+    });
   }
 
   /** A trailing comment on the same line as the statement. */
@@ -75,6 +82,14 @@ class Formatter {
    * @param continues whether something follows this whole block, which is what
    *   decides the trailing comma on its last statement (#50).
    */
+  /** Format a block and keep any trailing comments at its own indentation. */
+  private blockOf(b: A.Block, depth: number, continues: boolean): void {
+    this.block(b.stmts, depth, continues);
+    // Only comments indented into this block belong to it.
+    const innerCol = b.stmts[0]?.span.start.col ?? depth * 4 + 1;
+    this.commentsBefore(b.span.end.line + 1, depth, innerCol);
+  }
+
   private block(stmts: A.Stmt[], depth: number, continues: boolean, topLevel = false): void {
     stmts.forEach((s, i) => {
       const last = i === stmts.length - 1;
@@ -148,27 +163,27 @@ class Formatter {
       case "IfStmt": {
         this.push(depth, `if ${this.expr(s.cond, depth)},`);
         const hasMore = s.elifs.length > 0 || !!s.else;
-        this.block(s.then.stmts, depth + 1, hasMore || comma);
+        this.blockOf(s.then, depth + 1, hasMore || comma);
         s.elifs.forEach((e, i) => {
           this.push(depth, `else if ${this.expr(e.cond, depth)},`);
           const more = i < s.elifs.length - 1 || !!s.else;
-          this.block(e.block.stmts, depth + 1, more || comma);
+          this.blockOf(e.block, depth + 1, more || comma);
         });
         if (s.else) {
           this.push(depth, "else,");
-          this.block(s.else.stmts, depth + 1, comma);
+          this.blockOf(s.else, depth + 1, comma);
         }
         return;
       }
 
       case "ForStmt":
         this.push(depth, `for ${this.pattern(s.pattern)} in ${this.expr(s.iter, depth)},`);
-        this.block(s.body.stmts, depth + 1, comma);
+        this.blockOf(s.body, depth + 1, comma);
         return;
 
       case "WhileStmt":
         this.push(depth, `while ${this.expr(s.cond, depth)},`);
-        this.block(s.body.stmts, depth + 1, comma);
+        this.blockOf(s.body, depth + 1, comma);
         return;
 
       case "MatchStmt":
@@ -185,17 +200,17 @@ class Formatter {
 
       case "WithStmt":
         this.push(depth, `with ${s.capability ? "capability " : ""}${this.expr(s.subject, depth)},`);
-        this.block(s.body.stmts, depth + 1, comma);
+        this.blockOf(s.body, depth + 1, comma);
         return;
 
       case "ParallelStmt":
         this.push(depth, "parallel:");
-        this.block(s.body.stmts, depth + 1, comma);
+        this.blockOf(s.body, depth + 1, comma);
         return;
 
       case "UnsafeStmt":
         this.push(depth, "unsafe:");
-        this.block(s.body.stmts, depth + 1, comma);
+        this.blockOf(s.body, depth + 1, comma);
         return;
 
       case "IntrinsicStmt": {
@@ -276,7 +291,7 @@ class Formatter {
 
       case "GenerateDecl":
         this.push(depth, `generate${s.lang ? " " + s.lang : s.target ? " " + s.target : ""}:`);
-        this.block(s.body.stmts, depth + 1, comma);
+        this.blockOf(s.body, depth + 1, comma);
         return;
 
       case "SpecializeDecl":
@@ -305,7 +320,7 @@ class Formatter {
       return;
     }
     if (v.kind === "BlockExpr") {
-      this.block(v.block.stmts, depth, comma);
+      this.blockOf(v.block, depth, comma);
       return;
     }
     this.push(depth, this.expr(v, depth) + (comma ? "," : ""));
@@ -324,7 +339,7 @@ class Formatter {
       return;
     }
     this.push(depth, head + ",");
-    this.block(s.body.stmts, depth + 1, comma);
+    this.blockOf(s.body, depth + 1, comma);
   }
 
   private param(p: A.Param, depth: number): string {
@@ -346,11 +361,11 @@ class Formatter {
     m.arms.forEach((arm, i) => {
       const guard = arm.guard ? ` if ${this.expr(arm.guard, depth)}` : "";
       this.push(depth + 1, `${this.pattern(arm.pattern)}${guard},`);
-      this.block(arm.body.stmts, depth + 2, i < n - 1 || comma);
+      this.blockOf(arm.body, depth + 2, i < n - 1 || comma);
     });
     if (m.elseArm) {
       this.push(depth + 1, "else,");
-      this.block(m.elseArm.stmts, depth + 2, comma);
+      this.blockOf(m.elseArm, depth + 2, comma);
     }
   }
 

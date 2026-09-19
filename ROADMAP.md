@@ -39,29 +39,39 @@ the native tests compile each case and diff its output against the interpreter.
 Interop, don't replace. Win one pain point measurably. Ship one benchmarkable
 artifact. Meet people in the tools they already use.
 
-Two of the four pain points are now demonstrated rather than claimed —
-**C-level speed** and **real multicore parallelism**. These are what remains.
+Three of the four are demonstrated rather than claimed now — **C-level
+speed**, **real multicore parallelism**, and **memory safety without lifetime
+annotations**. Interop shipped too. What remains is packaging and reach.
 
-## v0.3 — Ownership as a static pass
+## v0.3 — Ownership as a static pass ✅
 
-The memory model ([spec/MEMORY-MODEL.md](spec/MEMORY-MODEL.md)) is designed and
-documented; the checker does not yet enforce it.
+**Shipped.** The memory model ([spec/MEMORY-MODEL.md](spec/MEMORY-MODEL.md)) is
+a compiler guarantee now, not a design document.
 
-- **Move checking** (M1) — use-after-move becomes `E0504` at compile time, with
-  the move site pointed at.
-- **Borrow checking** (M2) — one `borrow mut` or many `borrow`, and a borrow may
-  not escape its block. One scope-depth comparison, no lifetime annotations, no
-  inference of lifetimes. This is the part that must stay small; if the error
-  messages ever need a tutorial, the design has failed.
-- **Task capture checking** (M5) — a task cannot capture a borrow, so data races
-  are rejected rather than documented.
-- **Escape analysis** (M4) — stack-allocate what does not outlive its frame, and
-  free what does at the owner's scope exit. This is also what removes the v1
-  backend's leak.
-- **`shared(T)`** and the cycle warning.
+- **Move checking** (M1) — use-after-move is `E0504`, and the error shows both
+  the use and the move, with the reason for it.
+- **Borrow checking** (M2) — a borrow cannot be returned, stored, or captured.
+  A *named* borrow lives to the end of its block; one created inside an
+  expression dies with the statement.
+- **Aliasing** (M2.1) — one `borrow mut` or many `borrow`, checked across
+  statements and inside a single call's argument list.
+- **Task capture** (M5) — a task cannot capture a borrow, so data races are
+  rejected rather than documented.
+- **Ownership inference** (M2.2) — a parameter is owning exactly when the body
+  keeps its argument, resolved as a fixpoint over the call graph. **No
+  annotations and no new syntax**, which matters because V49 is locked.
 
-This is the largest remaining correctness piece, and it is what turns "memory
-safe by construction" from a design document into a compiler guarantee.
+The whole checker is a forward walk with a state map and a conservative merge
+at joins, because a borrow that cannot escape never requires relating two
+lifetimes. 18 tests cover it and six of those assert that ordinary code is
+*not* rejected. Every .hk file in the repo passes.
+
+Still open from this milestone:
+
+- **Escape analysis** (M4) — stack-allocate what does not outlive its frame and
+  free what does at the owner's scope exit. This is what removes the v1
+  backend's leak, and the ownership information it needs now exists.
+- **`shared(T)`** and the reference-cycle warning.
 
 ## v0.4 — The rest of the language, natively
 

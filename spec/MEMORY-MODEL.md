@@ -90,25 +90,64 @@ At any point a value has **either** one `borrow mut` **or** any number of
 data races impossible. It is cheap to check because M2 guarantees every borrow
 dies at a block boundary the compiler can see.
 
-### M2.2 — Parameters borrow by default
+### M2.2 — Parameters borrow by default, and ownership is inferred
 
-A function parameter **borrows** its argument unless the parameter is declared
-`move`. This is the single most important ergonomic decision in this document:
-it means ordinary code — the overwhelming majority of code — never writes
-`borrow`, never moves anything by accident, and never gets a "value used after
-move" error.
+A function parameter **borrows** its argument. This is the single most
+important ergonomic decision in this document: ordinary code — the
+overwhelming majority of code — never writes `borrow`, never moves anything by
+accident, and never sees a "value used after move" error.
 
 ```halka
-render(user),                  # borrows
+render(user),                  # borrows; the caller keeps its value
     say user.name
 
-consume(user: move User),      # takes ownership
-    archive(user)
+let u: User("Asha", 31),
+render(u),
+render(u)                      # fine, twice
 ```
 
-`borrow` at the call site (as in the locked examples) stays valid and is
-required only when the parameter is `move` but the caller wants to keep the
-value.
+A function that needs to **keep** its argument — store it, return it, hand it
+to a task — cannot do that with a borrow (M2). Rather than make the author
+annotate that, the compiler **infers it**:
+
+> A parameter is *owning* if and only if the function body moves it. Every call
+> site then moves the corresponding argument.
+
+```halka
+Registry:
+    users: list(User)
+
+remember(r, u),                # `u` is stored, so `u` is an owning parameter
+    r.users.push(u)
+
+let u: User("Asha", 31),
+remember(registry, u),
+say u.name                     # error E0504: `u` was moved into `remember`
+```
+
+The error names the call that took ownership, so the inference is never
+invisible:
+
+```
+error[E0504]: `u` was moved and can no longer be used
+  --> app.hk:9:5
+   |
+ 8 | remember(registry, u),
+   |                    - moved here, because `remember` keeps its argument
+ 9 | say u.name
+   |     ^ used after the move
+```
+
+This is a deliberate reading of rule #11 — "type annotations are optional
+whenever the compiler can infer the type unambiguously" — applied to ownership
+rather than to types. It also means **no new syntax**: a `move` marker in
+parameter position would be a grammar change, and the V49 syntax is locked.
+
+`move` at a call site (#25) stays available and forces the transfer explicitly
+when an author wants it visible there.
+
+The inference is a fixpoint over the call graph: passing a parameter to another
+function's owning parameter is itself a move.
 
 ### M2.3 — What you give up
 
@@ -232,7 +271,7 @@ intrusive data structure, it does, and `unsafe:` is there.
 
 | Code | Meaning |
 |---|---|
-| `E0504` | value used after move — *shows where it moved* |
+| `E0504` | value used after move — *shows where it moved, and why* |
 | `E0508` | cannot move out of a borrow |
 | `E0509` | cannot mutate through a shared borrow |
 | `E0510` | a borrow cannot leave the block that created it |
