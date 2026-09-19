@@ -42,7 +42,9 @@ class Host {
   request(payload: Record<string, unknown>): Promise<Reply> {
     const id = ++this.nextId;
     return new Promise((res, rej) => {
-      const timer = setTimeout(() => rej(new Error(`the host did not answer ${JSON.stringify(payload)}`)), 15000);
+      // Generous, because a cold CI runner pays for type-stripping the
+      // whole compiler on the first request.
+      const timer = setTimeout(() => rej(new Error(`the host did not answer ${JSON.stringify(payload)}`)), 60000);
       this.waiting.set(id, (r) => { clearTimeout(timer); res(r); });
       this.proc.stdin.write(JSON.stringify({ ...payload, id }) + "\n");
     });
@@ -131,9 +133,11 @@ function frontEnd(
   for (const exe of [process.env["HALKA_PYTHON"], "python", "python3", "py"].filter(Boolean) as string[]) {
     const probe = spawnSync(exe, ["-c", "import sys"], { stdio: "ignore" });
     if (probe.status !== 0) continue;
-    const r = spawnSync(exe, [script, CLI], { encoding: "utf8" });
+    // Bounded, because that script blocks on a pipe: a host that wedges
+    // should fail this suite, not stall CI until the job limit.
+    const r = spawnSync(exe, [script, CLI], { encoding: "utf8", timeout: 180000 });
     if (r.status === 0) ok("kernel", "the Python front end");
-    else bad("kernel", "the Python front end", (r.stdout ?? "") + (r.stderr ?? ""));
+    else bad("kernel", "the Python front end", r.error ? String(r.error) : (r.stdout ?? "") + (r.stderr ?? ""));
     return;
   }
   process.stdout.write("note: no Python found — the kernel front end was not tested" + String.fromCharCode(10));
