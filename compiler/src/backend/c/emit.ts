@@ -1461,7 +1461,7 @@ export class CEmitter {
     const t = this.tyOf(e);
     const et = this.cty(this.elemOf(t), "element", e.span);
     const v = this.fresh("lit");
-    this.line(`hk_list *${v} = hk_list_new(sizeof(${et}), ${e.elements.length});`);
+    this.line(`hk_list *${v} = hk_list_new(sizeof(${et}), ${e.elements.length}, ${ekindOf(et)});`);
     for (const x of e.elements) this.line(`HK_PUSH(${v}, ${et}, ${this.expr(x)});`);
     return v;
   }
@@ -1613,6 +1613,17 @@ function mangle(name: string): string {
  * explicit parenthesis is a reassociation barrier to the C compiler, so
  * wrapping a reduction's accumulator silently costs auto-vectorisation.
  */
+/**
+ * What a list's elements own, so `hk_list_release` can release them. A list
+ * of strings that reported HK_E_SCALAR freed its backing array and leaked
+ * every string in it.
+ */
+function ekindOf(elemCty: string): string {
+  if (elemCty === "hk_str *") return "HK_E_STR";
+  if (elemCty === "hk_list *") return "HK_E_LIST";
+  return "HK_E_SCALAR";
+}
+
 function atom(s: string): string {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(s) ? s : `(${s})`;
 }

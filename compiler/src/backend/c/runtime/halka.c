@@ -196,12 +196,13 @@ int hk_str_cmp(hk_str *a, hk_str *b) {
 
 /* ---- lists -------------------------------------------------------------- */
 
-hk_list *hk_list_new(hk_int esz, hk_int cap) {
+hk_list *hk_list_new(hk_int esz, hk_int cap, hk_int ekind) {
   hk_list *l = (hk_list *)hk_alloc(sizeof(hk_list));
   l->rc = 1;
   l->len = 0;
   l->cap = cap > 0 ? cap : 0;
   l->esz = esz;
+  l->ekind = ekind;
   l->data = l->cap ? hk_alloc((size_t)(l->cap * esz)) : NULL;
   return l;
 }
@@ -227,7 +228,16 @@ hk_list *hk_list_retain(hk_list *l) {
 
 void hk_list_release(hk_list *l) {
   if (!l || l->rc < 0) return;
-  if (--l->rc == 0) { hk_dealloc(l->data); hk_dealloc(l); }
+  if (--l->rc == 0) {
+    /* The elements are owned by the list, so they go with it. */
+    if (l->ekind == HK_E_STR) {
+      for (hk_int i = 0; i < l->len; i++) hk_str_release(((hk_str **)l->data)[i]);
+    } else if (l->ekind == HK_E_LIST) {
+      for (hk_int i = 0; i < l->len; i++) hk_list_release(((hk_list **)l->data)[i]);
+    }
+    hk_dealloc(l->data);
+    hk_dealloc(l);
+  }
 }
 
 hk_int hk_list_check(hk_list *l, hk_int i, const char *file, hk_int line) {

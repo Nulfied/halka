@@ -154,15 +154,23 @@ void    hk_str_release(hk_str *s);
 
 /* Unboxed storage: `data` is a flat array of `esz`-byte elements, so an
  * int list is a plain int64_t[] and indexing is one load. */
+/* What the elements own, so releasing a list can release them too. A list
+ * of strings used to free only its backing array and leak every string in
+ * it, because nothing recorded that the elements were owners. */
+#define HK_E_SCALAR 0
+#define HK_E_STR    1
+#define HK_E_LIST   2
+
 typedef struct hk_list {
   hk_int rc;
   hk_int len;
   hk_int cap;
   hk_int esz;
+  hk_int ekind;
   void  *data;
 } hk_list;
 
-hk_list *hk_list_new(hk_int esz, hk_int cap);
+hk_list *hk_list_new(hk_int esz, hk_int cap, hk_int ekind);
 void     hk_list_reserve(hk_list *l, hk_int need);
 void     hk_list_push_raw(hk_list *l, const void *elem);
 hk_list *hk_list_retain(hk_list *l);

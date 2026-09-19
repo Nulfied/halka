@@ -1,0 +1,36 @@
+# A list owns its elements. `hk_list_release` used to free only the backing
+# array, so a list of strings leaked every string in it — and nothing tested
+# it, which is why "every compiled program exits with zero live objects" was
+# not true for this shape.
+count(xs: list(string)): int,
+    give len(xs)
+
+main(),
+    let a: [],
+    a.push("one"),
+
+    # A named local pushed: ownership moves to the list, so neither the
+    # block nor the list may free it twice.
+    let s: "two",
+    a.push(s),
+    say count(a),
+    say a[0],
+    say a[1],
+
+    # Lists of lists release their children too.
+    let rows: [],
+    for i in 0..3,
+        let row: [],
+        row.push("r{i}"),
+        row.push("s{i}"),
+        rows.push(row),
+    say len(rows),
+    say rows[2][1],
+
+    # Rebuilt in a loop, so a leak here would accumulate.
+    let n: 0,
+    for i in 0..50,
+        let tmp: [],
+        tmp.push("x{i}"),
+        n: n + len(tmp),
+    say n
