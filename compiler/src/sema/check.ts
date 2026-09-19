@@ -35,6 +35,7 @@ class Checker {
   private traits = new Set<string>();
   private caps = new Set<string>();
   private macros = new Set<string>();
+  private structFields = new Map<string, string[]>();
   private modules = new Set<string>();
   private fnDepth = 0;
   private loopDepth = 0;
@@ -81,6 +82,7 @@ class Checker {
         case "StructDecl":
           if (!s.foreign) once(s.name, s.span, "type");
           this.types.add(s.name);
+          this.structFields.set(s.name, s.fields.map((f) => f.name));
           scope.add(s.name);
           break;
         case "EnumDecl":
@@ -232,8 +234,8 @@ class Checker {
         }
         const inner = scope.child();
         inner.add("self");
-        const st = s.typeName;
-        void st;
+        // A method body may name the receiver's fields directly (#16).
+        for (const f of this.structFields.get(s.typeName) ?? []) inner.add(f);
         for (const m of s.members) this.walkStmt(m, inner);
         return;
       }

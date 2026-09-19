@@ -1,0 +1,235 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Halka",
+  "scopeName": "source.halka",
+  "fileTypes": ["hk"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#declarations" },
+    { "include": "#keywords" },
+    { "include": "#ffi" },
+    { "include": "#numbers" },
+    { "include": "#types" },
+    { "include": "#operators" },
+    { "include": "#calls" },
+    { "include": "#identifiers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.halka",
+          "begin": "###",
+          "end": "###",
+          "beginCaptures": { "0": { "name": "punctuation.definition.comment.halka" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.comment.halka" } }
+        },
+        {
+          "name": "comment.line.number-sign.halka",
+          "begin": "#",
+          "end": "$",
+          "beginCaptures": { "0": { "name": "punctuation.definition.comment.halka" } }
+        }
+      ]
+    },
+
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.triple.halka",
+          "begin": "\"\"\"",
+          "end": "\"\"\"",
+          "patterns": [{ "include": "#interpolation" }, { "include": "#escapes" }]
+        },
+        {
+          "name": "string.quoted.other.raw.halka",
+          "begin": "r\"",
+          "end": "\""
+        },
+        {
+          "name": "string.quoted.double.halka",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [{ "include": "#interpolation" }, { "include": "#escapes" }]
+        },
+        {
+          "name": "string.quoted.single.halka",
+          "begin": "'",
+          "end": "'",
+          "patterns": [{ "include": "#escapes" }]
+        }
+      ]
+    },
+
+    "interpolation": {
+      "name": "meta.embedded.halka",
+      "begin": "\\{",
+      "end": "\\}",
+      "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.halka" } },
+      "endCaptures": { "0": { "name": "punctuation.section.embedded.end.halka" } },
+      "patterns": [
+        { "include": "#strings" },
+        { "include": "#numbers" },
+        { "include": "#keywords" },
+        { "include": "#operators" },
+        { "include": "#calls" },
+        { "include": "#identifiers" }
+      ]
+    },
+
+    "escapes": {
+      "name": "constant.character.escape.halka",
+      "match": "\\\\(?:[ntr0\\\\\"'{}e]|u\\{[0-9A-Fa-f]+\\})"
+    },
+
+    "declarations": {
+      "patterns": [
+        {
+          "comment": "function declaration: name(params), at the start of a line",
+          "match": "^\\s*(?:(macro|compile|kernel|callback|device)\\s+)?([a-z_][A-Za-z0-9_]*)\\s*(<[^<>\\n]*>)?\\s*(?=\\()",
+          "captures": {
+            "1": { "name": "storage.modifier.halka" },
+            "2": { "name": "entity.name.function.halka" },
+            "3": { "name": "meta.generic.halka" }
+          }
+        },
+        {
+          "comment": "type declaration header: Name: or Name<T>:",
+          "match": "^\\s*([A-Z][A-Za-z0-9_]*)\\s*(<[^<>\\n]*>)?\\s*(?=:\\s*$)",
+          "captures": { "1": { "name": "entity.name.type.halka" } }
+        },
+        {
+          "match": "\\b(enum|trait|type|capability)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.halka" },
+            "2": { "name": "entity.name.type.halka" }
+          }
+        },
+        {
+          "match": "^\\s*([A-Z][A-Za-z0-9_]*)\\s+(implements)\\s+",
+          "captures": {
+            "1": { "name": "entity.name.type.halka" },
+            "2": { "name": "keyword.other.halka" }
+          }
+        }
+      ]
+    },
+
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.halka",
+          "match": "\\b(if|else|for|while|match|break|continue|give|defer|with|parallel|unsafe|in|step)\\b"
+        },
+        {
+          "name": "keyword.declaration.halka",
+          "match": "\\b(let|const|type|enum|trait|implements|capability|macro|generate|specialize|extern|import|from|export|requires)\\b"
+        },
+        {
+          "name": "keyword.other.concurrency.halka",
+          "match": "\\b(start|await|send|receive|make|atomic|load|store|cancel|cancelled|release|register|revoke|launch|kernel|device)\\b"
+        },
+        {
+          "name": "keyword.other.memory.halka",
+          "match": "\\b(borrow|move|raw|mut)\\b"
+        },
+        {
+          "name": "keyword.operator.word.halka",
+          "match": "\\b(and|or|not|is|as|to)\\b"
+        },
+        {
+          "name": "keyword.other.compiletime.halka",
+          "match": "\\b(compile|reflect|callback)\\b"
+        },
+        { "name": "keyword.other.say.halka", "match": "\\b(say)\\b" },
+        {
+          "name": "constant.language.halka",
+          "match": "\\b(true|false|null|nothing)\\b"
+        },
+        {
+          "comment": "reserved and rejected by rule #17/#21/#23",
+          "name": "invalid.illegal.halka",
+          "match": "\\b(try|catch|throw|finally|return|lambda|fn|func|function|class)\\b"
+        }
+      ]
+    },
+
+    "ffi": {
+      "patterns": [
+        {
+          "match": "\\b(c|cpp|py)\\s+(?=[A-Za-z_\"])",
+          "captures": { "1": { "name": "keyword.other.ffi.halka" } }
+        },
+        {
+          "match": "\\b(import|from|extern)\\s+(c|cpp|py)\\b",
+          "captures": {
+            "1": { "name": "keyword.declaration.halka" },
+            "2": { "name": "keyword.other.ffi.halka" }
+          }
+        }
+      ]
+    },
+
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.hex.halka", "match": "\\b0[xX][0-9A-Fa-f_]+\\b" },
+        { "name": "constant.numeric.binary.halka", "match": "\\b0[bB][01_]+\\b" },
+        { "name": "constant.numeric.octal.halka", "match": "\\b0[oO][0-7_]+\\b" },
+        { "name": "constant.numeric.float.halka", "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*(?:[eE][+-]?[0-9_]+)?\\b" },
+        { "name": "constant.numeric.integer.halka", "match": "\\b[0-9][0-9_]*(?:[eE][+-]?[0-9_]+)?\\b" }
+      ]
+    },
+
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.halka",
+          "match": "\\b(int|uint|float|byte|bool|string|char|void|int8|int16|int32|int64|uint8|uint16|uint32|uint64|float32|float64|double)\\b"
+        },
+        {
+          "name": "support.type.builtin.halka",
+          "match": "\\b(list|array|map|set|tuple|channel|task|Result)\\b"
+        },
+        { "name": "entity.name.type.halka", "match": "\\b[A-Z][A-Za-z0-9_]*\\b" }
+      ]
+    },
+
+    "operators": {
+      "patterns": [
+        { "name": "keyword.operator.range.halka", "match": "\\.\\.=?" },
+        { "name": "keyword.operator.spread.halka", "match": "\\.\\.\\." },
+        { "name": "keyword.operator.comparison.halka", "match": "(==|!=|<=|>=|<|>)" },
+        { "name": "keyword.operator.arithmetic.halka", "match": "[+\\-*/%]" },
+        { "name": "keyword.operator.reference.halka", "match": "&(mut\\b)?" },
+        { "name": "keyword.operator.optional.halka", "match": "\\?" },
+        { "name": "keyword.operator.assignment.halka", "match": ":" },
+        { "name": "punctuation.separator.halka", "match": "," }
+      ]
+    },
+
+    "calls": {
+      "patterns": [
+        {
+          "match": "\\b([a-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "captures": { "1": { "name": "entity.name.function.call.halka" } }
+        },
+        {
+          "match": "\\.\\s*([a-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "captures": { "1": { "name": "entity.name.function.member.halka" } }
+        },
+        {
+          "match": "\\.\\s*([a-z_][A-Za-z0-9_]*)",
+          "captures": { "1": { "name": "variable.other.property.halka" } }
+        }
+      ]
+    },
+
+    "identifiers": {
+      "patterns": [
+        { "name": "variable.language.wildcard.halka", "match": "\\b_\\b" },
+        { "name": "variable.other.halka", "match": "\\b[a-z_][A-Za-z0-9_]*\\b" }
+      ]
+    }
+  }
+}

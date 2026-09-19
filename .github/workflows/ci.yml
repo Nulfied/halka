@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ['22.x', '24.x']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Run the test suite
+        working-directory: compiler
+        run: node --experimental-strip-types test/run.ts
+
+      - name: Run the examples
+        working-directory: compiler
+        shell: bash
+        run: |
+          for f in ../examples/*.hk; do
+            echo "--- $f"
+            node bin/halka.mjs run "$f"
+          done
+
+      - name: Check that everything is formatted
+        working-directory: compiler
+        run: node bin/halka.mjs fmt --check ../examples ../stdlib test/cases
+
+  typecheck:
+    name: typecheck the toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+      - working-directory: compiler
+        run: npm install --no-audit --no-fund
+      - working-directory: compiler
+        run: npx tsc -p tsconfig.json --noEmit
+
+  spec:
+    name: spec is unmodified
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Regenerate the locked spec from its .docx sources
+        run: |
+          python spec/tools/gen_spec.py \
+            spec/source/HALKA_V49_Syntax_Design_1-15_Locked.docx \
+            spec/source/HALKA_V49_Syntax_Design_16-34_Locked.docx \
+            spec/source/HALKA_V49_Syntax_Design_35-54_Locked.docx > /tmp/rules.md
+      - name: Fail if the locked rules drifted from the authored documents
+        run: |
+          # The header is hand-written; the rules below it must match byte for byte.
+          tail -n +20 spec/V49-LOCKED.md > /tmp/have.md
+          if ! diff -q <(sed -e 's/[[:space:]]*$//' /tmp/rules.md) \
+                       <(sed -e 's/[[:space:]]*$//' /tmp/have.md) > /dev/null; then
+            echo "::error::spec/V49-LOCKED.md no longer matches spec/source/*.docx."
+            echo "The locked rules may only change through a numbered HEP."
+            diff <(sed -e 's/[[:space:]]*$//' /tmp/rules.md) \
+                 <(sed -e 's/[[:space:]]*$//' /tmp/have.md) | head -40
+            exit 1
+          fi
+
+  grammar:
+    name: tree-sitter grammar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+      - working-directory: editors/tree-sitter-halka
+        run: npm install --no-audit --no-fund
+
+      - name: Generate the parser and fail on any conflict
+        working-directory: editors/tree-sitter-halka
+        run: npx tree-sitter generate
+
+      - name: Fail if src/parser.c is stale
+        working-directory: editors/tree-sitter-halka
+        run: git diff --exit-code -- src/
+
+      - name: Corpus tests
+        working-directory: editors/tree-sitter-halka
+        run: npx tree-sitter test
+
+      - name: Parse every example
+        working-directory: editors/tree-sitter-halka
+        run: npx tree-sitter parse --quiet --stat ../../examples/*.hk ../../compiler/test/cases/*.hk
+
+  vscode:
+    name: vscode extension packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+      - working-directory: editors/vscode
+        run: npm install --no-audit --no-fund
+      - working-directory: editors/vscode
+        run: npx vsce package --out halka.vsix
+      - uses: actions/upload-artifact@v4
+        with:
+          name: halka-vscode-extension
+          path: editors/vscode/halka.vsix

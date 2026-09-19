@@ -5,3 +5,4 @@ dist/
 .DS_Store
 *.log
 editors/vscode/*.vsix
+editors/tree-sitter-halka/tree-sitter.exe

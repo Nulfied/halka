@@ -28,9 +28,12 @@ export class Scheduler {
   /** Safety valve for runaway programs; 0 disables. */
   stepLimit = 0;
 
+  private allFibers: Fiber[] = [];
+
   spawn(name: string, gen: Generator<Suspend, Value, unknown>): Fiber {
     const f = new FiberClass(name, gen);
     this.runnable.push(f);
+    this.allFibers.push(f);
     return f;
   }
 
@@ -134,6 +137,7 @@ export class Scheduler {
 
       case "await": {
         const t = s.task;
+        t.observed = true;
         if (t.finished) {
           f.state = "ready";
           f.resumeWith = t;
@@ -258,6 +262,11 @@ export class Scheduler {
     f.cancelRequested = true;
     // A blocked fiber is made runnable so it can observe `cancelled` and clean up.
     if (f.state === "blocked") this.unblock(f, NOTHING);
+  }
+
+  /** Fibers that failed and whose result nobody awaited. */
+  unobservedFailures(): Fiber[] {
+    return this.allFibers.filter((f) => f.state === "failed" && !f.observed);
   }
 
   get pending(): number { return this.runnable.length + this.blocked.size + this.timers.length; }

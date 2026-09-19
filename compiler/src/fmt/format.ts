@@ -76,7 +76,9 @@ class Formatter {
   private block(stmts: A.Stmt[], depth: number, continues: boolean, topLevel = false): void {
     stmts.forEach((s, i) => {
       const last = i === stmts.length - 1;
-      const comma = last ? continues : true;
+      // The module top level is a list of independent statements, not one
+      // continued construct, so it carries no separating commas (#53).
+      const comma = topLevel ? false : last ? continues : true;
       if (topLevel && i > 0 && needsBlankLineBefore(s, stmts[i - 1]!)) this.out.push("");
       this.stmt(s, depth, comma);
     });

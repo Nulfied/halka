@@ -132,6 +132,8 @@ export interface Frame {
   capabilities: Set<string>;
   /** #46 — inside an `unsafe:` block. */
   unsafeDepth: number;
+  /** The receiver of a method call, so bare field names resolve (#16). */
+  self?: Value;
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +161,8 @@ export class Fiber {
   /** Value handed back into the generator on resume. */
   resumeWith: unknown = undefined;
   cancelRequested = false;
+  /** True once some fiber has awaited this one. */
+  observed = false;
   /** Fibers waiting on this one to finish. */
   waiters: Fiber[] = [];
 

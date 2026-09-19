@@ -1,0 +1,66 @@
+================================================================================
+let bindings
+================================================================================
+
+let name: "HALKA"
+let age: int: 25
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (let_statement (pattern (identifier)) (string (string_fragment)))
+  (let_statement (pattern (identifier)) (primitive_type) (integer)))
+
+================================================================================
+function declaration
+================================================================================
+
+square(x),
+    give x * x
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameter_list (parameter (identifier)))
+    (give_statement
+      (binary_expression (primary_expression (identifier)) (primary_expression (identifier))))))
+
+================================================================================
+if / else
+================================================================================
+
+if age >= 18,
+    say "adult",
+else,
+    say "minor"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (if_statement
+    (binary_expression (primary_expression (identifier)) (primary_expression (integer)))
+    (say_statement (string (string_fragment)))
+    (else_clause
+      (say_statement (string (string_fragment))))))
+
+================================================================================
+comments
+================================================================================
+
+# a line comment
+let a: 1 # trailing
+###
+a block comment
+###
+let b: 2
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (line_comment)
+  (let_statement (pattern (identifier)) (integer))
+  (line_comment)
+  (block_comment)
+  (let_statement (pattern (identifier)) (integer)))

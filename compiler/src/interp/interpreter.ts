@@ -146,7 +146,12 @@ export class Interpreter {
       throw e;
     }
     if (main.state === "failed") throw main.error;
-    if (this.sched.firstError) throw this.sched.firstError;
+    // A task that failed and was never awaited would otherwise vanish silently;
+    // one that was awaited has already been turned into an `Error` result (#31).
+    for (const f of this.sched.unobservedFailures()) {
+      const m = f.error instanceof HalkaRuntimeError ? f.error.msg : String(f.error);
+      this.errOut(`warning: task \`${f.name}\` failed and its result was never awaited: ${m}`);
+    }
     return main.result;
   }
 
@@ -392,6 +397,10 @@ export class Interpreter {
       case "Ident": {
         const b = env.lookup(t.name);
         if (b && !b.mutable) this.fail(`\`${t.name}\` cannot be reassigned`, s.span, "R0013");
+        if (!b) {
+          const f = fieldOfSelf(env, t.name);
+          if (f) { f.set(value); return; }
+        }
         env.set(t.name, value);
         return;
       }
@@ -569,6 +578,8 @@ export class Interpreter {
       case "Ident": {
         const b = env.lookup(e.name);
         if (!b) {
+          const f = fieldOfSelf(env, e.name);
+          if (f) return f.get();
           this.fail(`\`${e.name}\` is not defined${this.didYouMean(env, e.name)}`, e.span, "E0203");
         }
         if (typeof b.value === "object" && this.moved.has(b.value as object)) {
@@ -983,8 +994,9 @@ export class Interpreter {
     }
     if (self !== undefined && !ps.some((p) => p.name === "self")) {
       env.define("self", self, false);
-      if (self.t === "struct") for (const [k, v] of self.fields) if (!env.hasLocal(k)) env.define(k, v);
-      if (self.t === "record") for (const [k, v] of self.v) if (!env.hasLocal(k)) env.define(k, v);
+      // Bare field names inside a method read and write through the receiver
+      // (#16's `print(), say name`); see `fieldOfSelf`.
+      frame.self = self;
     }
     if (i < args.length && !ps.some((p) => p.variadic)) {
       this.fail(`\`${fn.name}\` takes ${ps.length} argument(s), got ${args.length}`, span, "E0404");
@@ -1532,6 +1544,23 @@ export class Interpreter {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+/** Bare names inside a method resolve against the receiver's fields (#16). */
+function fieldOfSelf(env: Env, name: string): { get: () => Value; set: (v: Value) => void } | null {
+  const self = env.frame?.self;
+  if (!self) return null;
+  if (self.t === "struct" && self.fields.has(name)) {
+    return { get: () => self.fields.get(name)!, set: (v) => { self.fields.set(name, v); } };
+  }
+  if (self.t === "record" && self.v.has(name)) {
+    return { get: () => self.v.get(name)!, set: (v) => { self.v.set(name, v); } };
+  }
+  if (self.t === "variant") {
+    const i = self.fieldNames.indexOf(name);
+    if (i >= 0) return { get: () => self.fields[i]!, set: (v) => { self.fields[i] = v; } };
+  }
+  return null;
+}
 
 function arityText(min: number, max: number): string {
   if (min === max) return `${min} argument(s)`;

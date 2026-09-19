@@ -1,0 +1,45 @@
+# Tasks, channels, mutexes, atomics, parallel (#26-#32).
+double(n),
+    give n * 2
+
+let t1: start double(4),
+let t2: start double(5)
+say await t1
+say await t2
+
+pump(ch),
+    for i in 1..=3,
+        send ch : i
+
+let ch: make channel(int): 8,
+let p: start pump(ch),
+let _: await p
+say receive ch
+say receive ch
+say receive ch
+
+let counter: atomic(0)
+bump(c),
+    add c : 1
+bump(counter)
+bump(counter)
+bump(counter)
+say load counter
+
+let lock: make mutex,
+let shared: [0]
+with lock,
+    shared[0]: shared[0] + 10
+say shared[0]
+
+parallel:
+    let one: double(1),
+    let two: double(2)
+say "parallel done"
+
+boom(),
+    panic "kaboom"
+let bad: start boom(),
+let res: await bad
+if res is error,
+    say "task failed as expected"

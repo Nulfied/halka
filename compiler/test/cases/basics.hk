@@ -1,0 +1,13 @@
+# Values, operators, and the locked precedence table (#1, #51).
+let a: 2 + 3 * 4
+let b: (2 + 3) * 4
+say a
+say b
+say 7 / 2
+say div(7, 2)
+say 7 % 2
+say -7 % 3
+say not (1 == 2)
+say 1 < 2 and 2 < 3
+say null or "fallback"
+say false or "fallback"

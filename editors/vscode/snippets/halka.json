@@ -1,0 +1,57 @@
+{
+  "function": {
+    "prefix": "fn",
+    "body": ["${1:name}(${2:params}),", "    ${0}"],
+    "description": "Function declaration (#53)"
+  },
+  "if / else": {
+    "prefix": "if",
+    "body": ["if ${1:condition},", "    ${2},", "else,", "    ${0}"],
+    "description": "Conditional (#9)"
+  },
+  "for loop": {
+    "prefix": "for",
+    "body": ["for ${1:item} in ${2:items},", "    ${0}"],
+    "description": "Iteration (#6)"
+  },
+  "match": {
+    "prefix": "match",
+    "body": ["match ${1:value},", "    ${2:pattern},", "        ${3},", "    else,", "        ${0}"],
+    "description": "Pattern match (#10)"
+  },
+  "struct": {
+    "prefix": "struct",
+    "body": ["${1:Name}:", "    ${2:field}: ${3:string},", "    ${0}"],
+    "description": "Struct declaration (R3.1)"
+  },
+  "trait": {
+    "prefix": "trait",
+    "body": ["trait ${1:Name}:", "    ${2:method}(),", "        give nothing"],
+    "description": "Trait contract (#16)"
+  },
+  "implements": {
+    "prefix": "impl",
+    "body": ["${1:Type} implements ${2:Trait}:", "    ${3:method}(),", "        ${0}"],
+    "description": "Trait implementation (#16)"
+  },
+  "handle a Result": {
+    "prefix": "result",
+    "body": ["match ${1:result},", "    Ok(value),", "        ${2},", "    Error(message),", "        ${0}"],
+    "description": "Result handling (#22)"
+  },
+  "task": {
+    "prefix": "task",
+    "body": ["let ${1:task}: start ${2:worker}(),", "let ${3:result}: await ${1:task}"],
+    "description": "Start and await a task (#26, #28)"
+  },
+  "channel": {
+    "prefix": "channel",
+    "body": ["let ${1:ch}: make channel(${2:int}),", "send ${1:ch} : ${3:value},", "let ${4:got}: receive ${1:ch}"],
+    "description": "Channel (#27)"
+  },
+  "defer": {
+    "prefix": "defer",
+    "body": ["defer ${1:close} ${2:resource}"],
+    "description": "Cleanup on function exit (#24)"
+  }
+}

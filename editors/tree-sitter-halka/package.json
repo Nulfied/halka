@@ -1,0 +1,32 @@
+{
+  "name": "tree-sitter-halka",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Halka programming language",
+  "license": "MIT OR Apache-2.0",
+  "main": "bindings/node",
+  "keywords": [
+    "parser",
+    "tree-sitter",
+    "halka"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/halka-lang/halka.git",
+    "directory": "editors/tree-sitter-halka"
+  },
+  "files": [
+    "grammar.js",
+    "binding.gyp",
+    "bindings/node/*",
+    "queries/*",
+    "src/**"
+  ],
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "parse": "tree-sitter parse"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.24.0"
+  }
+}

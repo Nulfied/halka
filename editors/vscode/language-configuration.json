@@ -1,0 +1,26 @@
+{
+  "comments": {
+    "lineComment": "#",
+    "blockComment": ["###", "###"]
+  },
+  "brackets": [["(", ")"], ["[", "]"], ["{", "}"]],
+  "autoClosingPairs": [
+    { "open": "(", "close": ")" },
+    { "open": "[", "close": "]" },
+    { "open": "{", "close": "}" },
+    { "open": "\"", "close": "\"", "notIn": ["string", "comment"] },
+    { "open": "'", "close": "'", "notIn": ["string", "comment"] }
+  ],
+  "surroundingPairs": [["(", ")"], ["[", "]"], ["{", "}"], ["\"", "\""], ["'", "'"]],
+  "indentationRules": {
+    "increaseIndentPattern": "(^\s*(if|else|else\s+if|for|while|match|with|parallel|unsafe|trait|enum|capability|generate|specialize)\b.*,\s*$)|(:\s*$)|(,\s*$)",
+    "decreaseIndentPattern": "^\s*(else|else\s+if)\b"
+  },
+  "onEnterRules": [
+    {
+      "beforeText": "^\s*###.*$",
+      "action": { "indent": "none" }
+    }
+  ],
+  "wordPattern": "(-?\d*\.\d\w*)|([^\`\~\!\@\#\%\^\&\*\(\)\-\=\+\[\{\]\}\\\|\;\:\'\\\"\,\.\<\>\/\?\s]+)"
+}

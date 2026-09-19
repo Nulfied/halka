@@ -1,0 +1,75 @@
+{
+  "name": "halka",
+  "displayName": "Halka",
+  "description": "Halka language support: syntax highlighting, diagnostics, formatting, hover, completion, and go-to-definition.",
+  "version": "0.1.0",
+  "publisher": "halka-lang",
+  "license": "MIT OR Apache-2.0",
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Programming Languages", "Formatters", "Linters"],
+  "keywords": ["halka", "hk", "language"],
+  "repository": { "type": "git", "url": "https://github.com/halka-lang/halka.git", "directory": "editors/vscode" },
+  "main": "./src/extension.js",
+  "activationEvents": ["onLanguage:halka"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "halka",
+        "aliases": ["Halka", "halka"],
+        "extensions": [".hk"],
+        "configuration": "./language-configuration.json",
+        "icon": { "light": "./icons/halka.png", "dark": "./icons/halka.png" }
+      }
+    ],
+    "grammars": [
+      { "language": "halka", "scopeName": "source.halka", "path": "./syntaxes/halka.tmLanguage.json" }
+    ],
+    "configuration": {
+      "title": "Halka",
+      "properties": {
+        "halka.path": {
+          "type": "string",
+          "default": "halka",
+          "description": "Path to the `halka` executable used for the language server."
+        },
+        "halka.enableLanguageServer": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run `halka lsp` for diagnostics, hover, formatting and completion."
+        },
+        "halka.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Trace the communication with the Halka language server."
+        }
+      }
+    },
+    "commands": [
+      { "command": "halka.run", "title": "Halka: Run current file", "icon": "$(play)" },
+      { "command": "halka.restartServer", "title": "Halka: Restart language server" }
+    ],
+    "menus": {
+      "editor/title/run": [
+        { "command": "halka.run", "when": "resourceLangId == halka", "group": "navigation" }
+      ]
+    },
+    "keybindings": [
+      { "command": "halka.run", "key": "ctrl+f5", "mac": "cmd+f5", "when": "resourceLangId == halka" }
+    ],
+    "snippets": [
+      { "language": "halka", "path": "./snippets/halka.json" }
+    ]
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.75.0",
+    "@vscode/vsce": "^3.0.0"
+  },
+  "scripts": {
+    "package": "vsce package",
+    "publish": "vsce publish"
+  }
+}

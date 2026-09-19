@@ -1,0 +1,65 @@
+# Structs, traits, enums, generics, Result (#12, #16, #20, #21, #22).
+type UserId: int
+
+User:
+    name: string,
+    age: int
+
+trait Greet:
+    hello(),
+        give nothing
+
+User implements Greet:
+    hello(),
+        give "hi {name}, {age}"
+
+    birthday(),
+        age: age + 1,
+        give age
+
+let u: User("Asha", 30)
+say u.hello()
+say u.name
+
+enum Shape:
+    Circle(radius),
+    Rect(w, h)
+
+area(s),
+    match s,
+        Circle(r),
+            give 3 * r * r,
+        Rect(w, h),
+            give w * h,
+        else,
+            give 0
+say area(Circle(2))
+say area(Rect(3, 4))
+
+biggest<T>(a: T, b: T),
+    if a > b,
+        give a,
+    else,
+        give b
+say biggest(3, 9)
+say biggest("apple", "pear")
+
+parse_it(text),
+    let r: text to int,
+    if r is error,
+        give Error("bad: {text}"),
+    else,
+        give r
+
+show(text),
+    let r: parse_it(text),
+    match r,
+        Ok(v),
+            say "ok {v}",
+        Error(msg),
+            say msg
+show "12"
+show "xy"
+say 25 as float
+say 3.9 as int
+say 25 as string
