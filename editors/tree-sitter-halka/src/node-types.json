@@ -2896,10 +2896,6 @@
     "named": false
   },
   {
-    "type": "double",
-    "named": false
-  },
-  {
     "type": "else",
     "named": false
   },
@@ -2929,11 +2925,11 @@
   },
   {
     "type": "float",
-    "named": true
+    "named": false
   },
   {
     "type": "float",
-    "named": false
+    "named": true
   },
   {
     "type": "float32",
@@ -3205,10 +3201,6 @@
   },
   {
     "type": "unsafe",
-    "named": false
-  },
-  {
-    "type": "void",
     "named": false
   },
   {

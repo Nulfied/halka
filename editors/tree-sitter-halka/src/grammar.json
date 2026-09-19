@@ -699,8 +699,11 @@
       "type": "SEQ",
       "members": [
         {
-          "type": "STRING",
-          "value": "<"
+          "type": "IMMEDIATE_TOKEN",
+          "content": {
+            "type": "STRING",
+            "value": "<"
+          }
         },
         {
           "type": "SEQ",
@@ -3076,10 +3079,6 @@
         },
         {
           "type": "STRING",
-          "value": "void"
-        },
-        {
-          "type": "STRING",
           "value": "int8"
         },
         {
@@ -3117,10 +3116,6 @@
         {
           "type": "STRING",
           "value": "float64"
-        },
-        {
-          "type": "STRING",
-          "value": "double"
         }
       ]
     },
@@ -3201,8 +3196,11 @@
       "type": "SEQ",
       "members": [
         {
-          "type": "STRING",
-          "value": "<"
+          "type": "IMMEDIATE_TOKEN",
+          "content": {
+            "type": "STRING",
+            "value": "<"
+          }
         },
         {
           "type": "SEQ",
@@ -5360,10 +5358,6 @@
     ],
     [
       "range_expression"
-    ],
-    [
-      "_type",
-      "generic_type"
     ],
     [
       "generic_type",

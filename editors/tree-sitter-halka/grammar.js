@@ -34,7 +34,6 @@ module.exports = grammar({
   conflicts: ($) => [
     [$._type, $._primary_expression],
     [$.range_expression],
-    [$._type, $.generic_type],
     [$.generic_type, $._primary_expression],
     [$.pattern, $.null],
     [$.struct_declaration, $._primary_expression],
@@ -141,7 +140,12 @@ module.exports = grammar({
         optional(seq(":", field("default", $._expression))),
       ),
 
-    type_parameters: ($) => seq("<", commaSep1($.type_parameter), ">"),
+    // `token.immediate` so the `<` only opens a type when it sits directly
+    // against the name: `square<T>(x)` is generic, `a < b` is a comparison.
+    // Sharing one `<` with `binary_expression` made the comparison operator
+    // unreachable — `say 1 < 2` was a parse error while `<=`, `>` and `>=`
+    // were fine, because only `<` opens a type.
+    type_parameters: ($) => seq(token.immediate("<"), commaSep1($.type_parameter), ">"),
     type_parameter: ($) => seq(field("name", $.identifier), optional(seq(":", sep1($.identifier, "+")))),
 
     struct_declaration: ($) =>
@@ -300,12 +304,23 @@ module.exports = grammar({
 
     _type: ($) => choice($.primitive_type, $.generic_type, $.optional_type, $.reference_type, $.raw_pointer_type, $.tuple_type, $.type_identifier, $.identifier),
 
+    // Halka's primitives only. `double` and `void` are C type names, written
+    // `c double` and reached through `_type`'s plain identifier — they are not
+    // Halka types (see PrimName in compiler/src/sema/types.ts). Listing them
+    // here made them reserved words, so a Halka function called `double` could
+    // not be called: `double(1)` parsed as a type, not a call.
     primitive_type: (_) =>
-      choice("int", "uint", "float", "byte", "bool", "string", "char", "void",
-        "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float32", "float64", "double"),
+      choice("int", "uint", "float", "byte", "bool", "string", "char",
+        "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float32", "float64"),
 
-    generic_type: ($) => seq(field("name", choice($.type_identifier, $.identifier, $.primitive_type)), choice($.type_arguments, seq("(", commaSep1($._type), ")"))),
-    type_arguments: ($) => seq("<", commaSep1($._type), ">"),
+    // The `name(...)` form is indistinguishable from a call, and `double` is
+    // a primitive type name, so `double(1)` was read as a type constructor
+    // rather than a call to a function called `double`. A type position has
+    // nothing competing, so preferring the expression when both parse costs
+    // nothing there.
+    generic_type: ($) =>
+      seq(field("name", choice($.type_identifier, $.identifier, $.primitive_type)), choice($.type_arguments, seq("(", commaSep1($._type), ")"))),
+    type_arguments: ($) => seq(token.immediate("<"), commaSep1($._type), ">"),
     optional_type: ($) => prec(PREC.postfix, seq($._type, "?")),
     reference_type: ($) => seq("&", optional("mut"), $._type),
     raw_pointer_type: ($) => seq("raw", "*", optional("mut"), $._type),
