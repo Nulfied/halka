@@ -328,8 +328,9 @@ What works today:
 - **The reference interpreter** — the whole language, including tasks,
   channels, mutexes, atomics, cancellation, macros and `reflect`.
 - **The native backend** — scalars, strings, lists, structs, functions,
-  control flow, `defer`, `parallel:` on real threads, and whole programs:
-  imported modules and installed packages are linked into one binary. Anything it cannot
+  control flow, `defer`, `parallel:` on real threads, enums and `Result<T>`
+  as tagged unions, and whole programs: imported modules and installed
+  packages are linked into one binary. Anything it cannot
   compile yet produces an `E07xx` diagnostic naming the expression, never a
   silently slow binary.
 - **C and Python interop** — `import c "math.h"` then `c hypot(3.0, 4.0)`;

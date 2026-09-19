@@ -122,8 +122,10 @@ is a security boundary would be worse than not offering one.
 
 ## Status
 
-Implemented for the interpreter. The native backend cannot compile these
-yet, because it cannot represent `Result<T>` — enums are not in the C
-backend. `halka build` reports `E0701` naming the type rather than
-mis-compiling, which is R23's contract. The API will not change when the
-backend catches up; only what `halka build` accepts will.
+Implemented for the interpreter. The native backend can now represent
+`Result<T>` — enums compile to tagged unions and each instantiation gets its
+own C type — but it does not yet know about prelude modules, so `files.read`
+still only runs under `halka run`. That is the remaining step, and it is the
+same one that brings `math`, `strings` and the rest to compiled code.
+`halka build` refuses with a diagnostic naming the construct rather than
+mis-compiling, which is R23's contract.

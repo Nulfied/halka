@@ -21,7 +21,8 @@ import { type Ty, prune, show, C_SCALARS } from "../../sema/types.ts";
 import { PY_RUNTIME, pyConverter, pyLifter } from "./pyruntime.ts";
 
 interface EnumVariantDef { name: string; tag: number; fields: { name: string; ty: Ty }[] }
-interface EnumDef { name: string; variants: EnumVariantDef[] }
+/** One monomorphised enum. `key` is the C name; `name` is the Halka name. */
+interface EnumDef { key: string; name: string; variants: EnumVariantDef[] }
 
 export interface EmitOptions {
   /** Release builds drop overflow and bounds checks the optimiser proved safe. */
@@ -44,6 +45,8 @@ export interface EmitOptions {
   structFields?: Map<string, Ty[]>;
   /** Enum name -> variant -> payload types, from inference. */
   enumVariants?: Map<string, Map<string, { fields: Ty[]; names: string[] }>>;
+  /** Enum name -> type parameters. A generic enum gets a C type per use. */
+  enumGenerics?: Map<string, string[]>;
 }
 
 export interface EmitResult {
@@ -77,10 +80,16 @@ export class CEmitter {
   private depth = 1;
   private tmp = 0;
   private structs = new Map<string, StructDef>();
-  /** Enums, as tagged unions. Declaration order fixes each variant's tag. */
+  /**
+   * Monomorphised enums, keyed by their C name. `Result<T>` is generic, so
+   * `Result<int>` and `Result<string>` are two different C types built on
+   * demand; a plain enum has one instance keyed by its own name.
+   */
   private enums = new Map<string, EnumDef>();
-  /** Variant name -> its enum, so `Circle(2)` and `s is Circle` resolve. */
+  /** Variant name -> its (generic) enum, so `Ok(x)` and `r is Ok` resolve. */
   private variantOwner = new Map<string, string>();
+  /** Enum name -> its variants, before any type arguments are applied. */
+  private enumTemplates = new Map<string, Map<string, { fields: Ty[]; names: string[] }>>();
   private fnRet = new Map<string, Ty>();
   private strLits = new Map<string, string>();
   /**
@@ -117,7 +126,7 @@ export class CEmitter {
     const top = mod.stmts.filter((s) => !DECL_KINDS.has(s.kind));
 
     for (const s of structs) this.declareStruct(s);
-    for (const s of mod.stmts) if (s.kind === "EnumDecl") this.declareEnum(s);
+    this.registerEnums();
     this.collectForeign(mod);
     for (const f of fns) {
       const sig = this.tyOf(f);
@@ -294,7 +303,10 @@ export class CEmitter {
       case "list": case "array": return "hk_list *";
       case "named":
         if (this.structs.has(p.name)) return mangleType(p.name);
-        if (this.enums.has(p.name)) return mangleType(p.name);
+        if (this.enumTemplates.has(p.name)) {
+          const inst = this.enumInstance(p.name, (p.args ?? []).map(prune), span);
+          if (inst) return mangleType(inst.key);
+        }
         if (this.foreignStructs.has(p.name)) return `struct ${p.name}`;
         break;
       case "cty":
@@ -344,18 +356,16 @@ export class CEmitter {
    * leak between arms and the compiler checks the types for us.
    */
   private matchStmt(m: A.MatchExpr): void {
-    const st = this.tyOf(m.subject);
-    const p = st ? prune(st) : undefined;
-    if (!p || p.k !== "named" || !this.enums.has(p.name)) {
+    const def = this.enumOf(this.tyOf(m.subject), m.span);
+    if (!def) {
       this.err("E0704", "the native backend can only `match` on an enum yet", m.span,
         "run it with `halka run` while the backend catches up");
       return;
     }
-    const def = this.enums.get(p.name)!;
     const subject = this.fresh("match");
 
     this.open("{");
-    this.line(`${mangleType(def.name)} ${subject} = ${this.expr(m.subject)};`);
+    this.line(`${mangleType(def.key)} ${subject} = ${this.expr(m.subject)};`);
     this.open(`switch (${subject}.tag) {`);
     for (const arm of m.arms) {
       const pat = arm.pattern;
@@ -375,7 +385,7 @@ export class CEmitter {
           "run it with `halka run` while the backend catches up");
         continue;
       }
-      this.line(`case ${variantTag(def.name, name)}: {`);
+      this.line(`case ${variantTag(def.key, name)}: {`);
       this.depth++;
       const args = pat.kind === "VariantPat" ? pat.args : [];
       args.forEach((a, i) => {
@@ -405,27 +415,63 @@ export class CEmitter {
     this.close();
   }
 
-  private declareEnum(d: A.EnumDecl): void {
-    const inferred = this.opts.enumVariants?.get(d.name);
-    const variants = d.variants.map((v, tag) => {
-      const vi = inferred?.get(v.name);
-      return {
-        name: v.name,
-        tag,
-        fields: v.fields.map((f, i) => ({
-          name: f.name,
-          ty: vi?.fields[i] ?? this.types.get(f as unknown as A.Node) ?? ({ k: "any" } as Ty),
-        })),
-      };
-    });
-    this.enums.set(d.name, { name: d.name, variants });
-    for (const v of variants) this.variantOwner.set(v.name, d.name);
+  /**
+   * Register every enum the program can name, as a template. Instantiation
+   * happens on demand from `cty`, because a generic enum has no single C
+   * type — `Result<int>` and `Result<string>` are different structs.
+   */
+  private registerEnums(): void {
+    for (const [name, variants] of this.opts.enumVariants ?? []) {
+      this.enumTemplates.set(name, variants);
+      for (const v of variants.keys()) this.variantOwner.set(v, name);
+    }
+  }
+
+  /**
+   * The C type for one instantiation, declaring it the first time it is
+   * needed. `args` are the type arguments, already pruned.
+   */
+  private enumInstance(name: string, args: Ty[], span?: Span): EnumDef | null {
+    const template = this.enumTemplates.get(name);
+    if (!template) return null;
+    const generics = this.opts.enumGenerics?.get(name) ?? [];
+    const key = args.length ? `${name}_${args.map(tyKey).join("_")}` : name;
+    const existing = this.enums.get(key);
+    if (existing) return existing;
+
+    const subst = new Map<string, Ty>();
+    generics.forEach((g, i) => { if (args[i]) subst.set(g, args[i]!); });
+
+    let tag = 0;
+    const variants: EnumVariantDef[] = [];
+    for (const [vname, vi] of template) {
+      variants.push({
+        name: vname,
+        tag: tag++,
+        fields: vi.fields.map((ty, i) => ({ name: vi.names[i] ?? `f${i}`, ty: substTy(ty, subst) })),
+      });
+    }
+    const def: EnumDef = { key, name, variants };
+    // Registered before the field types are lowered, so an enum that refers
+    // to itself does not recurse forever.
+    this.enums.set(key, def);
+    for (const v of variants) {
+      for (const f of v.fields) this.cty(f.ty, `\`${name}.${v.name}.${f.name}\``, span);
+    }
+    return def;
+  }
+
+  /** The instance a typed expression refers to, or null if it is not an enum. */
+  private enumOf(t: Ty | undefined, span?: Span): EnumDef | null {
+    const p = t ? prune(t) : undefined;
+    if (!p || p.k !== "named") return null;
+    return this.enumInstance(p.name, (p.args ?? []).map(prune), span);
   }
 
   private enumDecls(): string[] {
     const out: string[] = [];
     for (const e of this.enums.values()) {
-      out.push(`typedef struct ${mangleType(e.name)} {`);
+      out.push(`typedef struct ${mangleType(e.key)} {`);
       out.push("  hk_int tag;");
       // A union with no members is not valid C, so an enum whose variants
       // all carry nothing is just the tag.
@@ -438,8 +484,8 @@ export class CEmitter {
         }
         out.push("  } as;");
       }
-      out.push(`} ${mangleType(e.name)};`);
-      for (const v of e.variants) out.push(`#define ${variantTag(e.name, v.name)} ${v.tag}`);
+      out.push(`} ${mangleType(e.key)};`);
+      for (const v of e.variants) out.push(`#define ${variantTag(e.key, v.name)} ${v.tag}`);
       out.push("");
     }
     return out;
@@ -852,11 +898,11 @@ export class CEmitter {
       case "Ident": {
         // A variant that carries nothing is written bare, as a value rather
         // than a call, so `Done` has to build the tagged union here too.
-        const owner = this.variantOwner.get(e.name);
-        if (owner) {
-          const v = this.enums.get(owner)!.variants.find((x) => x.name === e.name);
-          if (v && v.fields.length === 0) {
-            return `((${mangleType(owner)}){ .tag = ${variantTag(owner, e.name)} })`;
+        if (this.variantOwner.has(e.name)) {
+          const inst = this.enumOf(this.tyOf(e), e.span);
+          const v = inst?.variants.find((x) => x.name === e.name);
+          if (inst && v && v.fields.length === 0) {
+            return `((${mangleType(inst.key)}){ .tag = ${variantTag(inst.key, e.name)} })`;
           }
         }
         return mangle(e.name);
@@ -880,18 +926,19 @@ export class CEmitter {
         if (this.isStr(ot) && (e.name === "length" || e.name === "size")) return `hk_str_len_chars(${this.expr(e.obj)})`;
         const p = ot ? prune(ot) : undefined;
         if (p?.k === "named" && this.structs.has(p.name)) return `(${this.expr(e.obj)}).${mangle(e.name)}`;
-        if (p?.k === "named" && this.enums.has(p.name)) {
+        const enumInst = p?.k === "named" ? this.enumOf(p, e.span) : null;
+        if (enumInst) {
           // A payload field is reached through its variant's arm of the
           // union. The field name identifies the variant, so reading a field
           // that two variants share is refused rather than guessed at.
-          const def = this.enums.get(p.name)!;
+          const def = enumInst;
           const owners = def.variants.filter((v) => v.fields.some((f) => f.name === e.name));
           if (owners.length === 1) {
             return `(${this.expr(e.obj)}).as.${mangle(owners[0]!.name)}.${mangle(e.name)}`;
           }
           if (owners.length > 1) {
             this.err("E0706",
-              `\`.${e.name}\` is carried by more than one variant of \`${p.name}\` ` +
+              `\`.${e.name}\` is carried by more than one variant of \`${def.name}\` ` +
               `(${owners.map((v) => v.name).join(", ")}), so it is ambiguous here`, e.span,
               "match on the value instead, which binds the payload per variant");
             return "0";
@@ -924,8 +971,10 @@ export class CEmitter {
 
       case "IsExpr": {
         if (e.test === "null") return `((${this.expr(e.expr)}) == NULL)`;
-        const owner = this.variantOwner.get(e.test);
-        if (owner) return `((${this.expr(e.expr)}).tag == ${variantTag(owner, e.test)})`;
+        if (this.variantOwner.has(e.test)) {
+          const inst = this.enumOf(this.tyOf(e.expr), e.span);
+          if (inst) return `((${this.expr(e.expr)}).tag == ${variantTag(inst.key, e.test)})`;
+        }
         this.err("E0708", `the native backend cannot test \`is ${e.test}\` yet`, e.span);
         return "false";
       }
@@ -1198,11 +1247,18 @@ export class CEmitter {
         return `((${mangleType(n)}){ ${def.fields.map((f, i) => `.${mangle(f.name)} = ${args[i] ?? zeroOf(this.cty(f.ty, f.name))}`).join(", ")} })`;
       }
 
-      const owner = this.variantOwner.get(n);
-      if (owner) {
-        const v = this.enums.get(owner)!.variants.find((x) => x.name === n)!;
+      if (this.variantOwner.has(n)) {
+        // Which instantiation this is comes from the call's own type, since
+        // `Ok(x)` alone does not say what `Result<T>` it belongs to.
+        const inst = this.enumOf(this.tyOf(e), e.span);
+        if (!inst) {
+          this.err("E0701", `the native backend cannot tell which \`${this.variantOwner.get(n)}\` \`${n}\` builds here`, e.span,
+            "annotate the value or the function's return type");
+          return "0";
+        }
+        const v = inst.variants.find((x) => x.name === n)!;
         const payload = v.fields.map((f, i) => `.as.${mangle(n)}.${mangle(f.name)} = ${args[i] ?? zeroOf(this.cty(f.ty, f.name))}`);
-        return `((${mangleType(owner)}){ .tag = ${variantTag(owner, n)}${payload.length ? ", " + payload.join(", ") : ""} })`;
+        return `((${mangleType(inst.key)}){ .tag = ${variantTag(inst.key, n)}${payload.length ? ", " + payload.join(", ") : ""} })`;
       }
       return `${mangle(n)}(${args.join(", ")})`;
     }
@@ -1386,7 +1442,42 @@ function mangle(name: string): string {
 }
 
 function mangleType(name: string): string { return `hk_T_${name}`; }
-function variantTag(enumName: string, variant: string): string { return `hk_V_${enumName}_${variant}`; }
+function variantTag(instanceKey: string, variant: string): string { return `hk_V_${instanceKey}_${variant}`; }
+
+/** A short, C-safe name for a type argument, used in a monomorphised name. */
+function tyKey(t: Ty): string {
+  const p = prune(t);
+  switch (p.k) {
+    case "prim": return p.name === "string" ? "str" : p.name;
+    case "list": case "array": return `list${tyKey(p.elem)}`;
+    case "set": return `set${tyKey(p.elem)}`;
+    case "map": return `map${tyKey(p.key)}${tyKey(p.val)}`;
+    case "tuple": return `tup${p.elems.map(tyKey).join("")}`;
+    case "opt": return `opt${tyKey(p.inner)}`;
+    case "named": return p.args && p.args.length ? `${p.name}${p.args.map(tyKey).join("")}` : p.name;
+    case "cty": return `c${p.name.replace(/[^A-Za-z0-9]/g, "")}`;
+    default: return p.k;
+  }
+}
+
+/** Replace a generic enum's type parameters with its type arguments. */
+function substTy(t: Ty, subst: Map<string, Ty>): Ty {
+  if (subst.size === 0) return t;
+  const p = prune(t);
+  switch (p.k) {
+    case "named": {
+      const hit = p.args && p.args.length ? undefined : subst.get(p.name);
+      if (hit) return hit;
+      return p.args && p.args.length ? { ...p, args: p.args.map((a) => substTy(a, subst)) } : p;
+    }
+    case "list": case "array": return { ...p, elem: substTy(p.elem, subst) };
+    case "set": return { ...p, elem: substTy(p.elem, subst) };
+    case "map": return { ...p, key: substTy(p.key, subst), val: substTy(p.val, subst) };
+    case "tuple": return { ...p, elems: p.elems.map((e) => substTy(e, subst)) };
+    case "opt": return { ...p, inner: substTy(p.inner, subst) };
+    default: return p;
+  }
+}
 
 function zeroOf(cty: string): string {
   switch (cty) {
@@ -1465,6 +1556,35 @@ function allocates(e: A.Expr): boolean {
  */
 function escapes(_name: string): boolean {
   return true;
+}
+
+/**
+ * Assemble the emitter's options from what inference produced.
+ *
+ * This exists because the field list drifted twice: the test suites once
+ * omitted `structFields` (so a struct with a string field emitted a pointer
+ * into an integer, with every test green) and later `enumGenerics` (so
+ * `Result<T>` stayed generic). Callers now pass what they have and get the
+ * whole set, rather than each remembering to list it.
+ */
+export function emitOptionsFrom(
+  inferred: {
+    foreignImports: ForeignImport[];
+    structFields: Map<string, Ty[]>;
+    enumVariants: Map<string, Map<string, { fields: Ty[]; names: string[] }>>;
+    enumGenerics: Map<string, string[]>;
+  },
+  o: { file: string; release: boolean; escapes?: EscapeInfo },
+): EmitOptions {
+  return {
+    release: o.release,
+    file: o.file,
+    escapes: o.escapes,
+    foreignImports: inferred.foreignImports,
+    structFields: inferred.structFields,
+    enumVariants: inferred.enumVariants,
+    enumGenerics: inferred.enumGenerics,
+  };
 }
 
 export function emitC(mod: A.Module, types: TypeMap, opts: EmitOptions): EmitResult {

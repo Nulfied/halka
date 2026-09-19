@@ -21,9 +21,26 @@ export function primitiveMatches(v: Value, name: string): boolean {
   }
 }
 
+/**
+ * The built-in type constructors, which take their arguments in parentheses:
+ * `list(int)`, `map(string, int)`. Every other generic takes them in angle
+ * brackets — `Result<int>`, as the spec writes it (#22).
+ *
+ * Rendering everything with parentheses made the formatter emit
+ * `Result(int)`, which the parser does not accept, so formatting a file that
+ * named a user generic produced a file that no longer parsed.
+ */
+const PAREN_TYPE_CTORS = new Set([
+  "list", "array", "map", "set", "channel", "task", "tuple", "vector",
+]);
+
 export function typeText(t: A.TypeNode): string {
   switch (t.kind) {
-    case "NamedType": return t.args.length ? `${t.name}(${t.args.map(typeText).join(", ")})` : t.name;
+    case "NamedType": {
+      if (!t.args.length) return t.name;
+      const args = t.args.map(typeText).join(", ");
+      return PAREN_TYPE_CTORS.has(t.name) ? `${t.name}(${args})` : `${t.name}<${args}>`;
+    }
     case "OptionalType": return `${typeText(t.inner)}?`;
     case "RefType": return `&${t.mut ? "mut " : ""}${typeText(t.inner)}`;
     case "RawPtrType": return `raw *${typeText(t.inner)}`;

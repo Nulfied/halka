@@ -49,6 +49,8 @@ export interface InferResult {
   structFields: Map<string, Ty[]>;
   /** Enum name -> variant name -> payload types and names, for the backend. */
   enumVariants: Map<string, Map<string, { fields: Ty[]; names: string[] }>>;
+  /** Enum name -> its type parameters, so the backend can monomorphise. */
+  enumGenerics: Map<string, string[]>;
 }
 
 export class Inferencer {
@@ -85,7 +87,11 @@ export class Inferencer {
     const structFields = new Map<string, Ty[]>();
     for (const [name, info] of this.structs) structFields.set(name, info.order.map((f) => info.fields.get(f)!));
     const enumVariants = new Map<string, Map<string, { fields: Ty[]; names: string[] }>>();
-    for (const [name, info] of this.enums) enumVariants.set(name, info.variants);
+    const enumGenerics = new Map<string, string[]>();
+    for (const [name, info] of this.enums) {
+      enumVariants.set(name, info.variants);
+      enumGenerics.set(name, info.generics);
+    }
     return {
       types: this.types,
       diags: this.diags,
@@ -93,6 +99,7 @@ export class Inferencer {
       foreignImports: this.foreignImports,
       structFields,
       enumVariants,
+      enumGenerics,
     };
   }
 
@@ -925,10 +932,14 @@ export class Inferencer {
       if (en) {
         const m = this.impls.get(ot.name)?.get(e.name);
         if (m) return instantiate(m);
-        // A variant payload field, e.g. `r.value` on Ok.
+        // A variant payload field, e.g. `r.value` on Ok. The field's type is
+        // written in terms of the enum's own parameters, so it has to be
+        // substituted: `.value` on a `Result<int>` is an `int`, not a `T`.
+        const subst = new Map<string, Ty>();
+        en.generics.forEach((g, i) => { if (ot.args[i]) subst.set(g, ot.args[i]!); });
         for (const v of en.variants.values()) {
           const i = v.names.indexOf(e.name);
-          if (i >= 0) return v.fields[i]!;
+          if (i >= 0) return instantiate(v.fields[i]!, subst);
         }
       }
       return any(`member of ${ot.name}`);

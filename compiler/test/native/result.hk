@@ -1,0 +1,33 @@
+# Result<T> is generic, so each instantiation is its own C type: Result<int>
+# and Result<string> are different structs, built on demand.
+half(n: int): Result<int>,
+    if n % 2 == 0,
+        give Ok(div(n, 2)),
+    give Error("odd")
+
+name_of(n: int): Result<string>,
+    if n == 1,
+        give Ok("one"),
+    give Error("unnamed")
+
+let a: half(10)
+if a is Ok,
+    say a.value
+let b: half(7)
+if b is Error,
+    say b.message
+let c: name_of(1)
+if c is Ok,
+    say c.value
+let d: name_of(2)
+if d is Error,
+    say d.message
+# A Result carrying a heap value, reached through match.
+let e: name_of(1)
+match e,
+    Ok(v),
+        say "matched {v}",
+    Error(m),
+        say "error {m}",
+    else,
+        say "cancelled"

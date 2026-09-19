@@ -15,7 +15,7 @@ import { inferTypes } from "../sema/infer.ts";
 import { checkOwnership } from "../sema/ownership.ts";
 import { analyseEscapes } from "../sema/escape.ts";
 import { linkProgram } from "../sema/link.ts";
-import { emitC } from "../backend/c/emit.ts";
+import { emitC, emitOptionsFrom } from "../backend/c/emit.ts";
 import { buildNative, describeToolchains, findPython } from "../backend/c/build.ts";
 import { show as showTy } from "../sema/types.ts";
 import { inspect, display, type Value, NOTHING } from "../runtime/value.ts";
@@ -307,13 +307,8 @@ function cmdBuild(args: string[]): void {
   // M4 — turn the ownership proof into deallocation.
   const escapes = analyseEscapes(linked, inferred.types, inferred.structFields, owningParams);
 
-  const { c, diags: emitDiags, links, needsPython } = emitC(linked, inferred.types, {
-    release: flags.has("--release"),
-    file: basename(file),
-    foreignImports: inferred.foreignImports,
-    structFields: inferred.structFields,
-    escapes,
-  });
+  const { c, diags: emitDiags, links, needsPython } = emitC(linked, inferred.types,
+    emitOptionsFrom(inferred, { file: basename(file), release: flags.has("--release"), escapes }));
   if (emitDiags.hasErrors) {
     report(emitDiags.items, sources);
     process.stderr.write(NL + "the native backend is still growing; `halka run` executes the whole language today." + NL);

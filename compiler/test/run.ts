@@ -25,7 +25,7 @@ import { analyseEscapes } from "../src/sema/escape.ts";
 import { format } from "../src/fmt/format.ts";
 import { Interpreter, HalkaRuntimeError } from "../src/interp/interpreter.ts";
 import { renderAll } from "../src/util/diagnostics.ts";
-import { emitC } from "../src/backend/c/emit.ts";
+import { emitC, emitOptionsFrom } from "../src/backend/c/emit.ts";
 import { buildNative, findToolchain, findPython } from "../src/backend/c/build.ts";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -45,14 +45,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  */
 function buildOpts(module: Parameters<typeof emitC>[0], inferred: ReturnType<typeof inferTypes>, file: string, release: boolean) {
   const own = checkOwnership(module, inferred.types, inferred.structFields);
-  return {
-    release,
+  return emitOptionsFrom(inferred, {
     file,
-    foreignImports: inferred.foreignImports,
-    structFields: inferred.structFields,
-    enumVariants: inferred.enumVariants,
+    release,
     escapes: analyseEscapes(module, inferred.types, inferred.structFields, own.owningParams),
-  };
+  });
 }
 const ROOT = join(HERE, "..", "..");
 

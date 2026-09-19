@@ -96,6 +96,13 @@ that is the next thing to fix: the native backend cannot represent
 modules either. So the order now is enums in the C backend, then the prelude
 modules, then file I/O compiles too. None of that changes the API.
 
+**Enums and `Result<T>` compile.** An enum lowers to a tagged union and
+`match` to a `switch`; a generic enum is monomorphised, so `Result<int>` and
+`Result<string>` are two C types built on demand. That clears the blocker
+under File I/O — what is left for it is teaching the backend about prelude
+modules, which brings `math`, `strings`, `lists` and the rest to compiled
+code at the same time.
+
 Still open from this milestone:
 
 - **Stack promotion** — the analysis already identifies values that neither
