@@ -18,7 +18,10 @@ import { linkProgram } from "../sema/link.ts";
 import { emitC, emitOptionsFrom } from "../backend/c/emit.ts";
 import { buildNative, describeToolchains, findPython } from "../backend/c/build.ts";
 import { show as showTy } from "../sema/types.ts";
-import { inspect, display, type Value, NOTHING } from "../runtime/value.ts";
+import { runKernelHost } from "./kernel.ts";
+import { installKernelspec } from "./kernelspec.ts";
+import { inspect, display, type Value } from "../runtime/value.ts";
+import { evalSnippet } from "./eval.ts";
 import type * as A from "../parser/ast.ts";
 import {
   BUILTIN_MODULES,
@@ -357,6 +360,35 @@ function defaultBinaryName(file: string): string {
   return process.platform === "win32" ? `${base}.exe` : `./${base}`;
 }
 
+/**
+ * The Jupyter kernel. `host` is the half that runs code; `install` registers
+ * a kernelspec pointing Jupyter at the Python front end, which in turn starts
+ * `host`. See tools/jupyter/halka_kernel.py for why it is split that way.
+ */
+function cmdKernel(args: string[]): void {
+  const sub = args[0] ?? "install";
+  if (sub === "host") {
+    // No banner and nothing else on stdout: the front end parses every line.
+    runKernelHost();
+    return;
+  }
+  if (sub !== "install") die(`unknown kernel command \`${sub}\` — try \`install\` or \`host\``);
+
+  // The notebook should run *this* halka, so the spec records how this
+  // process was started rather than trusting PATH to agree later.
+  const hostCmd = [process.execPath, resolve(process.argv[1] ?? "halka"), "kernel", "host"];
+  let res;
+  try {
+    res = installKernelspec(hostCmd);
+  } catch (e) {
+    die(e instanceof Error ? e.message : String(e));
+  }
+  process.stdout.write(`installed the Halka kernel in ${res.dir}` + NL);
+  process.stdout.write(`  front end: ${res.python}` + NL);
+  if (res.warning) process.stdout.write(`  warning: ${res.warning}` + NL);
+  process.stdout.write(`Start Jupyter and pick "Halka" from the kernel list.` + NL);
+}
+
 function cmdToolchain(): void {
   process.stdout.write(`C compilers found: ${describeToolchains()}` + NL);
   const py = findPython();
@@ -448,21 +480,7 @@ function cmdRepl(): void {
 
 /** Evaluate a REPL snippet in the persistent global scope and echo its value. */
 function runRepl(interp: Interpreter, mod: A.Module): Value {
-  interp.hoist(mod.stmts, interp.globals);
-  let last: Value = NOTHING;
-  const frame = { fnName: "<repl>", defers: [], capabilities: new Set<string>(), unsafeDepth: 0 };
-  interp.globals.frame = frame;
-  const gen = (function* () {
-    for (const s of mod.stmts) {
-      if (s.kind === "ExprStmt") last = (yield* interp.eval(interp.globals, s.expr)) as Value;
-      else yield* interp.execStmt(interp.globals, s);
-    }
-    return last;
-  })();
-  const f = interp.sched.spawn("<repl>", gen as never);
-  interp.sched.runUntil(f);
-  if (f.state === "failed") throw f.error;
-  return last;
+  return evalSnippet(interp, mod);
 }
 
 function cmdTest(args: string[]): void {
@@ -776,6 +794,9 @@ commands:
   ast <file.hk> [--json] print the canonical AST
   tokens <file.hk>       print the token stream
   lsp                    start the language server (stdio)
+  kernel install         register the Jupyter kernel for this user
+  kernel host            the execution half of that kernel (stdio JSON);
+                           Jupyter starts this, you do not
   version                print the version
 
 packages (spec/PACKAGES.md):
@@ -812,6 +833,7 @@ export async function main(argv: string[]): Promise<void> {
     case "check": return cmdCheck(rest);
     case "build": return cmdBuild(rest);
     case "toolchain": return cmdToolchain();
+    case "kernel": return cmdKernel(rest);
     case "fmt": case "format": return cmdFmt(rest);
     case "test": return cmdTest(rest);
     case "repl": case undefined: return cmdRepl();

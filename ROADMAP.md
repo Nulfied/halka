@@ -81,6 +81,16 @@ only when the callee was a prelude function. `total([1, 2, 3])` in a loop leaked
 every literal. Passing the inferred flags through to the backend closes it
 without a second analysis, and without freeing what an owning callee took.
 
+**A Jupyter kernel** shipped, which is the cheapest way into the crowd that
+would otherwise never install a new language. It is two processes, because
+Jupyter's wire protocol is ZeroMQ with HMAC-signed multipart messages and
+speaking that from Node would mean a native dependency this compiler does not
+have: a Python front end inherits the protocol from `ipykernel`, and
+`halka kernel host` holds the interpreter state and runs cells over stdio
+JSON. Cells are interpreted, not compiled — the notebook is for the edit-run
+loop, and `halka build` is what makes a program fast
+([docs/JUPYTER.md](docs/JUPYTER.md)).
+
 **Packages** (#29/#30/#31) shipped too: `halka.pkg` manifests, semver
 requirements in two forms, Minimal Version Selection, a hash-pinned
 `halka.lock`, a per-user cache and path dependencies, against any static

@@ -79,6 +79,7 @@ halka repl
 | `halka test [dir]` | Run `test_*.hk` / `*_test.hk` files |
 | `halka repl` | Interactive session |
 | `halka lsp` | Language server over stdio |
+| `halka kernel install` | Register the Jupyter kernel ([docs](docs/JUPYTER.md)) |
 | `halka ast <file> [--json]` | Print the canonical AST |
 | `halka tokens <file>` | Print the token stream |
 
@@ -347,9 +348,10 @@ What works today:
   gets compiled, so `halka add` cannot run anything
   ([spec/PACKAGES.md](spec/PACKAGES.md)).
 - **Tooling** — formatter, REPL, language server, VS Code extension,
-  Tree-sitter grammar.
+  Tree-sitter grammar, and a Jupyter kernel so it can be tried a cell at a
+  time next to the Python people already run ([docs/JUPYTER.md](docs/JUPYTER.md)).
 
-What is next, in order: enums/match and maps in the native backend, a public
+What is next, in order: maps in the native backend, a public
 registry, then self-hosting. See [ROADMAP.md](ROADMAP.md).
 
 [STATUS.md](STATUS.md) maps all 55 planned ecosystem areas to what actually

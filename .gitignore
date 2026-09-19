@@ -40,3 +40,6 @@ editors/tree-sitter-halka/*.obj
 *.stackdump
 bench/infer
 bench/infer_par
+
+# Python bytecode from the Jupyter kernel front end
+__pycache__/

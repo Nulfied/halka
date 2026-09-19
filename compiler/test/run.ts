@@ -10,6 +10,7 @@
 //   own      — spec/MEMORY-MODEL.md: ownership and borrow checking
 //   pkg      — spec/PACKAGES.md: versions, manifests, resolution, archives
 //   link     — multi-module programs: interpreter and native must agree
+//   kernel   — the Jupyter kernel host: cells share state over stdio JSON
 //              M4 is checked inside `native` and `ffi`: every compiled
 //              program must free every heap object it allocates
 
@@ -32,6 +33,7 @@ import { tmpdir } from "node:os";
 import { suitePkg } from "./pkg.ts";
 import { suitePkgE2E } from "./pkg-e2e.ts";
 import { suiteLink } from "./link.ts";
+import { runKernelTests } from "./kernel.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -510,6 +512,7 @@ suiteOwnershipCorpus();
 suitePkg({ ok: (n) => ok("pkg", n), bad: (n, d) => bad("pkg", n, d) });
 await suitePkgE2E({ ok: (n) => ok("pkg", n), bad: (n, d) => bad("pkg", n, d) });
 suiteLink({ ok: (n) => ok("link", n), bad: (n, d) => bad("link", n, d) }, findToolchain() !== null);
+await runKernelTests(ok, bad);
 const ms = Date.now() - t0;
 
 if (failures.length) {
