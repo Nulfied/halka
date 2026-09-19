@@ -29,6 +29,7 @@ const KERNELS = [
   { name: "fib", what: "recursive calls", detail: "fib(35), 30M calls" },
   { name: "loop", what: "integer arithmetic", detail: "200M iterations of `i % 7`" },
   { name: "mandel", what: "floating point", detail: "900x900, 500 iterations" },
+  { name: "infer", what: "dense-layer inference", detail: "4096x512 -> 32, 67M MACs" },
 ];
 
 const selected = only.length ? KERNELS.filter((k) => only.includes(k.name)) : KERNELS;
@@ -51,6 +52,11 @@ function timeIt(fn) {
     times.push(Number(t1 - t0) / 1e6);
   }
   return { ms: Math.min(...times), output: null };
+}
+
+/** Kernels print their checksum first and may print timings after it. */
+function checksumOf(out) {
+  return out === null ? null : String(out).split(String.fromCharCode(10))[0].trim();
 }
 
 function runBinary(path) {
@@ -158,7 +164,11 @@ for (const k of selected) {
 process.stdout.write("\ncorrectness\n");
 let mismatch = false;
 for (const k of selected) {
-  const got = ["halka", "c", "python"].map((l) => [l, outputs.get(`${k.name}:${l}`)]).filter(([, v]) => v);
+  // A kernel may print timings after its checksum; only the checksum has to
+  // match, and the timings are the whole point of printing them.
+  const got = ["halka", "c", "python"]
+    .map((l) => [l, checksumOf(outputs.get(`${k.name}:${l}`) ?? null)])
+    .filter(([, v]) => v);
   const first = got[0]?.[1];
   const same = got.every(([, v]) => v === first);
   if (!same) mismatch = true;

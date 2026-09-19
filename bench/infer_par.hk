@@ -1,0 +1,71 @@
+### infer_par.hk — the same dense-layer inference, across real OS threads.
+
+Identical arithmetic to infer.hk, split into eight bands of rows. This is
+the claim the GIL makes impossible in pure Python: eight threads, eight
+cores, no interpreter lock. NumPy reaches multiple cores too, through BLAS
+rather than through Python, so this is not a comparison against Python's
+threading — it is a check that Halka's own parallelism is real.
+###
+
+import time
+
+dot(x: list(float), w: list(float), xoff: int, woff: int, n: int): float,
+    let acc: 0.0,
+    for j in 0..n,
+        acc: acc + x[xoff + j] * w[woff + j],
+    give acc
+
+band(x: list(float), w: list(float), b: list(float), r0: int, r1: int, feats: int, classes: int): int,
+    let total: 0,
+    for r in r0..r1,
+        let best: 0,
+        let bestv: -1000000.0,
+        for c in 0..classes,
+            let v: dot(x, w, r * feats, c * feats, feats) + b[c],
+            if v < 0.0,
+                v: 0.0,
+            if v > bestv,
+                bestv: v,
+                best: c,
+        total: total + best,
+    give total
+
+let rows: 4096
+let feats: 512
+let classes: 32
+
+let w: []
+for i in 0..(feats * classes),
+    w.push(0.001 * (((i % 7) as float) - 3.0))
+let b: []
+for c in 0..classes,
+    b.push(0.01 * (c as float))
+let x: []
+for i in 0..(rows * feats),
+    x.push(0.5 * (((i % 13) as float) - 6.0))
+
+# Branches assign to outer bindings (#32), so the results outlive the block.
+let t0: 0
+let t1: 0
+let t2: 0
+let t3: 0
+let t4: 0
+let t5: 0
+let t6: 0
+let t7: 0
+
+let t_start: time.monotonic()
+
+parallel:
+    t0: band(x, w, b, 0, 512, feats, classes),
+    t1: band(x, w, b, 512, 1024, feats, classes),
+    t2: band(x, w, b, 1024, 1536, feats, classes),
+    t3: band(x, w, b, 1536, 2048, feats, classes),
+    t4: band(x, w, b, 2048, 2560, feats, classes),
+    t5: band(x, w, b, 2560, 3072, feats, classes),
+    t6: band(x, w, b, 3072, 3584, feats, classes),
+    t7: band(x, w, b, 3584, 4096, feats, classes)
+
+let elapsed: time.monotonic() - t_start
+say "infer checksum {t0 + t1 + t2 + t3 + t4 + t5 + t6 + t7}"
+say "compute {round(elapsed)} ms"

@@ -228,7 +228,7 @@ export class Parser {
   private parseLet(): A.Stmt {
     const kw = this.next();
     const isConst = kw.text === "const";
-    const pattern = this.parsePattern();
+    const pattern = asBinding(this.parsePattern());
     let type: A.TypeNode | undefined;
     let value: A.Expr | undefined;
 
@@ -382,7 +382,7 @@ export class Parser {
 
   private parseFor(): A.Stmt {
     const kw = this.next();
-    const pattern = this.parsePattern();
+    const pattern = asBinding(this.parsePattern());
     if (!this.eatKw("in")) {
       this.error("E0109", "expected `in` after the loop variable", this.cur().span, {
         help: "a for loop reads `for item in items,`",
@@ -1976,4 +1976,15 @@ export function parse(src: string, file: string): { module: A.Module; diags: Dia
   const p = new Parser(tokens, file, diags);
   const module = p.parseModule();
   return { module, diags, comments };
+}
+
+/**
+ * A `let` or `for` pattern binds; it never tests. A bare capitalised name
+ * parses as a `TypePat`, because in a `match` that is a variant or a type
+ * test, but in a binding position it can only be the name being bound.
+ * Leaving it a `TypePat` made `const ROWS: 4096` a pattern the backend read
+ * as destructuring, so a capitalised constant could not be compiled at all.
+ */
+function asBinding(p: A.Pattern): A.Pattern {
+  return p.kind === "TypePat" ? { kind: "BindPat", span: p.span, name: p.name } : p;
 }

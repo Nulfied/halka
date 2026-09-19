@@ -37,3 +37,5 @@ editors/tree-sitter-halka/*.exp
 editors/tree-sitter-halka/*.lib
 editors/tree-sitter-halka/*.obj
 *.stackdump
+bench/infer
+bench/infer_par

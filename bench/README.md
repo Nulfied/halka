@@ -107,6 +107,61 @@ prevents data races statically rather than documenting them.
 
 ---
 
+## Dense-layer inference: the honest version
+
+`infer.hk` is one inference step — `y = relu(x @ W + b)`, then argmax per
+row — over 4096 rows of 512 features into 32 classes. 67M multiply-adds.
+The same arithmetic is written by hand in `infer.c` and with NumPy in
+`infer.py`, `infer_par.hk` splits it across eight threads, and all four
+print the same checksum (122251) before any timing is believed.
+
+Two tables, because they answer different questions and only one of them
+is about the language.
+
+**The arithmetic** — each implementation times its own compute region, so
+process start and library import are excluded. Best of 5:
+
+| implementation | compute | note |
+|---|---|---|
+| hand-written C, 1 thread | 76 ms | `/O2`, same compiler |
+| **Halka, 1 thread** | **74 ms** | 0.97x the hand-written C |
+| **Halka, 8 threads** (`parallel:`) | **12 ms** | 6.2x on 4 physical cores + SMT |
+| NumPy (BLAS) | 7 ms | multi-threaded *and* SIMD |
+
+**The whole program**, one-shot, as a user would run it:
+
+| | wall clock |
+|---|---|
+| Halka (single binary) | 102 ms |
+| hand-written C | 88 ms |
+| Python + NumPy | 405 ms |
+
+### What this actually shows
+
+**Halka matches hand-written C on the arithmetic.** 74 ms against 76 ms,
+same compiler, same flags, same algorithm. That is the claim worth making
+and it holds here.
+
+**The parallelism is real.** 74 ms to 12 ms is 6.2x on a 4-core machine
+with SMT, from adding a `parallel:` block around work that was already
+written. No GIL, no processes, no serialisation of results.
+
+**NumPy still wins the arithmetic, and it is not close enough to wave
+away.** 7 ms against Halka's best of 12 ms — BLAS is roughly 1.7x faster
+than eight Halka threads, and 10x faster than one. The reason is not
+threading, which Halka now matches; it is SIMD. BLAS issues vector
+instructions that process several doubles per cycle, and Halka's generated
+C is scalar. **Vectorisation, not more threads, is the gap.**
+
+**The 4x on wall clock is startup, not speed, and should not be quoted as
+speed.** `python -c "import numpy"` alone costs ~385 ms on this machine —
+essentially the whole 405 ms. The first version of this benchmark reported
+"4x faster than Python" and was measuring almost nothing but interpreter
+start. It is a real cost for a CLI tool, a serverless function or anything
+that runs once and exits, and it is irrelevant to a long-running service.
+Which of those you are building decides whether that column means
+anything.
+
 ## What is *not* being claimed
 
 - **These are microbenchmarks.** They measure code generation quality on scalar
