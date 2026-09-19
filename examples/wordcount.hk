@@ -1,0 +1,84 @@
+### wordcount.hk — a small, realistic Halka program.
+
+Counts word frequencies in a block of text and prints the most common ones.
+Shows: structs, traits, maps, sorting with a key function, Result, and defer.
+###
+
+from seq import group_by, count_where
+
+let TEXT: """
+the quick brown fox jumps over the lazy dog\nthe dog barks and the fox runs\na quick fox is a happy fox\n"""
+
+Entry:
+    word: string,
+    count: int
+
+trait Show:
+    render(),
+        give nothing
+
+Entry implements Show:
+    render(),
+        give "{word.pad_end(8)} {"#".repeat(count)} {count}"
+
+# Split text into lowercase words, dropping anything that is not a letter.
+words_of(text),
+    let out: [],
+    for line in text.lines(),
+        for word in line.split(" "),
+            let clean: word.trim().lower(),
+            if clean.is_empty(),
+                continue,
+            out.push(clean),
+    give out
+
+tally(words),
+    let counts: map(),
+    for word in words,
+        counts[word]: counts.get(word, 0) + 1,
+    give counts
+
+# Sorting needs a named function — Halka has no lambdas (#17).
+by_count_desc(entry),
+    give -entry.count
+
+to_entries(counts),
+    let out: [],
+    for (word, count) in counts.entries(),
+        out.push(Entry(word, count)),
+    give out
+
+# A fallible operation returns a Result rather than raising (#22, #23).
+top(entries, n),
+    if n <= 0,
+        give Error("n must be positive, got {n}"),
+    let ranked: sorted(entries, by_count_desc),
+    give Ok(ranked[:n])
+
+report(text, n),
+    defer say "(done)",
+    let words: words_of(text),
+    say "{len(words)} words, {len(tally(words))} distinct",
+    let result: top(to_entries(tally(words)), n),
+    match result,
+        Ok(entries),
+            for e in entries,
+                say e.render(),
+        Error(message),
+            say "could not rank: {message}"
+
+report(TEXT, 5)
+
+# The same pipeline, but asking for an impossible ranking.
+report("just one line", 0)
+
+# Group by first letter using the stdlib helper.
+first_letter(word),
+    give word[0]
+
+let groups: group_by(words_of(TEXT), first_letter)
+say "words starting with 'f': {len(groups['f'])}"
+say "words longer than three letters: {count_where(words_of(TEXT), is_long)}"
+
+is_long(word),
+    give len(word) > 3

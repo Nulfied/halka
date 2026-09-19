@@ -1,0 +1,69 @@
+### testing — assertions for `halka test`.
+
+Test files are named `test_*.hk` or `*_test.hk` and simply run top to bottom.
+An assertion that fails stops the file, and `halka test` reports it.
+
+from testing import section, check_equal
+
+section "arithmetic"
+check_equal(2 + 2, 4, "addition")
+###
+
+# Announce a named section so failures are easy to locate.
+section(name),
+    say "-- {name}"
+
+# Pass when `condition` holds.
+check(condition, label: string: "check"),
+    if condition,
+        say "  ok   {label}",
+    else,
+        panic "  FAIL {label}"
+
+# Pass when two values are equal, showing both when they are not.
+check_equal(got, want, label: string: "equal"),
+    if got == want,
+        say "  ok   {label}",
+    else,
+        panic "  FAIL {label}: expected {inspect(want)}, got {inspect(got)}"
+
+check_not_equal(got, want, label: string: "not equal"),
+    if got != want,
+        say "  ok   {label}",
+    else,
+        panic "  FAIL {label}: both values are {inspect(got)}"
+
+# Pass when a Result is Ok, and give its value out (#22).
+check_ok(result, label: string: "ok"),
+    match result,
+        Ok(value),
+            say "  ok   {label}",
+            give value,
+        Error(message),
+            panic "  FAIL {label}: {message}",
+        else,
+            panic "  FAIL {label}: not a Result"
+
+# Pass when a Result is an Error (#22).
+check_error(result, label: string: "error"),
+    if result is error,
+        say "  ok   {label}",
+    else,
+        panic "  FAIL {label}: expected an error, got {inspect(result)}"
+
+# Pass when two numbers are within `tolerance` of each other.
+check_near(got, want, tolerance: float: 0.000001, label: string: "near"),
+    let delta: abs(got - want),
+    if delta <= tolerance,
+        say "  ok   {label}",
+    else,
+        panic "  FAIL {label}: {got} is not within {tolerance} of {want}"
+
+export:
+    section,
+    check,
+    check_equal,
+    check_not_equal,
+    check_ok,
+    check_error,
+    check_near

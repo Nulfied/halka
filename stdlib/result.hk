@@ -1,0 +1,58 @@
+### result — helpers for the Result model (#22).
+
+Halka has no exceptions. `Result<T>` carries success as `Ok(value)` and failure
+as `Error(message)`. These functions make chains of fallible work readable
+without adding any syntax.
+###
+
+# The value inside an Ok, or `fallback` for an Error.
+value_or(result, fallback),
+    match result,
+        Ok(value),
+            give value,
+        else,
+            give fallback
+
+# Apply `f` to the value inside an Ok; pass an Error straight through.
+map_ok(result, f),
+    match result,
+        Ok(value),
+            give Ok(apply value : f),
+        else,
+            give result
+
+# Replace an Error's message, leaving an Ok unchanged.
+relabel(result, message),
+    if result is error,
+        give Error(message),
+    else,
+        give result
+
+# The first Error in a list, or Ok with every value collected.
+all_ok(results),
+    let values: [],
+    for r in results,
+        match r,
+            Ok(value),
+                values.push(value),
+            Error(message),
+                give Error(message),
+            else,
+                give Error("not a Result: {inspect(r)}"),
+    give Ok(values)
+
+# The first Ok in a list, or the last Error.
+first_ok(results),
+    let last: Error("no results"),
+    for r in results,
+        if r is ok,
+            give r,
+        last: r,
+    give last
+
+export:
+    value_or,
+    map_ok,
+    relabel,
+    all_ok,
+    first_ok

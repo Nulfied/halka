@@ -2,6 +2,7 @@
 
 import { readFileSync, existsSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, dirname, join, basename, extname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 
 import { parse, Parser } from "../parser/parser.ts";
@@ -52,6 +53,14 @@ function loadProgram(file: string): Loaded {
   const seen = new Set<string>();
 
   const root = dirname(resolve(file));
+  // Module search path: next to the importing file, then the bundled stdlib,
+  // then anything on HALKA_PATH (#33, #34).
+  const searchPath = [
+    root,
+    join(root, ".."),
+    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "stdlib"),
+    ...(process.env["HALKA_PATH"] ?? "").split(process.platform === "win32" ? ";" : ":").filter(Boolean),
+  ];
 
   const readModule = (abs: string, logical: string): A.Module | null => {
     if (seen.has(abs)) return null;
@@ -64,7 +73,8 @@ function loadProgram(file: string): Loaded {
     for (const s of mod.stmts) {
       if (s.kind !== "ImportDecl" || s.foreign) continue;
       const rel = s.path.replace(/\./g, "/").replace(/^"|"$/g, "");
-      for (const cand of [join(root, rel + ".hk"), join(root, rel, "mod.hk"), join(root, "..", rel + ".hk")]) {
+      const candidates = searchPath.flatMap((dir) => [join(dir, rel + ".hk"), join(dir, rel, "mod.hk")]);
+      for (const cand of candidates) {
         if (existsSync(cand)) {
           const sub = readModule(resolve(cand), s.path);
           if (sub) deps.push({ path: s.path, mod: sub });

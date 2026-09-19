@@ -277,12 +277,14 @@ export class Lexer {
           this.advance();
           this.advance();
           this.advance();
+          this.comments.push({ text: this.src.slice(start.offset, this.i), span: this.span(start), ownLine, block: true });
           return;
         }
         this.advance();
       }
     }
     while (!this.atEnd() && this.peek() !== "\n") this.advance();
+    this.comments.push({ text: this.src.slice(start.offset, this.i), span: this.span(start), ownLine, block: false });
   }
 
   // ---- token scanning ---------------------------------------------------

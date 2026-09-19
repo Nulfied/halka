@@ -11,8 +11,7 @@ trait Greet:
 
 User implements Greet:
     hello(),
-        give "hi {name}, {age}"
-
+        give "hi {name}, {age}",
     birthday(),
         age: age + 1,
         give age
@@ -33,6 +32,7 @@ area(s),
             give w * h,
         else,
             give 0
+
 say area(Circle(2))
 say area(Rect(3, 4))
 
@@ -41,6 +41,7 @@ biggest<T>(a: T, b: T),
         give a,
     else,
         give b
+
 say biggest(3, 9)
 say biggest("apple", "pear")
 
@@ -58,6 +59,7 @@ show(text),
             say "ok {v}",
         Error(msg),
             say msg
+
 show "12"
 show "xy"
 say 25 as float

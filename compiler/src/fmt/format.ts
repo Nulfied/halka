@@ -42,6 +42,8 @@ class Formatter {
       if (!c.ownLine) continue;
       this.used.add(c);
       for (const l of c.text.split("\n")) this.push(depth, l.trim());
+      // A comment the author separated from the code keeps its blank line.
+      if (line - c.span.end.line >= 2) this.out.push("");
     }
   }
 
@@ -79,7 +81,12 @@ class Formatter {
       // The module top level is a list of independent statements, not one
       // continued construct, so it carries no separating commas (#53).
       const comma = topLevel ? false : last ? continues : true;
-      if (topLevel && i > 0 && needsBlankLineBefore(s, stmts[i - 1]!)) this.out.push("");
+      if (i > 0) {
+        const prev = stmts[i - 1]!;
+        // Keep the author's paragraphing; always separate top-level declarations.
+        const blankInSource = s.span.start.line - prev.span.end.line >= 2;
+        if (blankInSource || (topLevel && needsBlankLineBefore(s, prev))) this.out.push("");
+      }
       this.stmt(s, depth, comma);
     });
   }

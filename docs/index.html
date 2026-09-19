@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Halka — a learnable systems language</title>
+<meta name="description" content="Halka is a general-purpose language with one assignment operator, one separator, and no redundant syntax. Locked V49 specification, working reference toolchain.">
+<meta property="og:title" content="Halka">
+<meta property="og:description" content="One assignment operator. One separator. One way to write things.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⬡</text></svg>">
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-soft: #f6f7f9;
+    --bg-code: #f2f3f5;
+    --fg: #16181d;
+    --fg-soft: #5a6069;
+    --line: #e3e5e9;
+    --accent: #3b6fe0;
+    --accent-2: #d4407a;
+    --ok: #1a7f5a;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+    --kw: #8250df; --str: #0a7d4f; --num: #b3541e; --com: #7b828c; --typ: #1f6fb2; --fn: #b3407a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0e1014; --bg-soft: #14171d; --bg-code: #171b22;
+      --fg: #e7e9ee; --fg-soft: #98a0ac; --line: #262b34;
+      --accent: #7aa2f7; --accent-2: #f07aa8; --ok: #56d4a0;
+      --kw: #c08cf5; --str: #7bd6a4; --num: #f0a868; --com: #6d757f; --typ: #79c0ff; --fn: #f79ac0;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e1014; --bg-soft: #14171d; --bg-code: #171b22;
+    --fg: #e7e9ee; --fg-soft: #98a0ac; --line: #262b34;
+    --accent: #7aa2f7; --accent-2: #f07aa8; --ok: #56d4a0;
+    --kw: #c08cf5; --str: #7bd6a4; --num: #f0a868; --com: #6d757f; --typ: #79c0ff; --fn: #f79ac0;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--sans); font-size: 16px; line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre { font-family: var(--mono); font-size: 0.875em; }
+  :not(pre) > code {
+    background: var(--bg-code); padding: 0.15em 0.4em; border-radius: 4px;
+    border: 1px solid var(--line);
+  }
+
+  /* ---- header ---- */
+  header { border-bottom: 1px solid var(--line); position: sticky; top: 0; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); z-index: 10; }
+  .nav { display: flex; align-items: center; gap: 20px; height: 56px; }
+  .brand { display: flex; align-items: center; gap: 9px; font-weight: 650; letter-spacing: 0.02em; color: var(--fg); }
+  .brand svg { display: block; }
+  .nav-links { margin-left: auto; display: flex; gap: 18px; font-size: 14px; flex-wrap: wrap; }
+  .nav-links a { color: var(--fg-soft); }
+  .nav-links a:hover { color: var(--fg); text-decoration: none; }
+
+  /* ---- hero ---- */
+  .hero { padding: 68px 0 44px; }
+  .hero h1 {
+    font-size: clamp(34px, 6vw, 56px); line-height: 1.08; margin: 0 0 14px;
+    letter-spacing: -0.025em; font-weight: 700;
+  }
+  .hero h1 .grad {
+    background: linear-gradient(100deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .hero p.lead { font-size: clamp(16px, 2.4vw, 19px); color: var(--fg-soft); max-width: 62ch; margin: 0 0 26px; }
+  .cta { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .btn {
+    display: inline-block; padding: 9px 17px; border-radius: 8px; font-size: 14px;
+    font-weight: 550; border: 1px solid var(--line); color: var(--fg); background: var(--bg-soft);
+  }
+  .btn:hover { text-decoration: none; border-color: var(--accent); }
+  .btn.primary { background: var(--accent); color: #fff; border-color: transparent; }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .badge {
+    font-size: 12px; font-family: var(--mono); color: var(--ok);
+    border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
+    background: color-mix(in srgb, var(--ok) 10%, transparent);
+    padding: 3px 9px; border-radius: 999px;
+  }
+
+  /* ---- layout blocks ---- */
+  section { padding: 44px 0; border-top: 1px solid var(--line); }
+  section > .wrap > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--fg-soft); margin: 0 0 20px; font-weight: 650; }
+  h3 { font-size: 19px; margin: 0 0 8px; letter-spacing: -0.01em; }
+
+  pre {
+    background: var(--bg-code); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px 18px; overflow-x: auto; margin: 0; line-height: 1.6;
+  }
+  .grid { display: grid; gap: 18px; }
+  @media (min-width: 720px) { .cols-2 { grid-template-columns: 1fr 1fr; } .cols-3 { grid-template-columns: repeat(3, 1fr); } }
+  .card { border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; background: var(--bg-soft); }
+  .card p { margin: 0; color: var(--fg-soft); font-size: 15px; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 15px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--fg-soft); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; }
+  td code { white-space: nowrap; }
+
+  .two { display: grid; gap: 20px; align-items: start; }
+  @media (min-width: 860px) { .two { grid-template-columns: 1fr 1fr; } }
+
+  footer { border-top: 1px solid var(--line); padding: 28px 0 44px; color: var(--fg-soft); font-size: 14px; }
+  footer a { color: var(--fg-soft); text-decoration: underline; }
+
+  /* ---- syntax colours ---- */
+  .k { color: var(--kw); } .s { color: var(--str); } .n { color: var(--num); }
+  .c { color: var(--com); font-style: italic; } .t { color: var(--typ); } .f { color: var(--fn); }
+  .o { color: var(--fg-soft); }
+
+  .note { font-size: 14px; color: var(--fg-soft); }
+  ul.tight { margin: 8px 0 0; padding-left: 20px; }
+  ul.tight li { margin: 3px 0; color: var(--fg-soft); font-size: 15px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <a class="brand" href="#top">
+      <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+        <defs>
+          <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#5b9cf8"/><stop offset="55%" stop-color="#a97bf0"/><stop offset="100%" stop-color="#ef5f8d"/>
+          </linearGradient>
+        </defs>
+        <rect x="1" y="1" width="22" height="22" rx="6" fill="none" stroke="url(#g)" stroke-width="1.6"/>
+        <path d="M7.5 6.5v11M16.5 6.5v11M7.5 12c3-3 6 3 9 0" fill="none" stroke="url(#g)" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      Halka
+    </a>
+    <nav class="nav-links">
+      <a href="#start">Get started</a>
+      <a href="#tour">Tour</a>
+      <a href="#why">Why</a>
+      <a href="#editors">Editors</a>
+      <a href="https://github.com/halka-lang/halka/blob/main/spec/V49-LOCKED.md">Spec</a>
+      <a href="https://github.com/halka-lang/halka">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+<div class="wrap hero">
+  <span class="badge">v0.1 · syntax locked · pre-1.0</span>
+  <h1>One assignment operator.<br><span class="grad">One separator.</span><br>One way to write things.</h1>
+  <p class="lead">
+    Halka is a general-purpose language whose entire surface grammar rests on two
+    rules: <code>:</code> associates, <code>,</code> separates. Everything else follows.
+    Small enough to learn in an afternoon, deep enough for systems work,
+    concurrency, and AI/ML.
+  </p>
+  <div class="cta">
+    <a class="btn primary" href="#start">Get started</a>
+    <a class="btn" href="https://github.com/halka-lang/halka">Source on GitHub</a>
+    <a class="btn" href="https://github.com/halka-lang/halka/blob/main/spec/V49-LOCKED.md">Read the spec</a>
+  </div>
+</div>
+
+<section id="tour">
+  <div class="wrap">
+    <h2>What it looks like</h2>
+    <div class="two">
+      <div>
+<pre><code><span class="c"># Types are inferred. Annotate when you want to.</span>
+<span class="k">let</span> name<span class="o">:</span> <span class="s">"HALKA"</span>
+<span class="k">let</span> age<span class="o">:</span> <span class="t">int</span><span class="o">:</span> <span class="n">25</span>
+
+<span class="f">greet</span>(who<span class="o">:</span> <span class="t">string</span><span class="o">:</span> <span class="s">"world"</span>),
+    <span class="k">give</span> <span class="s">"Hello, {who}!"</span>
+
+<span class="k">say</span> <span class="f">greet</span>(name)
+
+<span class="k">if</span> age <span class="o">&gt;=</span> <span class="n">18</span>,
+    <span class="k">say</span> <span class="s">"adult"</span>,
+<span class="k">else</span>,
+    <span class="k">say</span> <span class="s">"minor"</span>
+
+<span class="c"># Collections, slices, ranges.</span>
+<span class="k">let</span> numbers<span class="o">:</span> [<span class="n">10</span>, <span class="n">20</span>, <span class="n">30</span>, <span class="n">40</span>]
+<span class="k">say</span> numbers[<span class="n">1</span><span class="o">:</span><span class="n">3</span>]        <span class="c"># [20, 30]</span>
+<span class="k">say</span> numbers[<span class="o">-</span><span class="n">1</span>]         <span class="c"># 40</span>
+<span class="k">for</span> i <span class="k">in</span> <span class="n">1</span><span class="o">..=</span><span class="n">3</span>,
+    <span class="k">say</span> i</code></pre>
+      </div>
+      <div>
+<pre><code><span class="c"># Errors are values. There is no try/catch.</span>
+<span class="f">parse_age</span>(text),
+    <span class="k">let</span> r<span class="o">:</span> text <span class="k">to</span> <span class="t">int</span>,
+    <span class="k">if</span> r <span class="k">is</span> <span class="k">error</span>,
+        <span class="k">give</span> <span class="t">Error</span>(<span class="s">"not a number: {text}"</span>),
+    <span class="k">else</span>,
+        <span class="k">give</span> r
+
+<span class="k">match</span> <span class="f">parse_age</span>(<span class="s">"42"</span>),
+    <span class="t">Ok</span>(value),
+        <span class="k">say</span> value,
+    <span class="t">Error</span>(message),
+        <span class="k">say</span> message
+
+<span class="c"># Cleanup survives an early `give`.</span>
+<span class="f">read_config</span>(),
+    <span class="k">let</span> file<span class="o">:</span> <span class="f">open</span>(<span class="s">"config.hk"</span>),
+    <span class="k">defer</span> <span class="f">close</span> file,
+    <span class="k">give</span> <span class="f">parse</span>(file)
+
+<span class="c"># Concurrency is built in.</span>
+<span class="k">let</span> a<span class="o">:</span> <span class="k">start</span> <span class="f">fetch</span>(<span class="s">"/users"</span>),
+<span class="k">let</span> b<span class="o">:</span> <span class="k">start</span> <span class="f">fetch</span>(<span class="s">"/orders"</span>),
+<span class="k">let</span> users<span class="o">:</span> <span class="k">await</span> a,
+<span class="k">let</span> orders<span class="o">:</span> <span class="k">await</span> b</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="start">
+  <div class="wrap">
+    <h2>Get started</h2>
+    <p class="note">The reference toolchain needs Node 22.6 or newer and has no runtime dependencies.</p>
+<pre><code>git clone https://github.com/halka-lang/halka.git
+cd halka/compiler
+npm link
+
+halka run ../examples/hello.hk
+halka repl</code></pre>
+    <div class="grid cols-3" style="margin-top:20px">
+      <div class="card"><h3>halka run</h3><p>Run a program.</p></div>
+      <div class="card"><h3>halka check</h3><p>Parse and check without running.</p></div>
+      <div class="card"><h3>halka fmt</h3><p>Format to the one canonical style.</p></div>
+      <div class="card"><h3>halka test</h3><p>Run <code>test_*.hk</code> files.</p></div>
+      <div class="card"><h3>halka repl</h3><p>An interactive session.</p></div>
+      <div class="card"><h3>halka lsp</h3><p>The language server, over stdio.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="why">
+  <div class="wrap">
+    <h2>What Halka takes, and what it refuses</h2>
+    <div class="two">
+      <div>
+        <h3>Taken</h3>
+        <table>
+          <tr><td>Deterministic cleanup, no GC pauses</td><td class="note">C++ / Rust</td></tr>
+          <tr><td>Memory safety by default</td><td class="note">Rust</td></tr>
+          <tr><td>Arbitrary-precision integers</td><td class="note">Python</td></tr>
+          <tr><td>Indentation-structured, readable</td><td class="note">Python</td></tr>
+          <tr><td>Errors as values</td><td class="note">Go / Rust</td></tr>
+          <tr><td>Lightweight tasks and channels</td><td class="note">Go</td></tr>
+          <tr><td>Traits, generics, pattern matching</td><td class="note">Rust / ML</td></tr>
+          <tr><td>Compile-time execution, macros</td><td class="note">Zig / Lisp</td></tr>
+          <tr><td>Direct C, C++ and Python interop</td><td class="note">Zig / Cython</td></tr>
+          <tr><td>Capability-based security</td><td class="note">Pony / Deno</td></tr>
+        </table>
+      </div>
+      <div>
+        <h3>Refused, and enforced</h3>
+        <table>
+          <tr><td>Exceptions</td><td class="note">rule #23 — use <code>Result&lt;T&gt;</code></td></tr>
+          <tr><td>Function overloading</td><td class="note">rule #21 — use generics</td></tr>
+          <tr><td>Lambdas</td><td class="note">rule #17 — pass a named function</td></tr>
+          <tr><td>A second interface system</td><td class="note">rule #16 — traits do that</td></tr>
+          <tr><td>C-style casts</td><td class="note">rule #15 — <code>as</code> or <code>to</code></td></tr>
+          <tr><td>Ambient authority</td><td class="note">rule #45 — declare <code>requires</code></td></tr>
+        </table>
+        <p class="note" style="margin-top:14px">
+          The compiler does not merely omit these — it recognises them and says
+          which rule removed it, and what to write instead:
+        </p>
+<pre style="margin-top:10px"><code><span class="c">error[E0303]</span>: `catch` is reserved and is not
+             part of Halka V49
+  <span class="o">--&gt;</span> app.hk:12:5
+   <span class="o">|</span>
+<span class="o">12 |</span>     catch e,
+   <span class="o">|</span>     <span class="c">^^^^^</span>
+  <span class="o">=</span> locked rule: #23 — Exception model
+  <span class="o">=</span> help: Halka has no exception system.
+          Match on Result&lt;T&gt;.</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>The specification is locked</h2>
+    <div class="grid cols-2">
+      <div class="card">
+        <h3>54 rules, frozen</h3>
+        <p>
+          The whole syntax lives in one document, transcribed from the authored
+          design records which are archived unchanged. CI fails if the two ever
+          drift. Changing a locked rule needs a numbered proposal and a version
+          bump.
+        </p>
+      </div>
+      <div class="card">
+        <h3>One program, one parse</h3>
+        <p>
+          Rule #52 forbids the parser from guessing. Where two locked forms look
+          alike, a numbered resolution gives the deterministic answer — and may
+          only narrow a locked rule, never contradict it. Each one has a test.
+        </p>
+      </div>
+    </div>
+    <p style="margin-top:18px">
+      <a href="https://github.com/halka-lang/halka/blob/main/spec/V49-LOCKED.md">The 54 locked rules →</a>
+      &nbsp;&nbsp;
+      <a href="https://github.com/halka-lang/halka/blob/main/spec/RESOLUTIONS.md">Grammar resolutions →</a>
+    </p>
+  </div>
+</section>
+
+<section id="editors">
+  <div class="wrap">
+    <h2>Editor support</h2>
+    <p class="note">
+      <code>halka lsp</code> speaks LSP 3.17 over stdio with no dependencies:
+      diagnostics, hover, completion, go-to-definition, symbols, rename and
+      formatting. Highlighting ships as both a TextMate and a Tree-sitter grammar.
+    </p>
+    <div class="grid cols-3" style="margin-top:16px">
+      <div class="card"><h3>VS Code</h3><p>Extension in <code>editors/vscode</code>.</p></div>
+      <div class="card"><h3>Neovim</h3><p>lspconfig plus Tree-sitter.</p></div>
+      <div class="card"><h3>Helix</h3><p>Drop into <code>languages.toml</code>.</p></div>
+      <div class="card"><h3>Zed</h3><p>Dev extension in <code>editors/zed</code>.</p></div>
+      <div class="card"><h3>Sublime Text</h3><p>TextMate grammar and the LSP package.</p></div>
+      <div class="card"><h3>Anything else</h3><p>Point any LSP client at <code>halka lsp</code>.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Where it is going</h2>
+    <table>
+      <tr><th>Version</th><th>Milestone</th></tr>
+      <tr><td><strong>v0.1</strong></td><td>The language runs — locked spec implemented end to end. <em>Here now.</em></td></tr>
+      <tr><td>v0.2</td><td>Static type inference, exhaustiveness, borrow checking</td></tr>
+      <tr><td>v0.3</td><td>Bytecode VM</td></tr>
+      <tr><td>v0.4</td><td>Native compilation, emitting C99 — no LLVM dependency</td></tr>
+      <tr><td>v0.5</td><td>Real C, C++ and Python FFI</td></tr>
+      <tr><td>v0.6</td><td>Self-hosting: the compiler written in Halka</td></tr>
+      <tr><td>v0.7</td><td>Tensors, GPU kernels, compile-time shape checking</td></tr>
+      <tr><td>v1.0</td><td>Frozen semantics, package registry, debugger</td></tr>
+    </table>
+    <p style="margin-top:16px"><a href="https://github.com/halka-lang/halka/blob/main/ROADMAP.md">The full roadmap →</a></p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Help build it</h2>
+    <p class="note">The syntax is locked; everything else is open.</p>
+    <ul class="tight">
+      <li><strong>Type checker</strong> — the largest remaining piece.</li>
+      <li><strong>C backend</strong> — well-scoped and self-contained.</li>
+      <li><strong>Standard library</strong> — written in Halka.</li>
+      <li><strong>Adversarial tests</strong> — find a program with two parses. Rule #52 says that is a bug.</li>
+    </ul>
+    <p style="margin-top:16px"><a href="https://github.com/halka-lang/halka/blob/main/CONTRIBUTING.md">How to contribute →</a></p>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    Halka is dual-licensed under
+    <a href="https://github.com/halka-lang/halka/blob/main/LICENSE-MIT">MIT</a> or
+    <a href="https://github.com/halka-lang/halka/blob/main/LICENSE-APACHE">Apache-2.0</a>.
+    &nbsp;·&nbsp; Pre-1.0: the syntax is stable, the libraries are not.
+  </div>
+</footer>
+
+</body>
+</html>

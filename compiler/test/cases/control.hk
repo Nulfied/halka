@@ -30,6 +30,7 @@ first_even(items),
             continue,
         give i,
     give null
+
 say first_even([1, 3, 4, 5])
 say first_even([1, 3, 5])
 
@@ -37,6 +38,7 @@ cleanup_order(),
     defer say "third",
     defer say "second",
     say "first"
+
 cleanup_order()
 
 match [1, 2, 3],

@@ -1,0 +1,13 @@
+* text=auto eol=lf
+*.hk   text eol=lf
+*.out  text eol=lf
+*.md   text eol=lf
+*.ts   text eol=lf
+*.js   text eol=lf
+*.json text eol=lf
+*.c    text eol=lf
+*.h    text eol=lf
+*.scm  text eol=lf
+*.yml  text eol=lf
+*.docx binary
+*.png  binary

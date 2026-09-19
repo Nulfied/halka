@@ -1,0 +1,87 @@
+### seq — sequence helpers written in Halka.
+
+Complements the built-in list methods (`map`, `filter`, `reduce`, `sort`) with
+operations that read better as named functions.
+###
+
+# The first `n` elements; fewer if the list is shorter.
+take(items, n),
+    give items[:n]
+
+# Everything after the first `n` elements.
+drop(items, n),
+    give items[n:]
+
+# Split into the elements that satisfy `predicate` and those that do not.
+partition(items, predicate),
+    let yes: [],
+    let no: [],
+    for item in items,
+        if apply item : predicate,
+            yes.push(item),
+        else,
+            no.push(item),
+    give (yes, no)
+
+# Pairs of consecutive elements: [1, 2, 3] becomes [(1, 2), (2, 3)].
+pairs(items),
+    let out: [],
+    let n: len(items),
+    if n < 2,
+        give out,
+    for i in 0..n - 1,
+        out.push((items[i], items[i + 1])),
+    give out
+
+# Running totals: scan([1, 2, 3], add_two) becomes [1, 3, 6].
+scan(items, combine),
+    let out: [],
+    let acc: null,
+    for item in items,
+        if acc is null,
+            acc: item,
+        else,
+            acc: combine(acc, item),
+        out.push(acc),
+    give out
+
+# Group elements by the value `key` returns for each of them.
+group_by(items, key),
+    let groups: map(),
+    for item in items,
+        let k: apply item : key,
+        if groups.has(k),
+            let bucket: groups[k],
+            bucket.push(item),
+        else,
+            groups[k]: [item],
+    give groups
+
+# How many elements satisfy `predicate`.
+count_where(items, predicate),
+    let total: 0,
+    for item in items,
+        if apply item : predicate,
+            total: total + 1,
+    give total
+
+# Interleave a separator between elements.
+intersperse(items, separator),
+    let out: [],
+    let first: true,
+    for item in items,
+        if not first,
+            out.push(separator),
+        out.push(item),
+        first: false,
+    give out
+
+export:
+    take,
+    drop,
+    partition,
+    pairs,
+    scan,
+    group_by,
+    count_where,
+    intersperse

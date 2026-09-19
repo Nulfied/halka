@@ -522,6 +522,9 @@ export class Parser {
   /** True when the current Ident begins a parenthesis-free command call. */
   private isCommandCallStart(): boolean {
     if (!this.is(T.Ident)) return false;
+    // These have their own productions in `parseUnary`, so a single AST shape
+    // is produced wherever they appear.
+    if (this.cur().text === "apply" || this.cur().text === "acquire" || this.cur().text === "range") return false;
     const n = this.at(1);
     if (n.nlBefore) return false;
     switch (n.kind) {
@@ -1201,6 +1204,9 @@ export class Parser {
       if (after === -1) return -1;
       j = after;
     } else if (this.toks[j]?.kind === T.LParen && TYPE_CTORS.has(t.text)) {
+      // `map()` with no arguments is a call, not a type: a container type must
+      // name its element types (`map(string, int)`).
+      if (this.toks[j + 1]?.kind === T.RParen) return -1;
       const after = this.skipBalanced(j);
       if (after === -1) return -1;
       j = after;

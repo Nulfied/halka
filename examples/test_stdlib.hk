@@ -1,0 +1,43 @@
+### test_stdlib.hk — run with `halka test examples`. ###
+
+from testing import section, check, check_equal, check_ok, check_error
+from seq import take, drop, partition, pairs, count_where, intersperse
+from result import value_or, relabel, all_ok, first_ok
+
+section "seq"
+
+check_equal(take([1, 2, 3, 4], 2), [1, 2], "take")
+check_equal(drop([1, 2, 3, 4], 2), [3, 4], "drop")
+check_equal(pairs([1, 2, 3]), [(1, 2), (2, 3)], "pairs")
+check_equal(pairs([1]), [], "pairs of a short list")
+check_equal(intersperse([1, 2, 3], 0), [1, 0, 2, 0, 3], "intersperse")
+
+is_even(n),
+    give n % 2 == 0
+
+let (evens, odds): partition([1, 2, 3, 4, 5], is_even)
+check_equal(evens, [2, 4], "partition keeps matches")
+check_equal(odds, [1, 3, 5], "partition keeps the rest")
+check_equal(count_where([1, 2, 3, 4], is_even), 2, "count_where")
+
+section "result"
+
+check_equal(value_or(Ok(7), 0), 7, "value_or on Ok")
+check_equal(value_or(Error("nope"), 0), 0, "value_or on Error")
+check_error(relabel(Error("a"), "b"), "relabel keeps it an Error")
+check_ok(all_ok([Ok(1), Ok(2)]), "all_ok when every result is Ok")
+check_error(all_ok([Ok(1), Error("bad")]), "all_ok stops at the first Error")
+check_equal(value_or(first_ok([Error("a"), Ok(9)]), 0), 9, "first_ok")
+
+section "locked behaviour"
+
+check_equal(7 / 2, 3.5, "#51 / always yields a float")
+check_equal(div(7, 2), 3, "div truncates")
+check_equal(null or "fallback", "fallback", "R11 or coalesces null")
+check_equal(false or "fallback", "fallback", "R11 or coalesces false")
+check_equal([10, 20, 30][-1], 30, "#54 negative index")
+check_equal([1, 2, 3, 4][1:3], [2, 3], "#54 slice")
+check_equal([1, 2, 3][::-1], [3, 2, 1], "#54 reverse slice")
+check(not 1 == 2, "#51 not binds looser than comparison")
+check_equal("2" as int, 2, "#15 as")
+check_error("x" to int, "#15 to yields a Result on failure")
