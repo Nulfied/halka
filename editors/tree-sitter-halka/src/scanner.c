@@ -8,6 +8,7 @@
 
 #include "tree_sitter/parser.h"
 
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wctype.h>
@@ -28,6 +29,11 @@ typedef struct {
   uint8_t pending_dedents;
   // Open bracket nesting; layout is suppressed while this is non-zero.
   uint16_t bracket_depth;
+  // Whether the closing NEWLINE at end of file has already been handed over.
+  // Without this the scanner returns a zero-width NEWLINE at EOF, tree-sitter
+  // calls it again at the same position, NEWLINE is still valid, and the
+  // parser spins forever on any input at all.
+  bool eof_newline;
 } Scanner;
 
 void *tree_sitter_halka_external_scanner_create(void) {
@@ -46,6 +52,7 @@ unsigned tree_sitter_halka_external_scanner_serialize(void *payload, char *buffe
   buffer[size++] = (char)s->pending_dedents;
   buffer[size++] = (char)(s->bracket_depth & 0xFF);
   buffer[size++] = (char)((s->bracket_depth >> 8) & 0xFF);
+  buffer[size++] = (char)(s->eof_newline ? 1 : 0);
 
   uint8_t n = s->indent_len;
   if ((size_t)(size + 1 + n * 2) > TREE_SITTER_SERIALIZATION_BUFFER_SIZE) {
@@ -65,12 +72,14 @@ void tree_sitter_halka_external_scanner_deserialize(void *payload, const char *b
   s->indent_len = 1;
   s->pending_dedents = 0;
   s->bracket_depth = 0;
+  s->eof_newline = false;
   if (length == 0) return;
 
   unsigned i = 0;
   s->pending_dedents = (uint8_t)buffer[i++];
   s->bracket_depth = (uint16_t)((unsigned char)buffer[i]) | (uint16_t)((unsigned char)buffer[i + 1] << 8);
   i += 2;
+  s->eof_newline = buffer[i++] != 0;
 
   uint8_t n = (uint8_t)buffer[i++];
   s->indent_len = 0;
@@ -124,14 +133,17 @@ bool tree_sitter_halka_external_scanner_scan(void *payload, TSLexer *lexer, cons
     return true;
   }
 
-  // Close every open block at end of file.
+  // Close every open block at end of file. Each DEDENT pops the stack, so
+  // that sequence terminates on its own; the final NEWLINE does not consume
+  // anything, so it is handed over exactly once.
   if (lexer->eof(lexer)) {
     if (s->indent_len > 1 && valid_symbols[DEDENT]) {
       s->indent_len--;
       lexer->result_symbol = DEDENT;
       return true;
     }
-    if (valid_symbols[NEWLINE]) {
+    if (!s->eof_newline && valid_symbols[NEWLINE]) {
+      s->eof_newline = true;
       lexer->result_symbol = NEWLINE;
       return true;
     }
@@ -163,7 +175,8 @@ bool tree_sitter_halka_external_scanner_scan(void *payload, TSLexer *lexer, cons
   if (!saw_newline) return false;
   if (s->bracket_depth > 0) return false;
   if (lexer->eof(lexer)) {
-    if (valid_symbols[NEWLINE]) {
+    if (!s->eof_newline && valid_symbols[NEWLINE]) {
+      s->eof_newline = true;
       lexer->result_symbol = NEWLINE;
       return true;
     }
