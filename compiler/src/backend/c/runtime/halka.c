@@ -872,3 +872,227 @@ void hk_shutdown(void) {
             (long long)hk_alive, (long long)hk_total);
   }
 }
+
+/* ---- maps ----------------------------------------------------------------
+ *
+ * See halka.h for why this is insertion-ordered rather than a plain table.
+ */
+
+static void hk_elem_drop(hk_int kind, void *slot) {
+  if (kind == HK_E_STR) hk_str_release(*(hk_str **)slot);
+  else if (kind == HK_E_LIST) hk_list_release(*(hk_list **)slot);
+}
+
+/* FNV-1a. A string hashes by its bytes so that two equal strings agree
+   whatever their addresses; anything else hashes by its representation,
+   which is exact for every scalar the backend emits. */
+static hk_int hk_hash_bytes(const unsigned char *p, hk_int n) {
+  unsigned long long h = 1469598103934665603ULL;
+  for (hk_int i = 0; i < n; i++) {
+    h ^= (unsigned long long)p[i];
+    h *= 1099511628211ULL;
+  }
+  return (hk_int)(h & 0x7fffffffffffffffULL);
+}
+
+static hk_int hk_key_hash(hk_int kkind, const void *key, hk_int ksz) {
+  if (kkind == HK_E_STR) {
+    const hk_str *s = *(const hk_str *const *)key;
+    return s ? hk_hash_bytes((const unsigned char *)s->data, s->len) : 0;
+  }
+  return hk_hash_bytes((const unsigned char *)key, ksz);
+}
+
+static bool hk_key_eq(hk_int kkind, const void *a, const void *b, hk_int ksz) {
+  if (kkind == HK_E_STR) return hk_str_eq(*(hk_str *const *)a, *(hk_str *const *)b);
+  return memcmp(a, b, (size_t)ksz) == 0;
+}
+
+static void hk_map_reindex(hk_map *m, hk_int want) {
+  hk_int n = 8;
+  while (n < want * 2) n *= 2;
+  hk_int *idx = (hk_int *)hk_alloc((size_t)n * sizeof(hk_int));
+  for (hk_int i = 0; i < n; i++) idx[i] = -1;
+  hk_dealloc(m->idx);
+  m->idx = idx;
+  m->nidx = n;
+  for (hk_int e = 0; e < m->used; e++) {
+    if (!m->live[e]) continue;
+    hk_int h = hk_key_hash(m->kkind, m->keys + e * m->ksz, m->ksz);
+    hk_int j = h & (n - 1);
+    while (idx[j] != -1) j = (j + 1) & (n - 1);
+    idx[j] = e;
+  }
+}
+
+static void hk_map_grow(hk_map *m, hk_int need) {
+  if (need <= m->cap) return;
+  hk_int cap = m->cap ? m->cap : 8;
+  while (cap < need) cap *= 2;
+  m->keys = (char *)hk_realloc(m->keys, (size_t)cap * (size_t)m->ksz);
+  m->vals = (char *)hk_realloc(m->vals, (size_t)cap * (size_t)m->vsz);
+  m->live = (hk_bool *)hk_realloc(m->live, (size_t)cap * sizeof(hk_bool));
+  m->cap = cap;
+}
+
+hk_map *hk_map_new(hk_int ksz, hk_int vsz, hk_int kkind, hk_int vkind, hk_int cap) {
+  hk_map *m = (hk_map *)hk_alloc(sizeof(hk_map));
+  m->rc = 1;
+  m->ksz = ksz; m->vsz = vsz;
+  m->kkind = kkind; m->vkind = vkind;
+  m->keys = NULL; m->vals = NULL; m->live = NULL;
+  m->used = 0; m->count = 0; m->cap = 0;
+  m->idx = NULL; m->nidx = 0;
+  if (cap > 0) hk_map_grow(m, cap);
+  hk_map_reindex(m, cap > 0 ? cap : 4);
+  return m;
+}
+
+hk_map *hk_map_retain(hk_map *m) { if (m) m->rc++; return m; }
+
+void hk_map_release(hk_map *m) {
+  if (!m || --m->rc > 0) return;
+  for (hk_int e = 0; e < m->used; e++) {
+    if (!m->live[e]) continue;
+    if (HK_E_OWNS(m->kkind)) hk_elem_drop(m->kkind, m->keys + e * m->ksz);
+    if (HK_E_OWNS(m->vkind)) hk_elem_drop(m->vkind, m->vals + e * m->vsz);
+  }
+  hk_dealloc(m->keys); hk_dealloc(m->vals); hk_dealloc(m->live); hk_dealloc(m->idx);
+  hk_dealloc(m);
+}
+
+/** The index slot holding `key`, or where it would go. */
+static hk_int hk_map_slot(const hk_map *m, const void *key) {
+  hk_int h = hk_key_hash(m->kkind, key, m->ksz);
+  hk_int j = h & (m->nidx - 1);
+  while (m->idx[j] != -1) {
+    hk_int e = m->idx[j];
+    if (hk_key_eq(m->kkind, m->keys + e * m->ksz, key, m->ksz)) return j;
+    j = (j + 1) & (m->nidx - 1);
+  }
+  return j;
+}
+
+hk_int hk_map_find(const hk_map *m, const void *key) {
+  if (!m || m->nidx == 0) return -1;
+  return m->idx[hk_map_slot(m, key)];
+}
+
+void hk_map_set(hk_map *m, const void *key, const void *val) {
+  hk_int j = hk_map_slot(m, key);
+  if (m->idx[j] != -1) {
+    /* Present already: the stored key stays, only the value changes. */
+    hk_int e = m->idx[j];
+    if (HK_E_OWNS(m->vkind)) hk_elem_drop(m->vkind, m->vals + e * m->vsz);
+    memcpy(m->vals + e * m->vsz, val, (size_t)m->vsz);
+    if (HK_E_OWNS(m->vkind)) hk_elem_retain(m->vkind, m->vals + e * m->vsz);
+    return;
+  }
+  hk_map_grow(m, m->used + 1);
+  hk_int e = m->used++;
+  memcpy(m->keys + e * m->ksz, key, (size_t)m->ksz);
+  memcpy(m->vals + e * m->vsz, val, (size_t)m->vsz);
+  if (HK_E_OWNS(m->kkind)) hk_elem_retain(m->kkind, m->keys + e * m->ksz);
+  if (HK_E_OWNS(m->vkind)) hk_elem_retain(m->vkind, m->vals + e * m->vsz);
+  m->live[e] = true;
+  m->count++;
+  if ((m->count + 1) * 2 > m->nidx) hk_map_reindex(m, m->count + 1);
+  else m->idx[hk_map_slot(m, m->keys + e * m->ksz)] = e;
+}
+
+hk_bool hk_map_get(const hk_map *m, const void *key, void *out) {
+  hk_int e = hk_map_find(m, key);
+  if (e < 0) return false;
+  memcpy(out, m->vals + e * m->vsz, (size_t)m->vsz);
+  return true;
+}
+
+hk_bool hk_map_has(const hk_map *m, const void *key) { return hk_map_find(m, key) >= 0; }
+
+hk_bool hk_map_remove(hk_map *m, const void *key) {
+  hk_int j = hk_map_slot(m, key);
+  hk_int e = m->idx[j];
+  if (e < 0) return false;
+  if (HK_E_OWNS(m->kkind)) hk_elem_drop(m->kkind, m->keys + e * m->ksz);
+  if (HK_E_OWNS(m->vkind)) hk_elem_drop(m->vkind, m->vals + e * m->vsz);
+  m->live[e] = false;
+  m->count--;
+  /* Rebuilding is simpler than repairing a probe chain in place, and a
+     removal is rare next to a lookup. */
+  hk_map_reindex(m, m->count + 1);
+  return true;
+}
+
+void hk_map_clear(hk_map *m) {
+  for (hk_int e = 0; e < m->used; e++) {
+    if (!m->live[e]) continue;
+    if (HK_E_OWNS(m->kkind)) hk_elem_drop(m->kkind, m->keys + e * m->ksz);
+    if (HK_E_OWNS(m->vkind)) hk_elem_drop(m->vkind, m->vals + e * m->vsz);
+    m->live[e] = false;
+  }
+  m->used = 0;
+  m->count = 0;
+  hk_map_reindex(m, 4);
+}
+
+hk_int hk_map_len(const hk_map *m) { return m ? m->count : 0; }
+
+static hk_list *hk_map_column(const hk_map *m, const char *base, hk_int sz, hk_int kind) {
+  hk_list *out = hk_list_new(sz, m->count, kind);
+  for (hk_int e = 0; e < m->used; e++) {
+    if (!m->live[e]) continue;
+    hk_list_reserve(out, out->len + 1);
+    memcpy((char *)out->data + out->len * sz, base + e * sz, (size_t)sz);
+    hk_elem_retain(kind, (char *)out->data + out->len * sz);
+    out->len++;
+  }
+  return out;
+}
+
+hk_list *hk_map_keys(const hk_map *m) { return hk_map_column(m, m->keys, m->ksz, m->kkind); }
+hk_list *hk_map_values(const hk_map *m) { return hk_map_column(m, m->vals, m->vsz, m->vkind); }
+
+/** One entry rendered the way `inspect` renders it (#53). */
+static hk_str *hk_cell_str(hk_int kind, const char *slot) {
+  switch (kind) {
+    case HK_E_FLOAT: return hk_str_from_float(*(const hk_float *)slot);
+    case HK_E_BOOL:  return hk_str_from_bool(*(const hk_bool *)slot);
+    case HK_E_CHAR: {
+      hk_str *c = hk_str_from_char(*(const hk_char *)slot);
+      hk_str *q = hk_str_quoted(c, HK_SQUOTE);
+      hk_str_release(c);
+      return q;
+    }
+    case HK_E_STR:  return hk_str_quoted(*(hk_str *const *)slot, HK_DQUOTE);
+    case HK_E_LIST: return hk_str_from_list(*(hk_list *const *)slot);
+    default:        return hk_str_from_int(*(const hk_int *)slot);
+  }
+}
+
+hk_str *hk_str_from_map(hk_map *m) {
+  /* An empty map renders as `map()`, not `[]`, because `[]` is already an
+     empty list. The interpreter draws the same distinction (#53). */
+  if (m->count == 0) return hk_str_new("map()", 5);
+  hk_str *acc = hk_str_new("[", 1);
+  bool first = true;
+  for (hk_int e = 0; e < m->used; e++) {
+    if (!m->live[e]) continue;
+    if (!first) acc = hk_join2(acc, hk_str_new(", ", 2));
+    first = false;
+    acc = hk_join2(acc, hk_cell_str(m->kkind, m->keys + e * m->ksz));
+    acc = hk_join2(acc, hk_str_new(": ", 2));
+    acc = hk_join2(acc, hk_cell_str(m->vkind, m->vals + e * m->vsz));
+  }
+  return hk_join2(acc, hk_str_new("]", 1));
+}
+
+hk_map *hk_maps_merge(hk_map *a, hk_map *b) {
+  hk_map *out = hk_map_new(a->ksz, a->vsz, a->kkind, a->vkind, a->count + b->count);
+  for (hk_int e = 0; e < a->used; e++) {
+    if (a->live[e]) hk_map_set(out, a->keys + e * a->ksz, a->vals + e * a->vsz);
+  }
+  for (hk_int e = 0; e < b->used; e++) {
+    if (b->live[e]) hk_map_set(out, b->keys + e * b->ksz, b->vals + e * b->vsz);
+  }
+  return out;
+}

@@ -1,0 +1,74 @@
+# Maps in the compiled backend.
+#
+# The representation is insertion-ordered on purpose: the interpreter's map
+# keeps insertion order, so printing one or listing its keys has to produce
+# the same sequence (R23). A plain hash table would have passed a test that
+# only checked membership and failed every test that printed.
+import maps
+
+main(),
+    let m: ["a": 1, "b": 2],
+    say m,
+    say len(m),
+
+    # A missing key reads as null (#7), so an index is a `T?`.
+    say m["a"],
+    say m["zz"],
+    say m["zz"] or -1,
+
+    # Insertion extends the order; overwriting keeps the original position.
+    m["c"]: 3,
+    m["a"]: 10,
+    say m,
+
+    say m.keys(),
+    say m.values(),
+    say m.has("a"),
+    say m.has("zz"),
+    say m.get_or("b", 0),
+    say m.get_or("zz", -7),
+    say m.is_empty(),
+
+    # A removal leaves the other entries where they were.
+    say m.remove("b"),
+    say m.remove("b"),
+    say m,
+    say len(m),
+
+    # Iterating the keys, which is how a map is walked until tuples land.
+    let sum: 0,
+    for k in m.keys(),
+        sum: sum + (m[k] or 0),
+    say sum,
+
+    # Non-string keys.
+    let n: [1: "x", 2: "y"],
+    say n,
+    say n[2],
+    say n[9],
+
+    # A map owning its keys and values frees both.
+    let owned: ["one": [1, 2], "two": [3]],
+    say owned,
+    say owned["one"],
+
+    # Built in a loop, so a leak would accumulate rather than hide.
+    let built: 0,
+    for i in 0..40,
+        let tmp: ["k{i}": i],
+        built: built + len(tmp),
+    say built,
+
+    # `b` wins on a clash, and neither input is disturbed.
+    let p: ["x": 1, "y": 2],
+    let q: ["y": 20, "z": 30],
+    say maps.merge(p, q),
+    say p,
+    say q,
+
+    # There is no empty-map literal in V49: `[]` is a list. `clear` is the
+    # only way to reach an empty map, so that is what is tested.
+    m.clear(),
+    say len(m),
+    say m.is_empty(),
+    say m

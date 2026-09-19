@@ -121,8 +121,10 @@ const LISTS: Record<string, PreludeMember> = {
 };
 
 const MAPS: Record<string, PreludeMember> = {
+  // `from_entries` takes a list of tuples, and the backend has no tuple
+  // type, so it stays interpreter-only until it does.
   from_entries: gsig(["K", "V"], [["entries", list(tup([K, V]))]], map(K, V)),
-  merge: gsig(["K", "V"], [["a", map(K, V)], ["b", map(K, V)]], map(K, V)),
+  merge: gsig(["K", "V"], [["a", map(K, V)], ["b", map(K, V)]], map(K, V), "hk_maps_merge"),
 };
 
 const JSON_MOD: Record<string, PreludeMember> = {
@@ -140,10 +142,10 @@ export const PRELUDE_MODULES: Map<string, Map<string, PreludeMember>> = new Map(
     files: FILES,
     strings: STRINGS,
     lists: LISTS,
-    // `maps` and `json` are typed but have no C implementation: the backend
-    // has no map type at all, and `json.parse` yields a value whose shape is
-    // only known at run time. Typing them still helps `halka check` and the
-    // interpreter; `halka build` names the function it cannot compile.
+    // `json` is typed but has no C implementation: `json.parse` yields a
+    // value whose shape is only known at run time. Typing it still helps
+    // `halka check` and the interpreter; `halka build` names the function
+    // it cannot compile.
     maps: MAPS,
     json: JSON_MOD,
   }).map(([mod, members]) => [mod, new Map(Object.entries(members))]),

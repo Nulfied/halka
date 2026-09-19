@@ -266,6 +266,51 @@ hk_list *hk_lists_flatten(hk_list *xs);
 hk_list *hk_lists_chunk(hk_list *xs, hk_int n);
 hk_list *hk_lists_unique(hk_list *xs);
 
+/* ---- maps ----------------------------------------------------------------
+ *
+ * Insertion-ordered. The interpreter's map is a JS Map, so iterating one or
+ * printing it has to produce the same sequence (R23) — a plain hash table
+ * would not. Entries live in dense arrays in insertion order; a separate
+ * open-addressed index maps a hash to a position in them. Removing an entry
+ * clears its live flag and leaves the slot alone, which keeps every other
+ * entry's position stable.
+ *
+ * Keys and values carry HK_E_* kinds, as list elements do, so one
+ * implementation hashes, compares, prints and releases every shape.
+ */
+typedef struct hk_map {
+  hk_int  rc;
+  hk_int  ksz, vsz;
+  hk_int  kkind, vkind;
+  char   *keys;   /* cap * ksz, in insertion order */
+  char   *vals;   /* cap * vsz */
+  hk_bool *live;  /* cap — false once removed */
+  hk_int  used;   /* slots consumed, removed ones included */
+  hk_int  count;  /* live entries */
+  hk_int  cap;
+  hk_int *idx;    /* nidx slots: -1 empty, else an entry position */
+  hk_int  nidx;   /* a power of two */
+} hk_map;
+
+hk_map  *hk_map_new(hk_int ksz, hk_int vsz, hk_int kkind, hk_int vkind, hk_int cap);
+hk_map  *hk_map_retain(hk_map *m);
+void     hk_map_release(hk_map *m);
+/** The entry position for `key`, or -1. */
+hk_int   hk_map_find(const hk_map *m, const void *key);
+/** Insert or overwrite. The map retains what it keeps; the caller keeps its own. */
+void     hk_map_set(hk_map *m, const void *key, const void *val);
+/** Copy the value for `key` into `out` (borrowed, not retained). */
+hk_bool  hk_map_get(const hk_map *m, const void *key, void *out);
+hk_bool  hk_map_has(const hk_map *m, const void *key);
+hk_bool  hk_map_remove(hk_map *m, const void *key);
+void     hk_map_clear(hk_map *m);
+hk_int   hk_map_len(const hk_map *m);
+hk_list *hk_map_keys(const hk_map *m);
+hk_list *hk_map_values(const hk_map *m);
+hk_str  *hk_str_from_map(hk_map *m);
+hk_map  *hk_maps_merge(hk_map *a, hk_map *b);
+
+
 /* ---- capabilities (#45) --------------------------------------------------
  *
  * The interpreter refuses a file operation unless `FileAccess` is held, and

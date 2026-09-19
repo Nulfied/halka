@@ -104,7 +104,7 @@ export class CEmitter {
    * must free; `live` is the subset already declared at the current point, so
    * an early `give` never frees something C has not seen yet.
    */
-  private blockStack: { owned: Set<string>; kinds: Map<string, "str" | "list" | "enum" | "opt">; types: Map<string, Ty | undefined>; declared: Set<string>; optVars: Set<string>; live: Owned[]; caps: number; isLoopBody: boolean }[] = [];
+  private blockStack: { owned: Set<string>; kinds: Map<string, "str" | "list" | "enum" | "opt" | "map">; types: Map<string, Ty | undefined>; declared: Set<string>; optVars: Set<string>; live: Owned[]; caps: number; isLoopBody: boolean }[] = [];
   /** Owning parameters of the current function, freed when it returns. */
   private frameParams: Owned[] = [];
   /** Values built inside the current statement, freed once it completes. */
@@ -377,6 +377,24 @@ export class CEmitter {
         }
         break;
       case "list": case "array": return "hk_list *";
+      case "map": {
+        // Both halves must be representable, and the key must be hashable
+        // by its bytes or as a string -- which is every kind the runtime
+        // knows. Anything else is refused rather than hashed as a pointer.
+        const kc = this.cty(p.key, "map key", span);
+        const vc = this.cty(p.val, "map value", span);
+        // `ekindOf` falls back to HK_E_INT, which would hash a struct by
+        // its first eight bytes, so the shapes the runtime actually knows
+        // are named here instead.
+        if (!MAP_KEY_CTYS.has(kc) || !MAP_VALUE_CTYS.has(vc)) {
+          if (span) {
+            this.err("E0701", `the native backend cannot represent ${show(p)} yet`, span,
+              "a map key may be a number, bool, char or string; a value may also be a list");
+          }
+          break;
+        }
+        return "hk_map *";
+      }
       case "named":
         if (this.structs.has(p.name)) return mangleType(p.name);
         if (this.enumTemplates.has(p.name)) {
@@ -610,6 +628,97 @@ export class CEmitter {
     const p = t ? prune(t) : undefined;
     return !!p && p.k === "prim" && p.name === "float";
   }
+  private isMap(t: Ty | undefined): boolean {
+    const p = t ? prune(t) : undefined;
+    return !!p && p.k === "map";
+  }
+  /** The key and value types of a map, for the runtime's sizes and kinds. */
+  private mapParts(t: Ty | undefined): { kt: Ty | undefined; vt: Ty | undefined } {
+    const p = t ? prune(t) : undefined;
+    return p && p.k === "map" ? { kt: p.key, vt: p.val } : { kt: undefined, vt: undefined };
+  }
+
+  /**
+   * `m[k]`. A missing key reads as null (#7), so this yields the optional
+   * the checker already assigned it rather than a bare value.
+   */
+  private mapGet(obj: A.Expr, key: A.Expr, want: Ty | undefined, span: Span): string {
+    const { kt, vt } = this.mapParts(this.tyOf(obj));
+    const kc = this.cty(kt, "map key", span);
+    const vc = this.cty(vt, "map value", span);
+    const o = this.optOf(want);
+    const k = this.fresh("gk");
+    const out = this.fresh("gv");
+    this.line(`${kc} ${k} = ${this.coerce(key, kt)};`);
+    if (!o) {
+      // Typed as the bare value: only reachable where the checker proved the
+      // key is there, so read it without the wrapper.
+      this.line(`${vc} ${out} = ${zeroOf(vc)};`);
+      this.line(`hk_map_get(${this.expr(obj)}, &${k}, &${out});`);
+      return out;
+    }
+    this.line(`${o.cty} ${out} = { 0 };`);
+    this.line(`${out}.has = hk_map_get(${this.expr(obj)}, &${k}, &${out}.v);`);
+    return out;
+  }
+
+  /** `m[k]: v`. The map retains what it keeps, so temporaries still go free. */
+  private mapSet(obj: A.Expr, key: A.Expr, value: A.Expr, span: Span): void {
+    const { kt, vt } = this.mapParts(this.tyOf(obj));
+    const kc = this.cty(kt, "map key", span);
+    const vc = this.cty(vt, "map value", span);
+    const k = this.fresh("sk");
+    const v = this.fresh("sv");
+    this.line(`${kc} ${k} = ${this.coerce(key, kt)};`);
+    this.line(`${vc} ${v} = ${this.coerce(value, vt)};`);
+    this.line(`hk_map_set(${this.expr(obj)}, &${k}, &${v});`);
+    if (kc === "hk_str *" && !isRead(key)) this.line(`hk_str_release(${k});`);
+    if (vc === "hk_str *" && !isRead(value)) this.line(`hk_str_release(${v});`);
+    if (vc === "hk_list *" && !isRead(value)) this.line(`hk_list_release(${v});`);
+  }
+
+  /** The map methods the checker offers (`keys`, `has`, `get_or`, ...). */
+  private mapMethod(obj: A.Expr, m: string, e: A.CallExpr): string {
+    const { kt, vt } = this.mapParts(this.tyOf(obj));
+    const kc = this.cty(kt, "map key", e.span);
+    const recv = this.expr(obj);
+    const withKey = (body: (k: string) => string): string => {
+      const k = this.fresh("mk");
+      this.line(`${kc} ${k} = ${this.coerce(e.args[0]!.value, kt)};`);
+      const out = body(k);
+      if (kc === "hk_str *" && !isRead(e.args[0]!.value)) {
+        // The key was only looked up, so a freshly built one is ours still.
+        const r = this.fresh("mr");
+        this.line(`${this.cty(this.tyOf(e), "result", e.span)} ${r} = ${out};`);
+        this.line(`hk_str_release(${k});`);
+        return r;
+      }
+      return out;
+    };
+    switch (m) {
+      case "keys": return `hk_map_keys(${recv})`;
+      case "values": return `hk_map_values(${recv})`;
+      case "is_empty": return `(hk_map_len(${recv}) == 0)`;
+      case "clear": return `(hk_map_clear(${recv}), 0)`;
+      case "has": return withKey((k) => `hk_map_has(${recv}, &${k})`);
+      case "remove": return withKey((k) => `hk_map_remove(${recv}, &${k})`);
+      case "get": return this.mapGet(obj, e.args[0]!.value, this.tyOf(e), e.span);
+      case "get_or": {
+        const got = this.mapGet(obj, e.args[0]!.value, undefined, e.span);
+        const has = this.fresh("go");
+        const kk = this.fresh("gk");
+        this.line(`${kc} ${kk} = ${this.coerce(e.args[0]!.value, kt)};`);
+        this.line(`hk_bool ${has} = hk_map_has(${recv}, &${kk});`);
+        if (kc === "hk_str *" && !isRead(e.args[0]!.value)) this.line(`hk_str_release(${kk});`);
+        void vt;
+        return `(${has} ? ${got} : (${this.expr(e.args[1]!.value)}))`;
+      }
+    }
+    this.err("E0711", `the native backend does not implement \`.${m}\` on a map yet`, e.span,
+      "run it with `halka run` while the backend catches up");
+    return "0";
+  }
+
   private isList(t: Ty | undefined): boolean {
     const p = t ? prune(t) : undefined;
     return !!p && (p.k === "list" || p.k === "array");
@@ -850,6 +959,7 @@ export class CEmitter {
     { isVoid: true, needsCleanup: false, retTy: undefined };
 
   private releaseLocal(o: Owned): void {
+    if (o.kind === "map") { this.line(`hk_map_release(${mangle(o.name)});`); return; }
     if (o.kind === "opt") {
       // Only when it holds something: the wrapper owns nothing itself.
       const p = o.ty ? prune(o.ty) : undefined;
@@ -1039,6 +1149,7 @@ export class CEmitter {
             this.line(`HK_IDX(${this.expr(t.obj)}, ${et}, ${this.expr(t.index)}) = ${this.expr(s.value)};`);
             return;
           }
+          if (this.isMap(ot)) { this.mapSet(t.obj, t.index, s.value, t.span); return; }
         }
         this.err("E0703", "the native backend cannot assign to this target yet", s.span);
         return;
@@ -1273,10 +1384,27 @@ export class CEmitter {
       const lst = this.fresh("lst");
       const i = this.fresh("i");
       const et = this.cty(this.elemOf(t), "element", s.span);
+      // A list built to be looped over — `for x in [1, 2, 3]`, or over
+      // `m.keys()` — belongs to nobody else, so the loop frees it. Reading
+      // one from a variable borrows it and must not.
+      const owns = !isRead(it);
+      this.open("{");
       this.line(`hk_list *${lst} = ${this.expr(it)};`);
+      // Recorded on a frame of its own so a `give` out of the loop frees it
+      // too. `break` unwinds only as far as the loop body, so it falls out
+      // to the release below instead of doing it twice.
+      if (owns) {
+        this.pushScope();
+        this.blockStack[this.blockStack.length - 1]!.live.push({ name: lst, kind: "list" });
+      }
       this.open(`for (hk_int ${i} = 0; ${i} < ${lst}->len; ${i}++) {`);
       this.line(`${et} ${v} = HK_AT(${lst}, ${et}, ${i});`);
       this.suite(s.body, true);
+      this.close();
+      if (owns) {
+        this.popScope();
+        this.line(`hk_list_release(${lst});`);
+      }
       this.close();
       return;
     }
@@ -1364,11 +1492,13 @@ export class CEmitter {
           const acc = this.opts.release ? "HK_AT" : "HK_IDX";
           return `${acc}(${this.expr(e.obj)}, ${et}, ${this.expr(e.index)})`;
         }
-        this.err("E0707", "the native backend can only index a list so far", e.span);
+        if (this.isMap(ot)) return this.mapGet(e.obj, e.index, this.tyOf(e), e.span);
+        this.err("E0707", "the native backend can only index a list or a map so far", e.span);
         return "0";
       }
 
       case "ListExpr": return this.listLit(e);
+      case "MapExpr": return this.mapLit(e);
 
       case "CastExpr": return this.cast(e);
 
@@ -1621,6 +1751,7 @@ export class CEmitter {
           const t = this.tyOf(e.args[0]!.value);
           if (this.isList(t)) return `(${args[0]})->len`;
           if (this.isStr(t)) return `hk_str_len_chars(${args[0]})`;
+          if (this.isMap(t)) return `hk_map_len(${args[0]})`;
           break;
         }
         case "div": return `hk_div(${args[0]}, ${args[1]}, ${this.loc(e.span)})`;
@@ -1738,6 +1869,7 @@ export class CEmitter {
         if (member.okFrom) return `${this.resultWrapper(member, m, e)}(${args.join(", ")})`;
         return `${member.c}(${args.join(", ")})`;
       }
+      if (this.isMap(ot)) return this.mapMethod(obj, m, e);
       if (this.isList(ot)) {
         const et = this.cty(this.elemOf(ot), "element", e.span);
         switch (m) {
@@ -1758,6 +1890,32 @@ export class CEmitter {
 
     this.err("E0712", "the native backend can only call named functions so far", e.span);
     return "0";
+  }
+
+  /** `["a": 1, "b": 2]` — built in order, because the map keeps that order. */
+  private mapLit(e: A.MapExpr): string {
+    const t = this.tyOf(e);
+    const p = t ? prune(t) : undefined;
+    const kt = p && p.k === "map" ? p.key : undefined;
+    const vt = p && p.k === "map" ? p.val : undefined;
+    const kc = this.cty(kt, "map key", e.span);
+    const vc = this.cty(vt, "map value", e.span);
+    const v = this.fresh("map");
+    this.line(`hk_map *${v} = hk_map_new(sizeof(${kc}), sizeof(${vc}), ${ekindOf(kc)}, ${ekindOf(vc)}, ${e.entries.length});`);
+    for (const en of e.entries) {
+      // The runtime takes the address of each, so both need a name.
+      const k = this.fresh("mk");
+      const val = this.fresh("mv");
+      this.line(`${kc} ${k} = ${this.coerce(en.key, kt)};`);
+      this.line(`${vc} ${val} = ${this.coerce(en.value, vt)};`);
+      this.line(`hk_map_set(${v}, &${k}, &${val});`);
+      // The map retained what it kept, so a freshly built key or value is
+      // still this statement's to free.
+      if (kc === "hk_str *" && !isRead(en.key)) this.line(`hk_str_release(${k});`);
+      if (vc === "hk_str *" && !isRead(en.value)) this.line(`hk_str_release(${val});`);
+      if (vc === "hk_list *" && !isRead(en.value)) this.line(`hk_list_release(${val});`);
+    }
+    return v;
   }
 
   private listLit(e: A.ListExpr): string {
@@ -1854,6 +2012,17 @@ export class CEmitter {
       const v = this.fresh("osv");
       this.line(`${o.cty} ${v} = ${this.expr(e)};`);
       return `(${v}.has ? ${this.cStrOf(`${v}.v`, o.inner, e.span)} : hk_str_lit("null"))`;
+    }
+
+    // A map prints as `[k: v, ...]` in insertion order (#53).
+    if (p?.k === "map") {
+      if (isRead(e)) return `hk_str_from_map(${this.expr(e)})`;
+      const mv = this.fresh("pmap");
+      const sv = this.fresh("pmstr");
+      this.line(`hk_map *${mv} = ${this.expr(e)};`);
+      this.line(`hk_str *${sv} = hk_str_from_map(${mv});`);
+      this.line(`hk_map_release(${mv});`);
+      return sv;
     }
 
     // A list prints as `[a, b, c]`, matching `inspect` (#53).
@@ -1954,6 +2123,16 @@ function mangle(name: string): string {
  * of strings that reported HK_E_SCALAR freed its backing array and leaked
  * every string in it.
  */
+/** Key shapes the map runtime can hash and compare exactly. */
+const MAP_KEY_CTYS = new Set(["hk_int", "hk_float", "hk_bool", "hk_char", "hk_byte", "hk_str *"]);
+/** Value shapes it can copy, release and print. */
+const MAP_VALUE_CTYS = new Set([...MAP_KEY_CTYS, "hk_list *"]);
+
+/** A value read from somewhere else, so the reader does not own it. */
+function isRead(e: A.Expr): boolean {
+  return e.kind === "Ident" || e.kind === "MemberExpr" || e.kind === "IndexExpr";
+}
+
 function ekindOf(elemCty: string): string {
   switch (elemCty) {
     case "hk_float": return "HK_E_FLOAT";

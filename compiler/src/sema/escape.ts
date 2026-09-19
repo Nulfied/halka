@@ -24,7 +24,7 @@ import { classifyOwnership, type OwnershipKind } from "./ownership.ts";
  * which payload needs freeing depends on the variant, and the backend
  * resolves that from the monomorphised instance.
  */
-export interface Owned { name: string; kind: "str" | "list" | "enum" | "opt"; ty?: Ty }
+export interface Owned { name: string; kind: "str" | "list" | "enum" | "opt" | "map"; ty?: Ty }
 
 export interface EscapeInfo {
   /**
@@ -89,11 +89,13 @@ class EscapeAnalysis {
     return classifyOwnership(this.types.get(n), (name) => this.structFields.get(name));
   }
 
-  private heapKind(t: Ty | undefined): "str" | "list" | "enum" | "opt" | null {
+  private heapKind(t: Ty | undefined): "str" | "list" | "enum" | "opt" | "map" | null {
     if (!t) return null;
     const p = prune(t);
     if (p.k === "prim" && p.name === "string") return "str";
     if (p.k === "list" || p.k === "array") return "list";
+    // A map owns its keys and values, so releasing one releases them.
+    if (p.k === "map") return "map";
     // An enum can carry a heap payload — `Result<string>` owns its string —
     // so it needs releasing like any other owner. Which field to free
     // depends on the tag, which the backend works out per instantiation.
@@ -157,8 +159,8 @@ class EscapeAnalysis {
      * which over-approximates in the leak direction rather than the
      * double-free one.
      */
-    const owns: { name: string; kind: "str" | "list" | "enum" | "opt"; ty?: Ty; init: A.Expr | null; block: A.Block | null }[] = [];
-    const declare = (name: string, d: { kind: "str" | "list" | "enum" | "opt"; ty?: Ty; init: A.Expr | null; block: A.Block | null }) => {
+    const owns: { name: string; kind: "str" | "list" | "enum" | "opt" | "map"; ty?: Ty; init: A.Expr | null; block: A.Block | null }[] = [];
+    const declare = (name: string, d: { kind: "str" | "list" | "enum" | "opt" | "map"; ty?: Ty; init: A.Expr | null; block: A.Block | null }) => {
       // One release per (block, name); a block cannot free the same C
       // variable twice however many times the source rebinds it.
       const at = owns.findIndex((o) => o.name === name && o.block === d.block);

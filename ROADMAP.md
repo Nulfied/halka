@@ -102,6 +102,23 @@ name matches anything, `null` included, so it ends the chain and a following
 disagreed with the interpreter on exactly the case the arm exists for. An
 optional of a struct or enum is refused rather than mis-ordered in C.
 
+**Maps compile natively**, insertion-ordered. That ordering is the whole
+design constraint: the interpreter's map keeps insertion order, so printing
+one or listing its keys has to produce the same sequence (R23), and a plain
+hash table would have passed a test that checked membership and failed every
+test that printed. Entries live in dense arrays in insertion order with an
+open-addressed index beside them; a removal clears a flag and leaves the slot,
+so every other entry keeps its position. Literals, `m[k]` (a `T?`, since a
+missing key reads as null), `m[k]: v`, `len`, `keys`, `values`, `has`,
+`get`, `get_or`, `remove`, `clear`, `is_empty`, printing and `maps.merge`
+all work compiled. Iterating a map directly still does not: it yields tuples,
+and the backend has no tuple type, so it is refused by name.
+
+Fixing it turned up a leak that had nothing to do with maps: `for x in
+[1, 2, 3]` never freed the list, and neither did a loop over `m.keys()`. The
+loop now owns a freshly built iterable and frees it on every exit, `give`
+included.
+
 **Packages** (#29/#30/#31) shipped too: `halka.pkg` manifests, semver
 requirements in two forms, Minimal Version Selection, a hash-pinned
 `halka.lock`, a per-user cache and path dependencies, against any static
