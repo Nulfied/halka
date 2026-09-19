@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.scratch/
+.DS_Store
+*.log
+editors/vscode/*.vsix

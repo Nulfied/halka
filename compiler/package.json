@@ -1,0 +1,19 @@
+{
+  "name": "halka-lang",
+  "version": "0.1.0",
+  "description": "The Halka programming language — reference toolchain (compiler, VM, formatter, LSP).",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "bin": { "halka": "./bin/halka.mjs" },
+  "engines": { "node": ">=22.6" },
+  "scripts": {
+    "halka": "node ./bin/halka.mjs",
+    "test": "node --experimental-strip-types test/run.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "files": ["bin", "dist", "src", "../stdlib"],
+  "keywords": ["halka", "programming-language", "compiler", "interpreter"],
+  "repository": { "type": "git", "url": "https://github.com/halka-lang/halka.git" },
+  "devDependencies": { "typescript": "^5.6.0" }
+}

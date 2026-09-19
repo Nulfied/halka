@@ -1,0 +1,6 @@
+# hello.hk — the smallest Halka program
+say "Hello, HALKA!"
+
+let name: "world",
+let greeting: "Hello, {name}!"
+say greeting

@@ -1,0 +1,206 @@
+### tour.hk — a walk through Halka V49. ###
+
+# --- 1 / 11: values, inference, interpolation -------------------------------
+let name: "HALKA",
+let age: int: 25,
+let price: 10.5,
+let active: true,
+let initial: 'H'
+say "{name} v49 — age {age}, price {price}, active {active}, initial {initial}"
+
+# --- 5 / 54: collections, indexing, slicing ---------------------------------
+let numbers: [10, 20, 30, 40, 50],
+let first: numbers[0],
+let last: numbers[-1],
+let part: numbers[1:3],
+let reversed_list: numbers[::-1]
+say "first {first}, last {last}, part {part}, reversed {reversed_list}"
+
+let users: [
+    "alice": 20,
+    "bob": 25
+],
+users["carol"]: 30
+say "alice is {users["alice"]}, carol is {users["carol"]}, keys {users.keys()}"
+
+let tags: {"compiler", "runtime", "web"}
+say "tags {tags.length}"
+
+# --- 4: destructuring -------------------------------------------------------
+let point: (10, 20),
+let (x, y): point,
+let [a, _, c]: [1, 2, 3],
+let [head, ...rest]: numbers
+say "x={x} y={y} a={a} c={c} head={head} rest={rest}"
+
+# --- 1 / 51: operators and precedence ---------------------------------------
+let total: 2 + 3 * 4,
+let grouped: (2 + 3) * 4
+say "total {total}, grouped {grouped}, div {7 / 2}, intdiv {div(7, 2)}, mod {7 % 2}"
+
+# --- 9 / 20: functions, recursion, defaults, variadics ----------------------
+square(x),
+    give x * x
+
+factorial(n),
+    if n <= 1,
+        give 1,
+    else,
+        give n * factorial(n - 1)
+
+connect(host: string: "localhost", port: int: 8080),
+    give "{host}:{port}"
+
+total_of(values: ...int),
+    give sum(values)
+
+say "square 7 = {square(7)}, 10! = {factorial(10)}"
+say "default {connect()}, override {connect("example.com", 443)}"
+say "variadic {total_of(1, 2, 3, 4)}"
+
+# --- 17: functions are values ----------------------------------------------
+let operation: square,
+let applied: apply 5 : operation,
+let squares: numbers.map(square)
+say "applied {applied}, squares {squares}"
+
+# --- 6 / 8: loops, break, continue ------------------------------------------
+let acc: 0
+for i in 1..=5,
+    if i == 3,
+        continue,
+    acc: acc + i
+say "sum of 1..=5 skipping 3 = {acc}"
+
+# --- 7 / 13: null, optionals, `or` -----------------------------------------
+let missing: null,
+let fallback: missing or "Unknown"
+say "fallback {fallback}"
+
+greet(who: string?),
+    if who is null,
+        give "Hello",
+    else,
+        give "Hello {who}"
+say "{greet(null)} / {greet("HALKA")}"
+
+# --- 10: match --------------------------------------------------------------
+describe(value),
+    match value,
+        0,
+            give "zero",
+        1,
+            give "one",
+        n if n > 1,
+            give "many ({n})",
+        else,
+            give "negative"
+say "{describe(0)}, {describe(1)}, {describe(7)}, {describe(-2)}"
+
+# --- 12: type aliases -------------------------------------------------------
+type UserId: int
+type Scores: list(int)
+let uid: UserId: 25
+say "user id {uid}"
+
+# --- struct, trait, implements (#16) ----------------------------------------
+User:
+    name: string,
+    age: int
+
+trait Printable:
+    describe(),
+        give nothing
+
+User implements Printable:
+    describe(),
+        give "{name} ({age})"
+
+let u: User("Asha", 31)
+say "user {u.describe()}, field {u.name}"
+
+# --- 22: Result -------------------------------------------------------------
+parse_age(text),
+    let r: text to int,
+    if r is error,
+        give Error("not a number: {text}"),
+    else,
+        give r
+
+show(text),
+    let r: parse_age(text),
+    match r,
+        Ok(value),
+            say "parsed {value}",
+        Error(message),
+            say "failed: {message}"
+show "42"
+show "oops"
+
+# --- 15: casting ------------------------------------------------------------
+let n: 25,
+let asf: n as float,
+let asstr: n as string
+say "as float {asf}, as string \"{asstr}\", back {asstr as int}"
+
+# --- 24: defer --------------------------------------------------------------
+with_cleanup(),
+    defer say "  cleanup 1 (runs last)",
+    defer say "  cleanup 2 (runs first)",
+    say "  working"
+say "defer order:"
+with_cleanup()
+
+# --- 14: references ---------------------------------------------------------
+let value: 25,
+let r: &mut value,
+*r: 30
+say "through a reference: {value}"
+
+# --- 26 / 28: tasks ---------------------------------------------------------
+slow_double(n),
+    give n * 2
+
+let t1: start slow_double(21),
+let t2: start slow_double(50),
+let r1: await t1,
+let r2: await t2
+say "tasks: {r1} and {r2}"
+
+# --- 27: channels -----------------------------------------------------------
+producer(ch),
+    for i in 1..=3,
+        send ch : i * 100
+
+let ch: make channel(int): 4,
+let p: start producer(ch),
+let _done: await p,
+let v1: receive ch,
+let v2: receive ch,
+let v3: receive ch
+say "channel: {v1}, {v2}, {v3}"
+
+# --- 29 / 30: mutex and atomics --------------------------------------------
+let lock: make mutex,
+let counter: atomic(0)
+with lock,
+    add counter : 5,
+    add counter : 5
+say "atomic counter = {load counter}"
+
+# --- 32: parallel -----------------------------------------------------------
+parallel:
+    let pa: square(6),
+    let pb: square(7)
+say "parallel block finished"
+
+# --- 40: macros -------------------------------------------------------------
+macro shout(text),
+    say "** {text} **"
+shout "macros work"
+
+# --- 42: reflection ---------------------------------------------------------
+let info: reflect User
+say "reflect: {info["name"]} is a {info["kind"]} with fields {info["fields"]}"
+
+say "tour complete."
