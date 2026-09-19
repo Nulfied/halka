@@ -1,0 +1,160 @@
+# Halka — implementation status
+
+The ecosystem plan has 55 areas. This file says, for each one, what actually
+exists today. It is the answer to "is that implemented or is that planned?",
+and it is updated in the same commit as the work it describes.
+
+**Legend** — ✅ done · 🟡 partial · ⬜ not started · 🔗 belongs in the ecosystem, not the core
+
+Counts today: **13 done · 12 partial · 26 not started · 4 ecosystem**
+
+---
+
+## The compiler and language
+
+| # | Area | Status | What exists |
+|---|---|---|---|
+| 1 | Language core | 🟡 | All 54 locked syntax rules parse and run. Domains like embedded, graphics and OS work are *reachable* but unproven. |
+| 2 | Compiler toolchain | 🟡 | Lexer, parser, AST, name resolution, scope analysis, type analysis, backend lowering, native codegen, linking, diagnostics. Missing: IR stage, optimization stage, incremental builds, debug info. |
+| 3 | Intermediate representation | ⬜ | The backend lowers AST → C directly. No IR means no target-independent optimization and no second backend. **This is a multiplier — see below.** |
+| 4 | Optimization system | 🟡 | Delegated to the C compiler, which does inlining, DCE, constant folding and vectorisation for us. That is a deliberate choice, not an omission — but Halka-level optimizations (bounds-check elision, monomorphisation, refcount elision) need #3 first. |
+| 5 | Memory, ownership & lifetimes | 🟡 | **Designed and documented** in `spec/MEMORY-MODEL.md`; enforced only dynamically by the interpreter. The static pass is the single largest correctness gap. |
+| 6 | Raw memory & unsafe | 🟡 | `raw`, `unsafe:` parse; the interpreter enforces that deref requires `unsafe`. The backend does not implement raw pointers yet. |
+| 7 | Type system | ✅ | Hindley-Milner-style inference, optionals as a real constructor with narrowing, generics, structs, enums, traits, match exhaustiveness. |
+| 8 | Generics & abstraction | 🟡 | Parsed, inferred, and checked. **Not monomorphised** — the native backend cannot compile a generic function yet. |
+| 9 | Pattern matching & control flow | 🟡 | Complete in the interpreter (literals, variants, tuples, collections, guards, `else`). The backend does not compile `match` yet. |
+| 10 | Functions & program structure | ✅ | Functions, defaults, variadics, recursion, function values, modules. |
+| 11 | Compile-time programming | 🟡 | `compile`, `macro`, `generate`, `reflect`, `specialize` all parse and run, but in the interpreter they evaluate eagerly rather than in a separate compile-time tier. |
+| 12 | Native programming & ABI | 🟡 | The backend emits C99 and links native binaries. No ABI attribute control yet. |
+| 13 | **Foreign function interface** | ⬜ | `c` / `cpp` / `py` markers parse; calling them errors. **This is the biggest multiplier in the list.** |
+| 14 | Python interoperability | ⬜ | Nothing yet. Needs #13. |
+| 15 | Runtime system | ✅ | `libhalka`: 564 lines of C99 — strings, lists, threads, mutexes, atomics, panics, timing. No dependencies. |
+
+## Libraries
+
+| # | Area | Status | What exists |
+|---|---|---|---|
+| 16 | Standard library | 🟡 | `math`, `strings`, `lists`, `maps`, `io`, `time`, `os`, `json` natively; `seq`, `result`, `testing` in Halka. **No filesystem, no networking, no processes, no compression, no crypto.** |
+| 17 | Collections | 🟡 | list, array, map, set, tuple, ranges, iteration. No queue, stack, tree or graph types. |
+| 18 | Filesystem & OS APIs | ⬜ | `os.env`, `os.args`, `os.platform` only. **There is no file I/O at all** — the `open`/`close` in the doc examples are illustrative, not real. |
+| 19 | Networking stack | ⬜ | Nothing. |
+| 37 | Cryptography | 🔗 | Nothing — and Halka should **bind libsodium or BoringSSL, never implement its own primitives.** Writing new crypto is how projects get CVEs. |
+
+## Concurrency and distribution
+
+| # | Area | Status | What exists |
+|---|---|---|---|
+| 20 | Concurrency & parallelism | 🟡 | Interpreter: tasks, channels, mutexes, atomics, cancellation, `parallel:` on a fiber scheduler. Backend: `parallel:` on **real OS threads**, measured at 3.2x on 8 cores. Missing: tasks/channels in the backend, a work-stealing pool, actors. |
+| 21 | Distributed runtime | ⬜ | Nothing. Needs #19. |
+| 22 | Actor system | ⬜ | Nothing. Buildable as a library on #20 once channels are native. |
+
+## Tooling
+
+| # | Area | Status | What exists |
+|---|---|---|---|
+| 23 | Errors & diagnostics | ✅ | Spans, carets, severity, the locked rule each error comes from, and a `help:` line that teaches the alternative. 60+ numbered codes. |
+| 24 | Debugging | ⬜ | No debug info, no DAP adapter. `halka build` does emit `/Zi` in debug mode, so a C debugger sees the generated C. |
+| 25 | Language server / IntelliSense | ✅ | LSP 3.17 over stdio, zero dependencies: diagnostics, hover, completion, go-to-definition, document symbols, rename, highlight, formatting. |
+| 26 | Code formatting | ✅ | Canonical, idempotent, comment-preserving, behaviour-preserving — all four properties are tested. |
+| 27 | Linting & static analysis | 🟡 | Name resolution, arity, locked-absence checks, naming conventions, type errors, match exhaustiveness. No unused-code detection, no ownership analysis. |
+| 28 | Testing ecosystem | ✅ | `halka test` for user projects; 109 internal tests across spec conformance, rejection, golden output, formatter, and native-vs-interpreter equivalence. |
+| 29 | Build system | 🟡 | `halka build` compiles one file to a binary. No multi-file project build, no incremental compilation, no cross-compilation yet. |
+| 30 | Package management | ⬜ | Module resolution over a search path only. No manifest resolution, no versions, no lockfile. **Second-biggest multiplier.** |
+| 31 | Package registry | ⬜ | Nothing. |
+| 32 | CLI | ✅ | `run build check fmt test repl lsp ast tokens toolchain`. |
+| 33 | IDE & editor integration | ✅ | VS Code extension, TextMate grammar, Tree-sitter grammar, and setup for Neovim, Helix, Zed, Sublime. |
+| 50 | Compiler API | 🟡 | `halka ast --json` exposes the canonical AST. No stable library API, no IR access, no plugins. |
+
+## Platforms and targets
+
+| # | Area | Status | What exists |
+|---|---|---|---|
+| 34 | Web development | ⬜ | Nothing. Needs #19. |
+| 35 | WebAssembly | ⬜ | Nothing — but the C backend means `wasi-sdk` or Emscripten is a *configuration*, not a new backend. **Cheap multiplier.** |
+| 36 | Database & backend | 🔗 | Nothing. Should be library bindings over #13, not core work. |
+| 38 | Scientific computing | 🔗 | Nothing. BLAS/LAPACK bindings over #13 beat a from-scratch implementation. |
+| 39 | Symbolic mathematics | 🔗 | Nothing. A library, and a large one — SymPy is 15 years of work. |
+| 40 | AI / ML framework | 🟡→🔗 | The *syntax* is locked (`kernel`, `launch`, `device`, `parallel:`) and real parallelism is measured. The framework itself should start as bindings, not a rewrite of PyTorch. |
+| 41 | Notebook environment | ⬜ | Nothing. A Jupyter kernel is ~500 lines over the existing REPL — **cheap, high-visibility**. |
+| 42 | Game & graphics runtime | 🔗 | Nothing. Bind SDL3, Dear ImGui, wgpu. |
+| 43 | GUI framework | 🔗 | Nothing. Bind GTK, Qt, or Dear ImGui. Qt is 30 years of work; we are not rebuilding it. |
+| 44 | Embedded platform | ⬜ | Plausible — C99 output with no runtime dependency is exactly what embedded targets want — but untested, and `libhalka` currently calls `malloc`. |
+| 45 | OS & low-level development | ⬜ | Same: plausible via the C backend, unproven, and needs freestanding mode. |
+| 46 | Plugin ABI | ⬜ | Nothing. Needs #12 and a stability commitment. |
+| 47 | Cross-platform | 🟡 | The interpreter and toolchain run anywhere Node runs. The backend supports MSVC, gcc, clang and `zig cc`, but has only been *exercised* on Windows/MSVC. CI covers Linux and macOS for the interpreter. |
+| 48 | Native backends | 🟡 | One: C99. Adding a second (LLVM, or direct machine code) needs #3. |
+
+## Long-term
+
+| # | Area | Status | What exists |
+|---|---|---|---|
+| 49 | Self-hosting | ⬜ | Stage 0 in TypeScript. Nothing written in Halka yet beyond three stdlib modules. |
+| 51 | Formal verification | ⬜ | Nothing. Honestly: this is a research programme, not a feature. |
+| 52 | Security model | 🟡 | Capabilities (`requires`, `with capability`) enforced dynamically; `unsafe:` boundaries enforced in the interpreter. Not static, not enforced by the backend. |
+| 53 | Developer experience | 🟡 | Language, runtime, CLI, formatter, diagnostics, testing, LSP and editor integration exist. Package manager, debugger and distribution do not. |
+| 54 | Ecosystem philosophy | — | The organising principle, not a feature. |
+| 55 | Interaction rule | ✅ | Honoured. This file is how implemented and planned are kept apart. |
+
+---
+
+## Can all 55 be implemented?
+
+**Yes, in principle. No, not by a small team in any near timeframe — and that is the wrong goal anyway.**
+
+Calibration, so the number means something:
+
+| Project | Time to 1.0 | People |
+|---|---|---|
+| Rust | ~9 years | hundreds, Mozilla-funded |
+| Go | ~3 years to 1.0 | a funded Google team |
+| Zig | 9 years, **still pre-1.0** | 1 full-time + ~500 contributors |
+| Swift | 4 years to open source | a large Apple team |
+
+And several individual items on the list are *themselves* that size: NumPy is 20 years, SymPy 15, PyTorch is hundreds of engineers, Qt is 30 years. "Implement #39 symbolic mathematics" is not a task; it is a career.
+
+So the list is a correct and coherent **vision**. It is not a checklist.
+
+## The multiplier strategy
+
+The 55 items are not independent. A handful unlock most of the rest:
+
+**#13 — the C FFI.** This is the big one. Almost everything in the "libraries
+and platforms" section already exists as a C library. With a working FFI:
+
+- #19 networking → bind the platform sockets API
+- #37 cryptography → bind libsodium (and *never* write our own)
+- #38 scientific → bind BLAS/LAPACK
+- #42 graphics → bind SDL3, wgpu
+- #43 GUI → bind GTK or Dear ImGui
+- #36 database → bind SQLite, libpq
+- #40 AI/ML → bind ONNX Runtime, and #14 gets PyTorch via CPython
+
+That is **seven ecosystem areas from one compiler feature**, and the generated
+code is already C, so the binding is a declaration rather than a marshalling
+layer.
+
+**#30/#31 — package manager and registry.** These turn every 🔗 row from *our*
+work into *someone else's* work. A language without a package manager has to
+ship every library itself; a language with one grows libraries it did not write.
+
+**#3 — the IR.** Unlocks #4 real optimization, #48 a second backend, #50 a
+programmable toolchain, and #51 if that is ever attempted.
+
+**#35 — WebAssembly.** Nearly free: point the existing C backend at `wasi-sdk`.
+Unlocks #34 and a browser playground, which is the cheapest possible way to let
+someone try the language.
+
+**#41 — a Jupyter kernel.** ~500 lines over the existing REPL, and it puts
+Halka inside the tool the AI/ML audience already has open.
+
+Eight items. Build those and the other 47 become achievable — most of them by
+people who are not us.
+
+## What this means for sequencing
+
+The wedge does not need 55 areas. It needs a person with a slow Python training
+loop to be able to rewrite that loop in Halka **without giving up NumPy**, and
+have it be faster and use all their cores. That is: #13 FFI, #14 Python interop,
+#41 notebook, plus the ownership checker so the safety claim is real.
+
+Everything else is what the ecosystem grows into after that works.

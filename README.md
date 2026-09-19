@@ -9,7 +9,7 @@ that compiles to native code **as fast as hand-written C** — with memory safet
 no lifetime annotations, and real multicore parallelism.
 
 [Quick start](#quick-start) · [Tour](#a-sixty-second-tour) · [Performance](#performance) ·
-[Why Halka](#why-halka) · [Spec](spec/V49-LOCKED.md) · [Roadmap](ROADMAP.md) · [Editors](#editor-support)
+[Why Halka](#why-halka) · [Spec](spec/V49-LOCKED.md) · [Status](STATUS.md) · [Roadmap](ROADMAP.md) · [Editors](#editor-support)
 
 </div>
 
@@ -328,6 +328,9 @@ What works today:
 What is next, in order: ownership and borrow checking as a static pass, then
 enums/match and maps in the backend, then C/C++/Python FFI, then self-hosting.
 See [ROADMAP.md](ROADMAP.md).
+
+[STATUS.md](STATUS.md) maps all 55 planned ecosystem areas to what actually
+exists today, so "is that implemented or planned?" always has an answer.
 
 Halka is pre-1.0. The **syntax** is locked; library APIs are not yet stable.
 
