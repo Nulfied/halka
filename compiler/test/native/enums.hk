@@ -1,0 +1,39 @@
+# Enums compile to a tagged union: one `tag` naming the variant and a union
+# of per-variant payloads, so `match` becomes a plain `switch`.
+enum Shape:
+    Circle(radius: int),
+    Rect(w: int, h: int)
+
+area(s: Shape): int,
+    match s,
+        Circle(r),
+            give 3 * r * r,
+        Rect(w, h),
+            give w * h,
+        else,
+            give 0
+
+let c: Circle(2)
+let r: Rect(3, 4)
+
+say area(c)
+say area(r)
+say c is Circle
+say c is Rect
+say c.radius
+say r.w + r.h
+
+# A variant carrying nothing sits alongside ones that carry payloads.
+enum Step:
+    Done,
+    Go(n: int)
+
+report(s: Step),
+    match s,
+        Done,
+            say "done",
+        Go(n),
+            say "go {n}"
+
+report(Done)
+report(Go(7))

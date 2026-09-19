@@ -20,6 +20,9 @@ import type { EscapeInfo, Owned } from "../../sema/escape.ts";
 import { type Ty, prune, show, C_SCALARS } from "../../sema/types.ts";
 import { PY_RUNTIME, pyConverter, pyLifter } from "./pyruntime.ts";
 
+interface EnumVariantDef { name: string; tag: number; fields: { name: string; ty: Ty }[] }
+interface EnumDef { name: string; variants: EnumVariantDef[] }
+
 export interface EmitOptions {
   /** Release builds drop overflow and bounds checks the optimiser proved safe. */
   release?: boolean;
@@ -29,6 +32,18 @@ export interface EmitOptions {
   foreignImports?: ForeignImport[];
   /** Which locals each frame must free, from the escape pass (M4). */
   escapes?: EscapeInfo;
+  /**
+   * Field types per struct, in declaration order, from inference.
+   *
+   * Without these the emitter fell back to `any` for every field, which
+   * `cty` maps to `hk_int` — so a struct with a `string` field emitted C
+   * that assigned an `hk_str *` to an `hk_int`. The C compiler now rejects
+   * that (it is one of the promoted warnings), where before it built a
+   * binary that read the pointer as a number.
+   */
+  structFields?: Map<string, Ty[]>;
+  /** Enum name -> variant -> payload types, from inference. */
+  enumVariants?: Map<string, Map<string, { fields: Ty[]; names: string[] }>>;
 }
 
 export interface EmitResult {
@@ -62,6 +77,10 @@ export class CEmitter {
   private depth = 1;
   private tmp = 0;
   private structs = new Map<string, StructDef>();
+  /** Enums, as tagged unions. Declaration order fixes each variant's tag. */
+  private enums = new Map<string, EnumDef>();
+  /** Variant name -> its enum, so `Circle(2)` and `s is Circle` resolve. */
+  private variantOwner = new Map<string, string>();
   private fnRet = new Map<string, Ty>();
   private strLits = new Map<string, string>();
   /**
@@ -98,6 +117,7 @@ export class CEmitter {
     const top = mod.stmts.filter((s) => !DECL_KINDS.has(s.kind));
 
     for (const s of structs) this.declareStruct(s);
+    for (const s of mod.stmts) if (s.kind === "EnumDecl") this.declareEnum(s);
     this.collectForeign(mod);
     for (const f of fns) {
       const sig = this.tyOf(f);
@@ -223,7 +243,7 @@ export class CEmitter {
     let body = this.out.join("\n").replace("  hk_init(argc, argv);", bootstrap.join("\n"));
     if (this.needsPython) body = body.split("  hk_shutdown();").join("  hk_py_stop();\n  hk_shutdown();");
     const pyrt = this.needsPython ? [PY_RUNTIME] : [];
-    return [...head, ...this.structDecls(), ...lits, "", ...this.decls, "", ...pyrt, ...this.aux, ...init, body, ""].join("\n");
+    return [...head, ...this.structDecls(), ...this.enumDecls(), ...lits, "", ...this.decls, "", ...pyrt, ...this.aux, ...init, body, ""].join("\n");
   }
 
   private structDecls(): string[] {
@@ -274,6 +294,7 @@ export class CEmitter {
       case "list": case "array": return "hk_list *";
       case "named":
         if (this.structs.has(p.name)) return mangleType(p.name);
+        if (this.enums.has(p.name)) return mangleType(p.name);
         if (this.foreignStructs.has(p.name)) return `struct ${p.name}`;
         break;
       case "cty":
@@ -312,10 +333,123 @@ export class CEmitter {
 
   // ---- declarations --------------------------------------------------------
 
+  /**
+   * An enum becomes a tagged union: one `tag` field naming the variant, and
+   * a union of one struct per variant carrying its payload. Tags are the
+   * declaration order, so a `match` compiles to a plain `switch`.
+   */
+  /**
+   * `match` over an enum is a `switch` on the tag. Each arm opens a C block
+   * and binds its pattern's names to the payload, so the bindings cannot
+   * leak between arms and the compiler checks the types for us.
+   */
+  private matchStmt(m: A.MatchExpr): void {
+    const st = this.tyOf(m.subject);
+    const p = st ? prune(st) : undefined;
+    if (!p || p.k !== "named" || !this.enums.has(p.name)) {
+      this.err("E0704", "the native backend can only `match` on an enum yet", m.span,
+        "run it with `halka run` while the backend catches up");
+      return;
+    }
+    const def = this.enums.get(p.name)!;
+    const subject = this.fresh("match");
+
+    this.open("{");
+    this.line(`${mangleType(def.name)} ${subject} = ${this.expr(m.subject)};`);
+    this.open(`switch (${subject}.tag) {`);
+    for (const arm of m.arms) {
+      const pat = arm.pattern;
+      if (pat.kind !== "VariantPat" && pat.kind !== "TypePat") {
+        this.err("E0704", "the native backend only supports variant patterns in a `match` yet", arm.span,
+          "run it with `halka run` while the backend catches up");
+        continue;
+      }
+      const name = pat.name;
+      const v = def.variants.find((x) => x.name === name);
+      if (!v) {
+        this.err("E0705", `\`${name}\` is not a variant of \`${def.name}\``, arm.span);
+        continue;
+      }
+      if (arm.guard) {
+        this.err("E0704", "the native backend does not support a guard on a `match` arm yet", arm.span,
+          "run it with `halka run` while the backend catches up");
+        continue;
+      }
+      this.line(`case ${variantTag(def.name, name)}: {`);
+      this.depth++;
+      const args = pat.kind === "VariantPat" ? pat.args : [];
+      args.forEach((a, i) => {
+        const f = v.fields[i];
+        if (!f) return;
+        if (a.kind === "WildcardPat") return;
+        if (a.kind !== "BindPat") {
+          this.err("E0704", "the native backend only supports plain names inside a variant pattern yet", arm.span);
+          return;
+        }
+        this.line(`${this.cty(f.ty, `\`${name}.${f.name}\``)} ${mangle(a.name)} = ${subject}.as.${mangle(name)}.${mangle(f.name)};`);
+      });
+      this.suite(arm.body);
+      this.line("break;");
+      this.depth--;
+      this.line("}");
+    }
+    if (m.elseArm) {
+      this.line("default: {");
+      this.depth++;
+      this.suite(m.elseArm);
+      this.line("break;");
+      this.depth--;
+      this.line("}");
+    }
+    this.close();
+    this.close();
+  }
+
+  private declareEnum(d: A.EnumDecl): void {
+    const inferred = this.opts.enumVariants?.get(d.name);
+    const variants = d.variants.map((v, tag) => {
+      const vi = inferred?.get(v.name);
+      return {
+        name: v.name,
+        tag,
+        fields: v.fields.map((f, i) => ({
+          name: f.name,
+          ty: vi?.fields[i] ?? this.types.get(f as unknown as A.Node) ?? ({ k: "any" } as Ty),
+        })),
+      };
+    });
+    this.enums.set(d.name, { name: d.name, variants });
+    for (const v of variants) this.variantOwner.set(v.name, d.name);
+  }
+
+  private enumDecls(): string[] {
+    const out: string[] = [];
+    for (const e of this.enums.values()) {
+      out.push(`typedef struct ${mangleType(e.name)} {`);
+      out.push("  hk_int tag;");
+      // A union with no members is not valid C, so an enum whose variants
+      // all carry nothing is just the tag.
+      if (e.variants.some((v) => v.fields.length)) {
+        out.push("  union {");
+        for (const v of e.variants) {
+          if (!v.fields.length) continue;
+          const fs = v.fields.map((f) => `${this.cty(f.ty, `\`${e.name}.${v.name}.${f.name}\``)} ${mangle(f.name)};`);
+          out.push(`    struct { ${fs.join(" ")} } ${mangle(v.name)};`);
+        }
+        out.push("  } as;");
+      }
+      out.push(`} ${mangleType(e.name)};`);
+      for (const v of e.variants) out.push(`#define ${variantTag(e.name, v.name)} ${v.tag}`);
+      out.push("");
+    }
+    return out;
+  }
+
   private declareStruct(s: A.StructDecl): void {
-    const fields = s.fields.map((f) => ({
+    const inferred = this.opts.structFields?.get(s.name);
+    const fields = s.fields.map((f, i) => ({
       name: f.name,
-      ty: this.types.get(f as unknown as A.Node) ?? ({ k: "any" } as Ty),
+      ty: inferred?.[i] ?? this.types.get(f as unknown as A.Node) ?? ({ k: "any" } as Ty),
     }));
     // Field types come from the struct's own declaration nodes when available.
     this.structs.set(s.name, { name: s.name, fields });
@@ -568,6 +702,8 @@ export class CEmitter {
 
       case "ParallelStmt": return this.parallelStmt(s);
 
+      case "MatchStmt": return this.matchStmt(s.expr);
+
       default:
         this.err("E0704", `the native backend does not support \`${describeStmt(s)}\` yet`, s.span,
           "run it with `halka run` while the backend catches up");
@@ -713,7 +849,18 @@ export class CEmitter {
       case "CharLit": return `UINT32_C(${e.value.codePointAt(0) ?? 0})`;
       case "NullLit": return "NULL";
       case "NothingLit": return "0";
-      case "Ident": return mangle(e.name);
+      case "Ident": {
+        // A variant that carries nothing is written bare, as a value rather
+        // than a call, so `Done` has to build the tagged union here too.
+        const owner = this.variantOwner.get(e.name);
+        if (owner) {
+          const v = this.enums.get(owner)!.variants.find((x) => x.name === e.name);
+          if (v && v.fields.length === 0) {
+            return `((${mangleType(owner)}){ .tag = ${variantTag(owner, e.name)} })`;
+          }
+        }
+        return mangle(e.name);
+      }
 
       case "StrLit": return this.strLit(e);
 
@@ -733,6 +880,23 @@ export class CEmitter {
         if (this.isStr(ot) && (e.name === "length" || e.name === "size")) return `hk_str_len_chars(${this.expr(e.obj)})`;
         const p = ot ? prune(ot) : undefined;
         if (p?.k === "named" && this.structs.has(p.name)) return `(${this.expr(e.obj)}).${mangle(e.name)}`;
+        if (p?.k === "named" && this.enums.has(p.name)) {
+          // A payload field is reached through its variant's arm of the
+          // union. The field name identifies the variant, so reading a field
+          // that two variants share is refused rather than guessed at.
+          const def = this.enums.get(p.name)!;
+          const owners = def.variants.filter((v) => v.fields.some((f) => f.name === e.name));
+          if (owners.length === 1) {
+            return `(${this.expr(e.obj)}).as.${mangle(owners[0]!.name)}.${mangle(e.name)}`;
+          }
+          if (owners.length > 1) {
+            this.err("E0706",
+              `\`.${e.name}\` is carried by more than one variant of \`${p.name}\` ` +
+              `(${owners.map((v) => v.name).join(", ")}), so it is ambiguous here`, e.span,
+              "match on the value instead, which binds the payload per variant");
+            return "0";
+          }
+        }
         this.err("E0706", `the native backend cannot read \`.${e.name}\` yet`, e.span);
         return "0";
       }
@@ -758,10 +922,13 @@ export class CEmitter {
 
       case "ForeignExpr": return this.foreignExpr(e);
 
-      case "IsExpr":
+      case "IsExpr": {
         if (e.test === "null") return `((${this.expr(e.expr)}) == NULL)`;
+        const owner = this.variantOwner.get(e.test);
+        if (owner) return `((${this.expr(e.expr)}).tag == ${variantTag(owner, e.test)})`;
         this.err("E0708", `the native backend cannot test \`is ${e.test}\` yet`, e.span);
         return "false";
+      }
 
       default:
         this.err("E0709", `the native backend does not support this expression yet (${e.kind})`, e.span,
@@ -1030,6 +1197,13 @@ export class CEmitter {
         const def = this.structs.get(n)!;
         return `((${mangleType(n)}){ ${def.fields.map((f, i) => `.${mangle(f.name)} = ${args[i] ?? zeroOf(this.cty(f.ty, f.name))}`).join(", ")} })`;
       }
+
+      const owner = this.variantOwner.get(n);
+      if (owner) {
+        const v = this.enums.get(owner)!.variants.find((x) => x.name === n)!;
+        const payload = v.fields.map((f, i) => `.as.${mangle(n)}.${mangle(f.name)} = ${args[i] ?? zeroOf(this.cty(f.ty, f.name))}`);
+        return `((${mangleType(owner)}){ .tag = ${variantTag(owner, n)}${payload.length ? ", " + payload.join(", ") : ""} })`;
+      }
       return `${mangle(n)}(${args.join(", ")})`;
     }
 
@@ -1212,6 +1386,7 @@ function mangle(name: string): string {
 }
 
 function mangleType(name: string): string { return `hk_T_${name}`; }
+function variantTag(enumName: string, variant: string): string { return `hk_V_${enumName}_${variant}`; }
 
 function zeroOf(cty: string): string {
   switch (cty) {

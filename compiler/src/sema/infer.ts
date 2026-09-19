@@ -47,6 +47,8 @@ export interface InferResult {
   foreignImports: ForeignImport[];
   /** Struct name -> field types, in declaration order. Used by the ownership pass. */
   structFields: Map<string, Ty[]>;
+  /** Enum name -> variant name -> payload types and names, for the backend. */
+  enumVariants: Map<string, Map<string, { fields: Ty[]; names: string[] }>>;
 }
 
 export class Inferencer {
@@ -82,12 +84,15 @@ export class Inferencer {
 
     const structFields = new Map<string, Ty[]>();
     for (const [name, info] of this.structs) structFields.set(name, info.order.map((f) => info.fields.get(f)!));
+    const enumVariants = new Map<string, Map<string, { fields: Ty[]; names: string[] }>>();
+    for (const [name, info] of this.enums) enumVariants.set(name, info.variants);
     return {
       types: this.types,
       diags: this.diags,
       unknowns: this.unknowns,
       foreignImports: this.foreignImports,
       structFields,
+      enumVariants,
     };
   }
 

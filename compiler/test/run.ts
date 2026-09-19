@@ -21,6 +21,7 @@ import { parse } from "../src/parser/parser.ts";
 import { check } from "../src/sema/check.ts";
 import { inferTypes } from "../src/sema/infer.ts";
 import { checkOwnership } from "../src/sema/ownership.ts";
+import { analyseEscapes } from "../src/sema/escape.ts";
 import { format } from "../src/fmt/format.ts";
 import { Interpreter, HalkaRuntimeError } from "../src/interp/interpreter.ts";
 import { renderAll } from "../src/util/diagnostics.ts";
@@ -33,6 +34,26 @@ import { suitePkgE2E } from "./pkg-e2e.ts";
 import { suiteLink } from "./link.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * The options `halka build` passes to the emitter.
+ *
+ * The suites used to call `emitC` with only `file`, so they compiled a
+ * different program than the CLI did: no escape analysis, and no struct or
+ * enum field types. That is how a struct with a `string` field came to emit
+ * C that assigned a pointer to an integer while every test passed.
+ */
+function buildOpts(module: Parameters<typeof emitC>[0], inferred: ReturnType<typeof inferTypes>, file: string, release: boolean) {
+  const own = checkOwnership(module, inferred.types, inferred.structFields);
+  return {
+    release,
+    file,
+    foreignImports: inferred.foreignImports,
+    structFields: inferred.structFields,
+    enumVariants: inferred.enumVariants,
+    escapes: analyseEscapes(module, inferred.types, inferred.structFields, own.owningParams),
+  };
+}
 const ROOT = join(HERE, "..", "..");
 
 let passed = 0;
@@ -278,7 +299,7 @@ function suiteNative(): void {
       continue;
     }
 
-    const { c, diags: emitDiags } = emitC(module, inferred.types, { release: false, file: f });
+    const { c, diags: emitDiags } = emitC(module, inferred.types, buildOpts(module, inferred, f, false));
     if (emitDiags.hasErrors) {
       bad("native", name, renderAll(emitDiags.items.slice(0, 2), { source: src }));
       continue;
@@ -325,7 +346,7 @@ function suiteFfiReject(): void {
     const { module, diags } = parse(src, f);
     if (diags.hasErrors) { bad("ffi", `${name} (parse)`, "the fixture does not parse"); continue; }
     const inferred = inferTypes(module);
-    const { c, diags: emitDiags } = emitC(module, inferred.types, { release: false, file: f });
+    const { c, diags: emitDiags } = emitC(module, inferred.types, buildOpts(module, inferred, f, false));
     if (emitDiags.hasErrors) { ok("ffi", `${name} (rejected before C)`); continue; }
 
     const exe = join(tmpdir(), `halka-ffireject-${name}-${process.pid}${process.platform === "win32" ? ".exe" : ""}`);
@@ -366,9 +387,7 @@ function suiteFfi(): void {
       bad("ffi", name, renderAll(inferred.diags.items.slice(0, 2), { source: src }));
       continue;
     }
-    const { c, diags: emitDiags, links, needsPython } = emitC(module, inferred.types, {
-      release: true, file: f, foreignImports: inferred.foreignImports,
-    });
+    const { c, diags: emitDiags, links, needsPython } = emitC(module, inferred.types, buildOpts(module, inferred, f, true));
     if (emitDiags.hasErrors) {
       bad("ffi", name, renderAll(emitDiags.items.slice(0, 2), { source: src }));
       continue;

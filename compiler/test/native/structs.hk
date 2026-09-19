@@ -18,3 +18,17 @@ say dist2(p)
 say p.x
 let c: Counter(10, 5)
 say advance(c)
+
+# A struct field that owns heap memory. The emitter used to fall back to
+# `any` for every field type, which lowers to hk_int, so this assigned an
+# hk_str * to an integer and the C compiler built it anyway.
+Person:
+    name: string,
+    age: int
+
+greet(p: Person): string,
+    give "hi {p.name}, {p.age}"
+
+let a: Person("Asha", 30)
+say greet(a)
+say a.name

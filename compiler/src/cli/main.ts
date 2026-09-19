@@ -311,6 +311,7 @@ function cmdBuild(args: string[]): void {
     release: flags.has("--release"),
     file: basename(file),
     foreignImports: inferred.foreignImports,
+    structFields: inferred.structFields,
     escapes,
   });
   if (emitDiags.hasErrors) {

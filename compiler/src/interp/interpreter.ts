@@ -102,6 +102,12 @@ export class Interpreter {
    * prelude use this: rule #45 says ordinary code gets no ambient
    * privileges, so anything touching the outside world asks first.
    */
+  /** Is this the name of a variant of some enum? */
+  private isVariantName(name: string): boolean {
+    for (const e of this.enums.values()) if (e.variants.has(name)) return true;
+    return false;
+  }
+
   holdsCapability(name: string): boolean {
     const set = this.capStack[this.capStack.length - 1]!;
     if (set.has(name)) return true;
@@ -1268,6 +1274,11 @@ export class Interpreter {
         if (v.t === "variant" && v.name === p.name) return true;
         if (v.t === "struct" && v.name === p.name) return true;
         if (typeNameOf(v) === p.name || primitiveMatches(v, p.name)) return true;
+        // A payload-free variant is written bare, so `Done` must test for
+        // that variant and nothing else. Without this it fell through to the
+        // binding case below and matched *everything*, so the first such arm
+        // of a `match` swallowed all the others.
+        if (this.isVariantName(p.name)) return false;
         // Unknown capitalised name: bind it (matches the `match info.kind, Struct,` idiom).
         if (!this.structs.has(p.name) && !this.enums.has(p.name) && !isKnownTypeWord(p.name)) {
           env.define(p.name, v);
