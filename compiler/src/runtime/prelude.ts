@@ -447,10 +447,15 @@ const METHODS: Record<string, Record<string, NativeV> | undefined> = {
     values: native("values", 1, 1, (a) => list([...(a[0]! as { v: Map<string, { k: Value; v: Value }> }).v.values()].map((e) => e.v))),
     entries: native("entries", 1, 1, (a) => list([...(a[0]! as { v: Map<string, { k: Value; v: Value }> }).v.values()].map((e) => tuple([e.k, e.v])))),
     has: native("has", 2, 2, (a) => bool((a[0]! as { v: Map<string, unknown> }).v.has(keyOf(a[1]!)))),
-    get: native("get", 2, 3, (a) => {
+    get: native("get", 2, 2, (a) => {
       const m = (a[0]! as { v: Map<string, { k: Value; v: Value }> }).v;
       const e = m.get(keyOf(a[1]!));
-      return e ? e.v : (a[2] ?? NULL);
+      return e ? e.v : NULL;
+    }),
+    get_or: native("get_or", 3, 3, (a) => {
+      const m = (a[0]! as { v: Map<string, { k: Value; v: Value }> }).v;
+      const e = m.get(keyOf(a[1]!));
+      return e ? e.v : a[2]!;
     }),
     remove: native("remove", 2, 2, (a) => bool((a[0]! as { v: Map<string, unknown> }).v.delete(keyOf(a[1]!)))),
     clear: native("clear", 1, 1, (a) => { (a[0]! as { v: Map<string, unknown> }).v.clear(); return NOTHING; }),

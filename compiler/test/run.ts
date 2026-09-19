@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 
 import { parse } from "../src/parser/parser.ts";
 import { check } from "../src/sema/check.ts";
+import { inferTypes } from "../src/sema/infer.ts";
 import { format } from "../src/fmt/format.ts";
 import { Interpreter, HalkaRuntimeError } from "../src/interp/interpreter.ts";
 import { renderAll } from "../src/util/diagnostics.ts";
@@ -102,13 +103,30 @@ const REJECTS: { name: string; code: string; src: string }[] = [
   { name: "#2 unterminated string", code: "E0009", src: 'let s: "oops\n' },
   { name: "#47 unterminated block comment", code: "E0011", src: "### open\nlet a: 1\n" },
   { name: "R13 slice with four parts", code: "E0127", src: "let a: [1,2,3],\nlet b: a[0:1:2:3]\n" },
+
+  // ---- static typing (#11, #13) -------------------------------------------
+  { name: "argument type mismatch", code: "E0450", src: 'f(a: int),\n    give a\nsay f("x")\n' },
+  { name: "annotation mismatch", code: "E0450", src: 'let n: int: "hello"\n' },
+  { name: "return type mismatch", code: "E0450", src: 'f(): int,\n    give "no"\n' },
+  { name: "#13 member on an optional", code: "E0461", src: "greet(name: string?),\n    say name.length\n" },
+  { name: "#51 arithmetic on a string", code: "E0460", src: 'let a: "x" - 1\n' },
+  { name: "heterogeneous list", code: "E0450", src: 'let a: [1, "two"]\n' },
+  { name: "non-bool condition", code: "E0454", src: "let n: 5\nif n,\n    say 1\n" },
+  { name: "unknown struct field", code: "E0462", src: 'User:\n    name: string\nlet u: User("a"),\nsay u.age\n' },
+  { name: "wrong field count", code: "E0465", src: 'User:\n    name: string,\n    age: int\nlet u: User("a")\n' },
+  { name: "#10 non-exhaustive match", code: "E0468", src: "enum Colour:\n    Red,\n    Green\n\nf(c),\n    match c,\n        Red,\n            say 1\n\nf(Red)\n" },
+  { name: "#27 send on a non-channel", code: "E0451", src: "let x: 5\nsend x : 1\n" },
+  { name: "indexing a number", code: "E0463", src: "let n: 5,\nlet m: n[0]\n" },
+  { name: "comparing unrelated types", code: "E0459", src: 'let a: 1 < "x"\n' },
 ];
 
 function suiteReject(): void {
   for (const c of REJECTS) {
     const { module, diags } = parse(c.src, "reject.hk");
     const sema = check(module);
-    const codes = [...diags.items, ...sema.items].map((d) => d.code);
+    // Inference only runs on a program that parses and resolves.
+    const typed = diags.hasErrors || sema.hasErrors ? [] : inferTypes(module).diags.items;
+    const codes = [...diags.items, ...sema.items, ...typed].map((d) => d.code);
     if (codes.includes(c.code)) ok("reject", c.name);
     else bad("reject", c.name, `expected ${c.code}, got [${codes.join(", ") || "no diagnostics"}]`);
   }

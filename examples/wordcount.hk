@@ -35,7 +35,7 @@ words_of(text),
 tally(words),
     let counts: map(),
     for word in words,
-        counts[word]: counts.get(word, 0) + 1,
+        counts[word]: counts.get_or(word, 0) + 1,
     give counts
 
 # Sorting needs a named function — Halka has no lambdas (#17).

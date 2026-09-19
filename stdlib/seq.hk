@@ -50,11 +50,9 @@ group_by(items, key),
     let groups: map(),
     for item in items,
         let k: apply item : key,
-        if groups.has(k),
-            let bucket: groups[k],
-            bucket.push(item),
-        else,
-            groups[k]: [item],
+        let bucket: groups.get_or(k, []),
+        bucket.push(item),
+        groups[k]: bucket,
     give groups
 
 # How many elements satisfy `predicate`.

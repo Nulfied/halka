@@ -11,11 +11,14 @@ import { Interpreter, HalkaRuntimeError } from "../interp/interpreter.ts";
 import { DiagnosticBag, renderAll, HalkaError, type Diagnostic } from "../util/diagnostics.ts";
 import { format } from "../fmt/format.ts";
 import { check } from "../sema/check.ts";
+import { inferTypes } from "../sema/infer.ts";
+import { show as showTy } from "../sema/types.ts";
 import { inspect, display, type Value, NOTHING } from "../runtime/value.ts";
 import type * as A from "../parser/ast.ts";
 
 export const VERSION = "0.1.0";
 
+const NL = "\n";
 const useColor = process.stdout.isTTY && !process.env["NO_COLOR"];
 
 function die(msg: string): never {
@@ -103,6 +106,10 @@ function cmdRun(args: string[]): void {
   const { main, sources, deps, diags } = loadProgram(file);
   const sema = check(main, deps.map((d) => d.mod));
   for (const d of sema.items) diags.items.push(d);
+  if (!diags.hasErrors) {
+    const inferred = inferTypes(main);
+    for (const d of inferred.diags.items) diags.items.push(d);
+  }
 
   if (diags.hasErrors) {
     report(diags.items, sources);
@@ -148,16 +155,29 @@ function anonSpan() {
 }
 
 function cmdCheck(args: string[]): void {
-  const files = args.length ? args : discover(".");
+  const explain = args.includes("--explain");
+  const files = (args.filter((a) => !a.startsWith("-")).length ? args.filter((a) => !a.startsWith("-")) : discover("."));
   let total = 0;
   const allSources = new Map<string, string>();
   const allDiags: Diagnostic[] = [];
+  const unknowns: { span: { file: string; start: { line: number; col: number } }; why: string }[] = [];
   for (const f of files) {
     const { main, sources, deps, diags } = loadProgram(f);
     const sema = check(main, deps.map((d) => d.mod));
     for (const [k, v] of sources) allSources.set(k, v);
     allDiags.push(...diags.items, ...sema.items);
+    if (!diags.hasErrors && !sema.hasErrors) {
+      const inferred = inferTypes(main);
+      allDiags.push(...inferred.diags.items);
+      if (explain) unknowns.push(...inferred.unknowns);
+    }
     total++;
+  }
+  if (explain) {
+    if (!unknowns.length) process.stdout.write("every expression has a concrete type" + NL);
+    for (const u of unknowns) {
+      process.stdout.write(`  ${u.span.file}:${u.span.start.line}:${u.span.start.col}  unknown type — ${u.why}` + NL);
+    }
   }
   report(allDiags, allSources);
   const errs = allDiags.filter((d) => d.severity === "error").length;
