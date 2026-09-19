@@ -117,6 +117,11 @@ export class Interpreter {
   /** Load a module: hoist declarations, then run its top-level statements. */
   run(mod: A.Module): Value {
     this.hoist(mod.stmts, this.globals);
+    // Imports belong to the module, so they go in globals rather than in the
+    // environment the top-level statements run in. A function closes over
+    // globals, so binding them anywhere else would make an imported module
+    // visible at the top level and invisible inside every function.
+    this.bindImports(mod.stmts, this.globals);
     const frame: Frame = { fnName: "<main>", defers: [], capabilities: new Set(), unsafeDepth: 0 };
     const env = new Env(this.globals, frame);
     const self = this;

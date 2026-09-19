@@ -328,7 +328,8 @@ What works today:
 - **The reference interpreter** — the whole language, including tasks,
   channels, mutexes, atomics, cancellation, macros and `reflect`.
 - **The native backend** — scalars, strings, lists, structs, functions,
-  control flow, `defer`, and `parallel:` on real threads. Anything it cannot
+  control flow, `defer`, `parallel:` on real threads, and whole programs:
+  imported modules and installed packages are linked into one binary. Anything it cannot
   compile yet produces an `E07xx` diagnostic naming the expression, never a
   silently slow binary.
 - **C and Python interop** — `import c "math.h"` then `c hypot(3.0, 4.0)`;
@@ -342,9 +343,8 @@ What works today:
 - **Tooling** — formatter, REPL, language server, VS Code extension,
   Tree-sitter grammar.
 
-What is next, in order: multi-module native builds (the interpreter handles
-them today, the C backend does not), enums/match and maps in the native
-backend, a public registry, then self-hosting. See [ROADMAP.md](ROADMAP.md).
+What is next, in order: enums/match and maps in the native backend, a public
+registry, then self-hosting. See [ROADMAP.md](ROADMAP.md).
 
 [STATUS.md](STATUS.md) maps all 55 planned ecosystem areas to what actually
 exists today, so "is that implemented or planned?" always has an answer.

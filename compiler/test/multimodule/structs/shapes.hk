@@ -1,0 +1,9 @@
+Point:
+    x: int,
+    y: int
+
+origin(): Point,
+    give Point(0, 0)
+
+shift(p: Point, dx: int): Point,
+    give Point(p.x + dx, p.y)

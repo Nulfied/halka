@@ -1,0 +1,6 @@
+import shapes
+
+main(),
+    let p: shapes.origin(),
+    let q: shapes.shift(p, 7),
+    say "q = ({q.x}, {q.y})"

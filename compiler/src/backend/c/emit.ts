@@ -128,6 +128,12 @@ export class CEmitter {
     this.frameParams = [];
     this.line("hk_init(argc, argv);");
     this.suite({ kind: "Block", span: mod.span, stmts: top }, false, this.opts.escapes?.topLevel);
+    // A `main()` function is the entry point, after any top-level statements.
+    // The interpreter does exactly this; a backend that skipped it would run
+    // the program and silently do nothing, which is the divergence R23 exists
+    // to rule out.
+    const entry = fns.find((f) => f.name === "main" && f.params.length === 0);
+    if (entry) this.line(`${mangle("main")}();`);
     this.line("hk_shutdown();");
     this.line("return 0;");
     this.inMain = false;

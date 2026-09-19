@@ -1,0 +1,2 @@
+hex(n: int): string,
+    give "0x{n}"

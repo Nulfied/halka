@@ -1,0 +1,4 @@
+import leaf
+
+encode(n: int): string,
+    give leaf.hex(n)

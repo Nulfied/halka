@@ -1,0 +1,2 @@
+scale(n: int): int,
+    give n * 100

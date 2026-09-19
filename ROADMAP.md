@@ -81,12 +81,16 @@ use anything it imported (so a package could never have a dependency), and an
 uninstalled dependency silently resolved to a built-in module of the same
 name. Both are fixed and both now have tests.
 
+**Multi-module native builds** landed with it. `halka build` now compiles a
+whole program — imported modules and installed packages included — into one
+binary, by linking every module into a single unit before emitting C
+(R23.5). Three pre-existing bugs surfaced on the way and are fixed: a
+dependency's own imports were never bound, an import was invisible inside
+every function, and the compiled binary never called a `main()` function
+while the interpreter did.
+
 Still open from this milestone:
 
-- **Multi-module native builds.** The interpreter runs multi-module programs;
-  the C backend compiles one module and refuses the rest with `E0714`. This is
-  the single biggest gap now that packages exist, because it is what stands
-  between a dependency and a native binary.
 - **Stack promotion** — the analysis already identifies values that neither
   escape nor grow; the backend does not yet place them on the stack.
 - **Bounds-check elision** for the `for i in 0..len(xs)` shape.

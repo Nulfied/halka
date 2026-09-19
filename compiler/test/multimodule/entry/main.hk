@@ -1,0 +1,4 @@
+say "top level first"
+
+main(),
+    say "then main"

@@ -516,6 +516,18 @@ they can differ, this is the contract:
    value's type is not concrete enough to compile without boxing. The error
    names the expression and suggests an annotation.
 3. The native backend may not **accept** a program the checker rejects.
+4. **One entry point, in both.** Top-level statements run in source order,
+   and then, if the program declares a `main()` taking no parameters, it is
+   called. A backend that skipped it would run the program and silently do
+   nothing, which is the exact failure clause 1 rules out.
+5. **Modules are linked, not separately compiled.** `halka build` folds every
+   imported module into one program before emitting C: each imported
+   declaration gets a unique name and each reference is rewritten
+   (`compiler/src/sema/link.ts`). Only declarations cross the boundary — a
+   module's top-level statements do not run on import, which is what the
+   interpreter already does. The cost is that there is no incremental build;
+   the benefit is that the C compiler can inline across modules and that
+   inference, ownership and escape analysis need no notion of modules at all.
 
 ---
 

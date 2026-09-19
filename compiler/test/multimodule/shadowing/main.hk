@@ -1,0 +1,10 @@
+import util
+
+scale(n: int): int,
+    give n * 2
+
+main(),
+    let direct: scale(5),
+    let imported: util.scale(5),
+    let scale: 7,
+    say "direct = {direct} imported = {imported} local = {scale}"
