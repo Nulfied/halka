@@ -1,0 +1,55 @@
+# Brackets the formatter has to put back (R8).
+#
+# Every line here is a shape the formatter once reprinted without its
+# brackets, producing a different program that still compiled and, in most
+# cases, still printed something plausible. The `fmt` suite runs over every
+# case in this directory and now checks the reparsed tree node for node, so
+# a case is enough to pin each one.
+#
+# None of these was found by reading the formatter. They were found by
+# generating programs -- see `test/fuzz.ts`.
+let a: true
+let b: false
+let n: 5
+
+# `not` binds tighter than `and` and `or`, so dropping these brackets moves
+# the `not` onto the left operand alone: `not a or b` is `(not a) or b`.
+say not (a and b)
+say not (a or b)
+say not (a or b and a)
+
+# and looser than the comparisons, so these brackets are the other way
+# round: `not n == 5` is `not (n == 5)`, which is not what this says.
+say (not a) == b
+
+# Unary `-` binds tighter than every binary operator.
+say -(n + 3)
+say -(n * 3)
+
+# `as` binds tighter than every binary operator, and looser than a unary
+# sign: `-5.2 as int` is `(-5.2) as int`, so `-(5.2 as int)` needs saying.
+say -(5.2 as int)
+say -5.2 as int
+say (n + 3) as string
+say (not a) as string
+
+# Access binds tighter than all of it.
+let missing: string?
+let fallback: "backup"
+say (missing or fallback).length
+say ((n + 3) as string).length
+
+# And interpolation nests: a string inside an interpolation inside a string
+# inside an interpolation. The lexer copied a nested string by scanning for
+# the next quote, which was the *opening* quote one level further in, so the
+# brace below closed an interpolation that was not the one it belonged to.
+say "A{"B{"c } d"}E"}F"
+say "outer {"inner \{ brace"} end"
+
+# `<` is both less-than and the start of a type argument list (R9). The
+# parser tells them apart by looking for the matching `>` and a `(` after
+# it, which found the `>` belonging to the second comparison here and
+# reported a type error inside the arithmetic.
+let ys: [1, 2, 3]
+say ys.length < 0 * 9 or 9 > ys.length
+say ys.length < 9 and 2 > 1

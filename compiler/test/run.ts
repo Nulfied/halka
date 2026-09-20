@@ -40,6 +40,7 @@ import { suiteLink } from "./link.ts";
 import { runKernelTests } from "./kernel.ts";
 import { suiteCross } from "./cross.ts";
 import { suiteIncremental } from "./incremental.ts";
+import { suiteFuzz, shapeOf } from "./fuzz.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -335,6 +336,14 @@ function suiteFmt(): void {
     if (once !== twice) { bad("fmt", `${t.name} (idempotent)`, diffText(once, twice)); continue; }
     ok("fmt", `${t.name} (idempotent)`);
 
+    // 1b. and it is the same program, node for node. Stronger than the
+    // output comparison below, which only notices a changed meaning when
+    // the two versions happen to print different things.
+    if (shapeOf(a.module) === shapeOf(b.module)) ok("fmt", `${t.name} (same tree)`);
+    else bad("fmt", `${t.name} (same tree)`, `reformatting changed the parse
+--- formatted ---
+${once}`);
+
     // 2. formatting preserves behaviour
     const before = runProgram(t.src, t.name);
     const after = runProgram(once, t.name);
@@ -578,6 +587,7 @@ await suitePkgE2E({ ok: (n) => ok("pkg", n), bad: (n, d) => bad("pkg", n, d) });
 suiteLink({ ok: (n) => ok("link", n), bad: (n, d) => bad("link", n, d) }, findToolchain() !== null);
 suiteCross(ok, bad);
 suiteIncremental(ok, bad);
+suiteFuzz(ok, bad);
 await runKernelTests(ok, bad);
 const ms = Date.now() - t0;
 

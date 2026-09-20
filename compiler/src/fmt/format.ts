@@ -467,18 +467,18 @@ class Formatter {
         return `${this.flat(e.obj)}[${s}:${en}${st}]`;
       }
       case "UnaryExpr": {
-        // `-(a + b)` is not `-a + b`: unary `-` binds tighter than every
-        // binary operator, so its operand needs the parentheses back. `not`
-        // binds looser than all of them, so `not a == b` already reads
-        // correctly and wrapping it would only add noise.
-        const inner = this.flat(e.operand);
-        if (e.op === "not") return `not ${inner}`;
-        return e.operand.kind === "BinaryExpr" ? `${e.op}(${inner})` : `${e.op}${inner}`;
+        // `-(a + b)` is not `-a + b`, and `not (a and b)` is not
+        // `not a and b`. Both operators sit in the middle of the table
+        // (R8) -- `-` above every binary one, `not` above `and` and `or`
+        // but below the comparisons -- so each needs the brackets back
+        // around an operand that binds looser than it does, and neither
+        // needs them anywhere else.
+        return `${e.op}${e.op === "not" ? " " : ""}${this.tighter(e.operand, PREC_UNARY[e.op] ?? 6)}`;
       }
       case "BinaryExpr": return `${this.wrap(e.lhs, e, "left")} ${e.op} ${this.wrap(e.rhs, e, "right")}`;
       case "RangeExpr": {
-        const lo = e.lo ? this.flat(e.lo) : "";
-        const hi = e.hi ? this.flat(e.hi) : "";
+        const lo = e.lo ? this.tighter(e.lo, PREC_RANGE) : "";
+        const hi = e.hi ? this.tighter(e.hi, PREC_RANGE) : "";
         const base = `${lo}..${e.inclusive ? "=" : ""}${hi}`;
         return e.step ? `range ${base} step ${this.flat(e.step)}` : base;
       }
@@ -486,11 +486,11 @@ class Formatter {
         // `as` binds tighter than every binary operator (R8), so
         // `(7 / 2) as int` is 3 while `7 / 2 as int` is 3.5. Printing the
         // operand bare dropped that distinction and changed the result.
-        const inner = this.flat(e.expr);
-        const body = e.expr.kind === "BinaryExpr" ? `(${inner})` : inner;
-        return `${body} ${e.fallible ? "to" : "as"} ${typeText(e.type)}`;
+        return `${this.tighter(e.expr, PREC_CAST)} ${e.fallible ? "to" : "as"} ${typeText(e.type)}`;
       }
-      case "IsExpr": return `${this.flat(e.expr)} is ${e.test}`;
+      // `is` sits with the comparisons, so `(a and b) is null` keeps its
+      // brackets: without them it reads as `a and (b is null)`.
+      case "IsExpr": return `${this.tighter(e.expr, PREC_IS)} is ${e.test}`;
       case "BorrowExpr": return `borrow ${e.mut ? "mut " : ""}${this.flat(e.expr)}`;
       case "MoveExpr": return `move ${this.flat(e.expr)}`;
       case "RefExpr": return `&${e.mut ? "mut " : ""}${this.flat(e.expr)}`;
@@ -540,26 +540,62 @@ class Formatter {
    * needed to see it the same way.
    */
   private receiver(e: A.Expr): string {
-    const s = this.flat(e);
-    return LOOSER_THAN_ACCESS.has(e.kind) ? `(${s})` : s;
+    // Access is the tightest thing there is, so this is `tighter` with
+    // nothing above it: anything holding an operator gets brackets.
+    return this.tighter(e, Number.POSITIVE_INFINITY);
   }
 
   private wrap(child: A.Expr, parent: A.BinaryExpr, side: "left" | "right"): string {
     const s = this.flat(child);
-    if (child.kind !== "BinaryExpr") return s;
-    const pc = PREC[child.op] ?? 0;
+    const pc = looseness(child);
     const pp = PREC[parent.op] ?? 0;
+    // Equal precedence on the right needs brackets too: the operators are
+    // left-associative, so `a - (b - c)` reparses as `(a - b) - c`.
     if (pc < pp || (pc === pp && side === "right")) return `(${s})`;
     return s;
   }
+
+  /**
+   * An operand of something at `level`, bracketed if it binds looser. This
+   * is the whole of the formatter's bracketing rule, and the reason it is
+   * one function is that it used to be four: every printer that put an
+   * operator in front of a subexpression decided for itself which operands
+   * needed brackets, and three of them got it wrong in a way that still
+   * parsed. `not (a and b)` came back as `not a and b`.
+   */
+  private tighter(e: A.Expr, level: number): string {
+    const s = this.flat(e);
+    return looseness(e) < level ? `(${s})` : s;
+  }
 }
 
+/** Binary operator precedence — spec/RESOLUTIONS.md R8. Higher binds tighter. */
 const PREC: Record<string, number> = {
   "*": 5, "/": 5, "%": 5,
   "+": 4, "-": 4,
   "<": 2, "<=": 2, ">": 2, ">=": 2, "==": 2, "!=": 2,
   and: 1, or: 0,
 };
+
+// The same table's entries for the non-binary forms. `as` binds tighter
+// than every binary operator but looser than a unary sign -- `-5.2 as int`
+// is `(-5.2) as int` -- so it sits between `*` and `-`.
+const PREC_CAST = 5.5;
+const PREC_RANGE = 3;
+const PREC_IS = 2;
+const PREC_UNARY: Record<string, number> = { "-": 6, "+": 6, "not": 1.5 };
+
+/** Where an expression sits in that table. An atom never needs brackets. */
+function looseness(e: A.Expr): number {
+  switch (e.kind) {
+    case "BinaryExpr": return PREC[e.op] ?? 0;
+    case "UnaryExpr": return PREC_UNARY[e.op] ?? PREC_CAST;
+    case "CastExpr": return PREC_CAST;
+    case "RangeExpr": return PREC_RANGE;
+    case "IsExpr": return PREC_IS;
+    default: return Number.POSITIVE_INFINITY;
+  }
+}
 
 function escape(s: string): string {
   // `{` must be escaped back. It opens an interpolation (#2), so a string
@@ -570,9 +606,6 @@ function escape(s: string): string {
   return s.replace(/[\\"\n\t\r{]/g, (c) =>
     ({ "\\": "\\\\", '"': '\\"', "\n": "\\n", "\t": "\\t", "\r": "\\r", "{": "\\{" })[c] ?? c);
 }
-
-/** Expressions that bind looser than `.` and `[]`, so they need brackets there. */
-const LOOSER_THAN_ACCESS = new Set(["BinaryExpr", "UnaryExpr", "CastExpr", "IsExpr", "RangeExpr"]);
 
 /** Commands whose second argument is written with the `:` association form. */
 function isAssocCommand(name: string): boolean {

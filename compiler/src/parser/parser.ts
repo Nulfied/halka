@@ -17,6 +17,34 @@ import type * as A from "./ast.ts";
 
 const STATE_TESTS = new Set(["null", "error", "ok", "cancelled", "nothing"]);
 
+/**
+ * Whether a token could appear inside a type argument list (R9).
+ *
+ * `<` is both the start of one and less-than, and the parser tells them
+ * apart by scanning for the matching `>` and looking for a `(` after it.
+ * On its own that is not enough: in
+ *
+ *     xs.length < (0 * n) or (a > (b).length)
+ *
+ * the scan runs past the comparison, finds the `>` belonging to the *other*
+ * comparison, sees a `(` after it and commits -- then fails on `0`, with an
+ * error about type position pointing at arithmetic. Nothing between the two
+ * brackets of a real type list is an integer, an operator or a word like
+ * `or`, so anything that is settles it.
+ */
+function typeArgToken(t: Token): boolean {
+  switch (t.kind) {
+    case T.Ident: case T.Comma: case T.Lt: case T.Gt:
+    case T.Question: case T.LParen: case T.RParen:
+    case T.Amp: case T.Star:
+      return true;
+    // `raw` and `mut` build a type; `and`, `or`, `is` and `not` give away
+    // that this was an expression all along.
+    case T.Keyword: return t.text === "raw" || t.text === "mut";
+    default: return false;
+  }
+}
+
 /** Binary operator precedence — spec/RESOLUTIONS.md R8. Higher binds tighter. */
 const BIN_PREC: Record<string, number> = {
   "*": 5, "/": 5, "%": 5,
@@ -607,14 +635,24 @@ export class Parser {
   private scanGenerics(i: number): number {
     if (this.toks[i]?.kind !== T.Lt) return -1;
     let depth = 0;
+    let parens = 0;
     let j = i;
     while (j < this.toks.length) {
-      const k = this.toks[j]!.kind;
+      const t = this.toks[j]!;
+      const k = t.kind;
       if (k === T.Lt) depth++;
       else if (k === T.Gt) {
         depth--;
-        if (depth === 0) return j + 1;
+        // A type list brings its own brackets with it; one that closes a
+        // bracket it did not open is a comparison that ran into someone
+        // else's `)`.
+        if (depth === 0) return parens === 0 ? j + 1 : -1;
       } else if (k === T.Newline || k === T.Eof || k === T.Comma && depth === 0) return -1;
+      else {
+        if (k === T.LParen) parens++;
+        else if (k === T.RParen && --parens < 0) return -1;
+        if (!typeArgToken(t)) return -1;
+      }
       j++;
     }
     return -1;

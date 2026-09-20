@@ -507,6 +507,50 @@ export class Lexer {
   }
 
   /**
+   * Copy a nested string literal inside an interpolation, from its opening
+   * quote to the matching close.
+   *
+   * The two forms nest without limit -- a string holds an interpolation,
+   * which holds a string, which holds an interpolation -- so this and
+   * `copyInterp` are mutually recursive. Scanning for the next `"` instead
+   * worked one level down and then stopped at the *opening* quote of the
+   * level below it: `"A{"B{"c } d"}E"}F"` had its outer interpolation closed
+   * by the brace inside the innermost string, and reported an unterminated
+   * interpolation pointing at source that was fine.
+   */
+  private copyNestedStr(): string {
+    let s = this.advance(); // opening quote
+    while (!this.atEnd()) {
+      const c = this.peek();
+      if (c === "\\") {
+        // an escape, including `\{`, which does not open anything
+        s += this.advance();
+        if (!this.atEnd()) s += this.advance();
+        continue;
+      }
+      if (c === '"') return s + this.advance();
+      if (c === "\n") return s; // unterminated; the caller reports it
+      if (c === "{") { s += this.copyInterp(); continue; }
+      s += this.advance();
+    }
+    return s;
+  }
+
+  /** Copy a brace-balanced `{...}`, including any strings inside it. */
+  private copyInterp(): string {
+    let s = this.advance(); // {
+    let depth = 1;
+    while (!this.atEnd() && depth > 0) {
+      const c = this.peek();
+      if (c === '"') { s += this.copyNestedStr(); continue; }
+      if (c === "{") depth++;
+      else if (c === "}") depth--;
+      s += this.advance();
+    }
+    return s;
+  }
+
+  /**
    * `"..."`, `"""..."""`, and `r"..."` (#2).
    * Produces a parts list so the parser can build an interpolation node.
    */
@@ -583,13 +627,9 @@ export class Lexer {
               break;
             }
           } else if (d === '"') {
-            // Allow a nested string inside an interpolation.
-            expr += this.advance();
-            while (!this.atEnd() && this.peek() !== '"') {
-              if (this.peek() === "\\") expr += this.advance();
-              expr += this.advance();
-            }
-            if (!this.atEnd()) expr += this.advance();
+            // A nested string, copied whole so that the braces inside it are
+            // text and not this interpolation's closer.
+            expr += this.copyNestedStr();
             continue;
           }
           expr += this.advance();
