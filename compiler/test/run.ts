@@ -12,6 +12,7 @@
 //   link     — multi-module programs: interpreter and native must agree
 //   kernel   — the Jupyter kernel host: cells share state over stdio JSON
 //   cross    — `--target`: which toolchain is chosen and what it is told
+//   incremental — the build stamp: what must and must not force a rebuild
 //              M4 is checked inside `native` and `ffi`: every compiled
 //              program must free every heap object it allocates
 
@@ -37,6 +38,7 @@ import { suitePkgE2E } from "./pkg-e2e.ts";
 import { suiteLink } from "./link.ts";
 import { runKernelTests } from "./kernel.ts";
 import { suiteCross } from "./cross.ts";
+import { suiteIncremental } from "./incremental.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -547,6 +549,7 @@ suitePkg({ ok: (n) => ok("pkg", n), bad: (n, d) => bad("pkg", n, d) });
 await suitePkgE2E({ ok: (n) => ok("pkg", n), bad: (n, d) => bad("pkg", n, d) });
 suiteLink({ ok: (n) => ok("link", n), bad: (n, d) => bad("link", n, d) }, findToolchain() !== null);
 suiteCross(ok, bad);
+suiteIncremental(ok, bad);
 await runKernelTests(ok, bad);
 const ms = Date.now() - t0;
 

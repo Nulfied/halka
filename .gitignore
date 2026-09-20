@@ -43,3 +43,6 @@ bench/infer_par
 
 # Python bytecode from the Jupyter kernel front end
 __pycache__/
+
+# Build stamps from incremental builds
+*.halka-build

@@ -102,6 +102,17 @@ name matches anything, `null` included, so it ends the chain and a following
 disagreed with the interpreter on exactly the case the arm exists for. An
 optional of a struct or enum is refused rather than mis-ordered in C.
 
+**Incremental builds** skip work that provably has not changed. Not
+separate compilation: R23.5 links every module into one unit before any C
+is emitted, which is what lets generics monomorphise and names be rewritten
+across module boundaries, and per-module object files would undo that. So
+the granularity is the whole build, and the question is only whether it can
+be skipped -- which it can when every input hashes the same. Every input
+means the sources *and* every module they import, the flags, the runtime C
+that gets compiled alongside them, and the compiler's own version, since a
+new compiler emits different C from identical source. A no-op build goes
+from 6.9 s to 0.6 s. `--force` rebuilds regardless.
+
 **Cross-compilation** works through `halka build --target <triple>`. The
 constraint is not the compiler but the target's headers and libraries: gcc
 cannot supply them and MSVC builds for this machine only, so a cross build

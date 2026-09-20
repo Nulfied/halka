@@ -21,6 +21,7 @@ import { buildNative, describeToolchains, findPython } from "../backend/c/build.
 import { show as showTy } from "../sema/types.ts";
 import { runKernelHost } from "./kernel.ts";
 import { installKernelspec } from "./kernelspec.ts";
+import { stampFor, isUpToDate, writeStamp } from "./stamp.ts";
 import { inspect, display, type Value } from "../runtime/value.ts";
 import { evalSnippet } from "./eval.ts";
 import type * as A from "../parser/ast.ts";
@@ -301,6 +302,21 @@ function cmdBuild(args: string[]): void {
   const outName = oIdx >= 0 && args[oIdx + 1] ? args[oIdx + 1]! : defaultBinaryName(file, target);
 
   const { main, sources, deps, diags } = loadProgram(file);
+
+  // Nothing to do when every input is byte-for-byte what produced the
+  // binary that is already there. Parsing has happened by now, which is
+  // microseconds; the C compile this skips is seconds.
+  const stamp = stampFor({
+    sources,
+    version: VERSION,
+    flags: [...flags].concat(target ? [`target=${target}`] : []),
+  });
+  const cacheable = !flags.has("--emit-c") && !flags.has("--force");
+  if (cacheable && isUpToDate(outName, stamp)) {
+    if (!flags.has("--quiet")) process.stdout.write(`${outName} is up to date` + NL);
+    return;
+  }
+
   const sema = check(main, deps.map((d) => d.mod));
   for (const d of sema.items) diags.items.push(d);
   if (diags.hasErrors) { report(diags.items, sources); process.exit(1); }
@@ -352,6 +368,7 @@ function cmdBuild(args: string[]): void {
   });
 
   if (!outcome.ok) die(outcome.message ?? "the build failed");
+  if (cacheable && outcome.binary) writeStamp(outName, stamp);
   for (const w of outcome.warnings ?? []) {
     process.stderr.write(`warning from the C compiler: ${w}` + NL);
   }
@@ -822,6 +839,7 @@ commands:
                              e.g. x86_64-linux-gnu. Needs a toolchain that
                              carries that target's headers and libraries,
                              which in practice means zig cc
+                           --force    rebuild even when nothing changed
                            --emit-c   write the generated C and stop
                            --keep-c   keep the generated C beside the binary
                            -o <path>  output path
