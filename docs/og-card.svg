@@ -2,12 +2,11 @@
 <!--
   Source for the social share card.
 
-  Not referenced by og:image directly: X, Facebook, LinkedIn and Slack all
-  ignore SVG, so pointing at this would give those platforms no preview at
-  all. Rasterise it to og-card.png (1200x630) and add the og:image and
-  twitter:image tags in index.html, which are commented out there and ready.
+  This is the editable source. og-card.png beside it is the rasterised
+  1200x630 version that og:image actually points at -- X, Facebook,
+  LinkedIn and Slack all ignore SVG, so the PNG is what they need.
 
-  Any of these work:
+  After editing this, regenerate the PNG with any of:
     magick docs/og-card.svg docs/og-card.png
     inkscape docs/og-card.svg -o docs/og-card.png -w 1200 -h 630
     rsvg-convert -w 1200 -h 630 docs/og-card.svg -o docs/og-card.png

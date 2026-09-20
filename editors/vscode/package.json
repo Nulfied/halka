@@ -4,6 +4,7 @@
   "description": "Halka language support: syntax highlighting, diagnostics, formatting, hover, completion, and go-to-definition.",
   "version": "0.2.0",
   "publisher": "halka-lang",
+  "author": "Nulfied",
   "license": "MIT OR Apache-2.0",
   "engines": { "vscode": "^1.75.0" },
   "categories": ["Programming Languages", "Formatters", "Linters"],
