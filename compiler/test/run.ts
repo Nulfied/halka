@@ -22,6 +22,7 @@ import { parse } from "../src/parser/parser.ts";
 import { check } from "../src/sema/check.ts";
 import { inferTypes } from "../src/sema/infer.ts";
 import { checkOwnership } from "../src/sema/ownership.ts";
+import { checkUnsafe } from "../src/sema/unsafe.ts";
 import { analyseEscapes } from "../src/sema/escape.ts";
 import { format } from "../src/fmt/format.ts";
 import { Interpreter, HalkaRuntimeError } from "../src/interp/interpreter.ts";
@@ -128,6 +129,29 @@ const REJECTS: { name: string; code: string; src: string }[] = [
   { name: "#21 no overloading", code: "E0302", src: "add(a),\n    give a\n\nadd(a, b),\n    give a\n" },
   { name: "#9 give outside a function", code: "E0130", src: "give 1\n" },
   { name: "#8 break outside a loop", code: "E0131", src: "break\n" },
+  // #46 — the interpreter only caught these when the line actually ran, so a
+  // raw dereference on a path nobody took went unreported, and `halka check`
+  // passed a program `halka run` would have refused.
+  {
+    name: "#46 raw deref needs unsafe",
+    code: "E0502",
+    src: "main(),\n    let v: 25\n    let p: raw &v\n    say *p\n",
+  },
+  {
+    name: "#46 raw write needs unsafe",
+    code: "E0502",
+    src: "main(),\n    let v: 25\n    let p: raw &v\n    *p: 30\n",
+  },
+  {
+    name: "#46 an unsafe block does not reach into the callee",
+    code: "E0502",
+    src: "peek(),\n    let v: 25\n    let p: raw &v\n    say *p\n\nmain(),\n    unsafe:\n        peek()\n",
+  },
+  {
+    name: "#46 caught on a branch that never runs",
+    code: "E0502",
+    src: "main(),\n    let v: 25\n    let p: raw &v\n    if false,\n        say *p\n",
+  },
   { name: "#8 continue outside a loop", code: "E0131", src: "continue\n" },
   { name: "R3.1 type names are UpperCamelCase", code: "E0107", src: "enum shape:\n    Round\n" },
   { name: "undefined name", code: "E0203", src: "say nope\n" },
@@ -161,8 +185,16 @@ function suiteReject(): void {
     const { module, diags } = parse(c.src, "reject.hk");
     const sema = check(module);
     // Inference only runs on a program that parses and resolves.
-    const typed = diags.hasErrors || sema.hasErrors ? [] : inferTypes(module).diags.items;
-    const codes = [...diags.items, ...sema.items, ...typed].map((d) => d.code);
+    // Inference only runs on a program that parses and resolves, and the
+    // `unsafe:` rule (#46) is typed, so it only runs once inference has.
+    let typed: { code: string }[] = [];
+    let unsafeDiags: { code: string }[] = [];
+    if (!diags.hasErrors && !sema.hasErrors) {
+      const inf = inferTypes(module);
+      typed = inf.diags.items;
+      if (!inf.diags.hasErrors) unsafeDiags = checkUnsafe(module, inf.types).items;
+    }
+    const codes = [...diags.items, ...sema.items, ...typed, ...unsafeDiags].map((d) => d.code);
     if (codes.includes(c.code)) ok("reject", c.name);
     else bad("reject", c.name, `expected ${c.code}, got [${codes.join(", ") || "no diagnostics"}]`);
   }

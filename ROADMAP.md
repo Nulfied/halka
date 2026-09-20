@@ -102,6 +102,15 @@ name matches anything, `null` included, so it ends the chain and a following
 disagreed with the interpreter on exactly the case the arm exists for. An
 optional of a struct or enum is refused rather than mis-ordered in C.
 
+**`unsafe:` is checked statically** (#46). The interpreter had always
+enforced it, but only when the line ran: a raw dereference down a branch
+nobody took was never reported, `halka check` passed programs `halka run`
+would refuse, and the compiled backend enforced nothing at all. The rule is
+unchanged -- dereferencing a raw pointer or writing through one needs an
+enclosing `unsafe:`, and the block does not reach into a function it calls
+-- it is simply decided from the types now, so all three agree. A safe `&`
+reference still dereferences without ceremony.
+
 **`json` compiles natively**, both halves. `stringify` dispatches on the
 argument's static type, so the runtime has one function per shape rather
 than a generic walker; its conventions are JavaScript's, because that is
