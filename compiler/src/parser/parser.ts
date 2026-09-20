@@ -1915,7 +1915,15 @@ const PRIMITIVE_TYPES = new Set([
   "float32", "float64", "double", "void",
 ]);
 
-const TYPE_CTORS = new Set(["list", "array", "map", "set", "channel", "task", "tuple", "vector"]);
+// Every type constructor `toTy` understands has to be listed here too, or
+// the parser reads `let c: shared(Cache): Cache()` as an assignment of the
+// expression `shared(Cache)` and chokes on the second `:`. `shared`,
+// `mutex` and `rwmutex` were in the type system and missing from here, so
+// all three were documented and unusable.
+const TYPE_CTORS = new Set([
+  "list", "array", "map", "set", "channel", "task", "tuple", "vector",
+  "shared", "weak", "atomic", "mutex", "rwmutex",
+]);
 
 /** Keywords that may begin an expression. */
 const CAN_START_EXPR_KW = new Set([

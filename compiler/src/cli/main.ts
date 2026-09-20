@@ -14,6 +14,7 @@ import { check } from "../sema/check.ts";
 import { inferTypes } from "../sema/infer.ts";
 import { checkOwnership } from "../sema/ownership.ts";
 import { checkUnsafe } from "../sema/unsafe.ts";
+import { checkShared } from "../sema/shared.ts";
 import { analyseEscapes } from "../sema/escape.ts";
 import { linkProgram } from "../sema/link.ts";
 import { emitC, emitOptionsFrom } from "../backend/c/emit.ts";
@@ -155,6 +156,7 @@ function cmdRun(args: string[]): void {
       const own = checkOwnership(main, inferred.types, inferred.structFields);
       for (const d of own.diags.items) diags.items.push(d);
       for (const d of checkUnsafe(main, inferred.types).items) diags.items.push(d);
+      for (const d of checkShared(main, inferred).items) diags.items.push(d);
     }
   }
 
@@ -235,6 +237,7 @@ function cmdCheck(args: string[]): void {
       if (!inferred.diags.hasErrors) {
         allDiags.push(...checkOwnership(main, inferred.types, inferred.structFields).diags.items);
         allDiags.push(...checkUnsafe(main, inferred.types).items);
+        allDiags.push(...checkShared(main, inferred).items);
       }
       if (explain) unknowns.push(...inferred.unknowns);
     }
@@ -333,6 +336,7 @@ function cmdBuild(args: string[]): void {
   if (!inferred.diags.hasErrors) {
     const own = checkOwnership(linked, inferred.types, inferred.structFields);
     for (const d of checkUnsafe(linked, inferred.types).items) own.diags.items.push(d);
+    for (const d of checkShared(linked, inferred).items) own.diags.items.push(d);
     for (const d of own.diags.items) diags.items.push(d);
     owningParams = own.owningParams;
   }

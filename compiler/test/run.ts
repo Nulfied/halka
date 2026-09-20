@@ -25,6 +25,7 @@ import { check } from "../src/sema/check.ts";
 import { inferTypes } from "../src/sema/infer.ts";
 import { checkOwnership } from "../src/sema/ownership.ts";
 import { checkUnsafe } from "../src/sema/unsafe.ts";
+import { checkShared } from "../src/sema/shared.ts";
 import { analyseEscapes } from "../src/sema/escape.ts";
 import { format } from "../src/fmt/format.ts";
 import { Interpreter, HalkaRuntimeError } from "../src/interp/interpreter.ts";
@@ -157,6 +158,23 @@ const REJECTS: { name: string; code: string; src: string }[] = [
     src: "main(),\n    let v: 25\n    let p: raw &v\n    if false,\n        say *p\n",
   },
   { name: "#8 continue outside a loop", code: "E0131", src: "continue\n" },
+  // M3 — refcounting cannot free a cycle, so the compiler names the types
+  // that have that shape instead of letting it be found at run time.
+  {
+    name: "M3 a shared type that reaches itself",
+    code: "W1010",
+    src: "Node:\n    value: int,\n    next: shared(Node)\n\nmain(),\n    say 1\n",
+  },
+  {
+    name: "M3 a cycle through two types",
+    code: "W1010",
+    src: "A:\n    b: shared(B)\n\nB:\n    a: shared(A)\n\nmain(),\n    say 1\n",
+  },
+  {
+    name: "M3 a weak edge breaks the cycle, so no warning",
+    code: "!W1010",
+    src: "P:\n    kids: list(shared(C))\n\nC:\n    up: weak(P)\n\nmain(),\n    say 1\n",
+  },
   { name: "R3.1 type names are UpperCamelCase", code: "E0107", src: "enum shape:\n    Round\n" },
   { name: "undefined name", code: "E0203", src: "say nope\n" },
   { name: "arity mismatch", code: "E0404", src: "f(a, b),\n    give a\nf(1)\n" },
@@ -188,7 +206,6 @@ function suiteReject(): void {
   for (const c of REJECTS) {
     const { module, diags } = parse(c.src, "reject.hk");
     const sema = check(module);
-    // Inference only runs on a program that parses and resolves.
     // Inference only runs on a program that parses and resolves, and the
     // `unsafe:` rule (#46) is typed, so it only runs once inference has.
     let typed: { code: string }[] = [];
@@ -196,9 +213,20 @@ function suiteReject(): void {
     if (!diags.hasErrors && !sema.hasErrors) {
       const inf = inferTypes(module);
       typed = inf.diags.items;
-      if (!inf.diags.hasErrors) unsafeDiags = checkUnsafe(module, inf.types).items;
+      if (!inf.diags.hasErrors) {
+        unsafeDiags = [...checkUnsafe(module, inf.types).items, ...checkShared(module, inf).items];
+      }
     }
     const codes = [...diags.items, ...sema.items, ...typed, ...unsafeDiags].map((d) => d.code);
+    // A few cases assert the *absence* of a diagnostic. A warning that fires
+    // when it should not is as wrong as one that never fires, and only the
+    // negative case proves the escape hatch does anything.
+    if (c.code.startsWith("!")) {
+      const unwanted = c.code.slice(1);
+      if (!codes.includes(unwanted)) ok("reject", c.name);
+      else bad("reject", c.name, `expected no ${unwanted}, got [${codes.join(", ")}]`);
+      continue;
+    }
     if (codes.includes(c.code)) ok("reject", c.name);
     else bad("reject", c.name, `expected ${c.code}, got [${codes.join(", ") || "no diagnostics"}]`);
   }

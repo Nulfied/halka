@@ -30,8 +30,13 @@ export function primitiveMatches(v: Value, name: string): boolean {
  * `Result(int)`, which the parser does not accept, so formatting a file that
  * named a user generic produced a file that no longer parsed.
  */
+// Built-in type constructors are written with parentheses; a user generic
+// gets angle brackets. Keep this in step with the parser's TYPE_CTORS, or
+// the formatter rewrites documented syntax into the other form -- it turned
+// `shared(Cache)` from the memory model into `shared<Cache>`.
 const PAREN_TYPE_CTORS = new Set([
   "list", "array", "map", "set", "channel", "task", "tuple", "vector",
+  "shared", "weak", "atomic", "mutex", "rwmutex",
 ]);
 
 export function typeText(t: A.TypeNode): string {

@@ -186,7 +186,16 @@ to atomic counting automatically when the value can reach another task, and says
 so under `--explain`.
 
 Cycles leak. This is stated plainly rather than hidden: `halka check` warns when
-a `shared` type can reach itself, and `weak(T)` breaks the cycle. Refcounting
+a `shared` type can reach itself (`W1010`), and `weak(T)` breaks the cycle --
+a `weak` edge is not followed when working out whether a type reaches itself.
+
+**Implemented in the checker.** `shared(T)` and `weak(T)` type-check, read
+through to what they hold, and are copied rather than moved, so several
+owners of one value are allowed where a plain struct would be a move error.
+The cycle warning is implemented. What is *not* yet implemented is the
+runtime half: the interpreter is garbage-collected, so `shared` needs no
+counting there, and the native backend refuses `shared` by name (R23)
+rather than compiling it without one. Refcounting
 with an honest cycle warning is a better trade for a systems language than a
 tracing collector with unpredictable pauses.
 

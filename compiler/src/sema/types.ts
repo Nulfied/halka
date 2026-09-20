@@ -16,7 +16,7 @@
 
 export type Ty =
   | Prim | Opt | ListT | ArrayT | MapT | SetT | TupleT | FnT
-  | NamedT | RefT | RawT | SharedT | TaskT | ChanT | AtomicT
+  | NamedT | RefT | RawT | SharedT | WeakT | TaskT | ChanT | AtomicT
   | MutexT | RangeT | CapT | ModuleT | TypeT | VarT | AnyT | NeverT | CTy;
 
 export type PrimName = "int" | "float" | "bool" | "string" | "char" | "byte" | "nothing" | "null";
@@ -34,6 +34,14 @@ export interface NamedT { k: "named"; name: string; args: Ty[] }
 export interface RefT { k: "ref"; inner: Ty; mut: boolean }
 export interface RawT { k: "raw"; inner: Ty }
 export interface SharedT { k: "shared"; inner: Ty }
+/**
+ * `weak(T)` — a reference that does not keep its target alive (M3).
+ *
+ * Refcounting cannot free a cycle, and this is the documented way to break
+ * one: the compiler warns when a `shared` type can reach itself, and a
+ * `weak` edge is not followed when working that out.
+ */
+export interface WeakT { k: "weak"; inner: Ty }
 export interface TaskT { k: "task"; inner: Ty }
 export interface ChanT { k: "chan"; inner: Ty }
 export interface AtomicT { k: "atomic"; inner: Ty }
@@ -162,6 +170,9 @@ export function isCopyable(t: Ty, structFields?: (n: string) => Ty[] | undefined
     case "prim": return p.name !== "string";
     case "range": case "cap": case "type": return true;
     case "opt": return isCopyable(p.inner, structFields);
+    // Copying a `shared` makes another owner rather than moving the one
+    // that exists (M3), and a `weak` owns nothing at all.
+    case "shared": case "weak": return true;
     case "tuple": return p.elems.every((e) => isCopyable(e, structFields));
     case "named": {
       const fs = structFields?.(p.name);
@@ -198,7 +209,7 @@ function occurs(v: VarT, t: Ty): boolean {
 
 export function childTypes(t: Ty): Ty[] {
   switch (t.k) {
-    case "opt": case "ref": case "raw": case "shared":
+    case "opt": case "ref": case "raw": case "shared": case "weak":
     case "task": case "chan": case "atomic":
       return [t.inner];
     case "list": case "array": case "set": return [t.elem];
@@ -245,6 +256,17 @@ export function unify(a: Ty, b: Ty): void {
   if (x.k === "opt") return unify(x.inner, y);
   if (y.k === "opt") throw new UnifyError(x, y, "this value may be null");
 
+  // `shared(T)` and `weak(T)` are handles on a T, so a plain T goes into one
+  // without ceremony -- `let cache: shared(Cache): Cache()` is the form the
+  // memory model documents (M3). They are not interchangeable with each
+  // other, because one keeps the value alive and the other does not.
+  if (x.k === "shared" && y.k === "shared") return unify(x.inner, y.inner);
+  if (x.k === "weak" && y.k === "weak") return unify(x.inner, y.inner);
+  if (x.k === "shared") return unify(x.inner, y);
+  if (y.k === "shared") return unify(y, x);
+  if (x.k === "weak") return unify(x.inner, y);
+  if (y.k === "weak") return unify(y, x);
+
   // A foreign scalar and its Halka counterpart cross the boundary implicitly (#35).
   if (x.k === "cty" && y.k !== "cty") {
     if (cBoundaryCompatible(x, y)) return;
@@ -279,7 +301,8 @@ export function unify(a: Ty, b: Ty): void {
     }
     case "ref": return unify(x.inner, (y as RefT).inner);
     case "raw": return unify(x.inner, (y as RawT).inner);
-    case "shared": return unify(x.inner, (y as SharedT).inner);
+    // `shared` and `weak` are settled above, where a plain T is allowed to
+    // widen into one; by here they cannot reach this switch.
     case "task": return unify(x.inner, (y as TaskT).inner);
     case "chan": return unify(x.inner, (y as ChanT).inner);
     case "atomic": return unify(x.inner, (y as AtomicT).inner);
@@ -336,6 +359,7 @@ export function instantiate(t: Ty, subst = new Map<string, Ty>()): Ty {
     case "ref": return { k: "ref", inner: instantiate(p.inner, subst), mut: p.mut };
     case "raw": return { k: "raw", inner: instantiate(p.inner, subst) };
     case "shared": return { k: "shared", inner: instantiate(p.inner, subst) };
+    case "weak": return { k: "weak", inner: instantiate(p.inner, subst) };
     case "task": return { k: "task", inner: instantiate(p.inner, subst) };
     case "chan": return { k: "chan", inner: instantiate(p.inner, subst) };
     case "atomic": return { k: "atomic", inner: instantiate(p.inner, subst) };
@@ -374,6 +398,7 @@ export function show(t: Ty): string {
     case "ref": return `&${p.mut ? "mut " : ""}${show(p.inner)}`;
     case "raw": return `raw *${show(p.inner)}`;
     case "shared": return `shared(${show(p.inner)})`;
+    case "weak": return `weak(${show(p.inner)})`;
     case "task": return `task(${show(p.inner)})`;
     case "chan": return `channel(${show(p.inner)})`;
     case "atomic": return `atomic(${show(p.inner)})`;

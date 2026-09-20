@@ -102,6 +102,24 @@ name matches anything, `null` included, so it ends the chain and a following
 disagreed with the interpreter on exactly the case the arm exists for. An
 optional of a struct or enum is refused rather than mis-ordered in C.
 
+**M3 (`shared(T)`) is checked.** Three of its type constructors did not
+parse at all: `shared`, `mutex` and `rwmutex` were in the type system's
+`toTy` and missing from the parser's list of type-constructor names, so
+`let cache: shared(Cache): Cache()` -- the memory model's own example --
+was read as an assignment of the expression `shared(Cache)` and choked on
+the second `:`. Registering the names fixed all three, and `weak(T)` needed
+no grammar at all for the same reason: it is a name in existing
+`name(args)` syntax, not new syntax.
+
+`shared` and `weak` now read through to what they hold and are copied
+rather than moved, which is the whole point -- several owners of one value,
+where a plain struct is a move error. And the cycle warning (W1010) is in:
+a type that can reach itself through a `shared` edge is named at its
+declaration, while a `weak` edge stops the walk, so the escape hatch
+actually does something. The runtime half is not done: the interpreter is
+garbage-collected and needs no counting, and the backend refuses `shared`
+by name rather than compiling it without one.
+
 **Incremental builds** skip work that provably has not changed. Not
 separate compilation: R23.5 links every module into one unit before any C
 is emitted, which is what lets generics monomorphise and names be rewritten

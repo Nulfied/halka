@@ -310,6 +310,7 @@ export class Inferencer {
           case "channel": return { k: "chan", inner: args[0] ?? fresh() };
           case "task": return { k: "task", inner: args[0] ?? fresh() };
           case "shared": return { k: "shared", inner: args[0] ?? fresh() };
+          case "weak": return { k: "weak", inner: args[0] ?? fresh() };
           case "atomic": return { k: "atomic", inner: args[0] ?? fresh() };
           case "mutex": return { k: "mutex", rw: false };
           case "rwmutex": return { k: "mutex", rw: true };
@@ -927,7 +928,11 @@ export class Inferencer {
   }
 
   private inferMember(e: A.MemberExpr, scope: Scope): Ty {
-    const ot = prune(this.infer(e.obj, scope));
+    let ot = prune(this.infer(e.obj, scope));
+
+    // A `shared` handle reads through to what it holds: the point of M3 is
+    // several owners of one value, not a wrapper to unpack at every use.
+    while (ot.k === "shared" || ot.k === "weak") ot = prune(ot.inner);
 
     if (ot.k === "opt") {
       this.err("E0461", `\`${e.name}\` cannot be read from ${show(ot)} — it may be null`, e.span, {

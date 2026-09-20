@@ -1,0 +1,41 @@
+# M3 — `shared(T)` for genuine shared ownership.
+#
+# Ownership is single by default: binding a struct to a second name moves
+# it, and the first name is dead. `shared` is the opt-in escape from that,
+# for the cases where several owners really are needed — a cache, a graph,
+# an observer list. It reads through to what it holds, so a handle is not
+# something to unpack at every use.
+#
+# The cycle warning that goes with it (W1010) is checked separately, in the
+# reject suite, since this file must stay warning-free.
+Cache:
+    hits: int
+
+Counter:
+    n: int
+
+read(c: shared(Cache)): int,
+    give c.hits
+
+main(),
+    # Two owners of one value, which a plain struct would refuse.
+    let cache: shared(Cache): Cache(7),
+    let worker_copy: cache,
+    say cache.hits,
+    say worker_copy.hits,
+
+    # And passing one to a function does not move it away.
+    say read(cache),
+    say read(worker_copy),
+    say cache.hits,
+
+    # `weak` holds a handle without keeping the value alive; it reads the
+    # same way, and it is what breaks a reference cycle.
+    let counter: shared(Counter): Counter(3),
+    let observer: weak(Counter): counter,
+    say observer.n,
+
+    # A shared handle is copyable, so it can be rebound freely.
+    let again: cache,
+    let third: again,
+    say third.hits
