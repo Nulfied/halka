@@ -373,7 +373,6 @@ The locked syntax already reserves what this needs: `kernel`, `launch`, `device`
 - The full specification frozen, including semantics (not just syntax).
 - A conformance test suite any implementation can run.
 - Backwards-compatibility guarantee.
-- A public package registry to point `halka add` at (the client is done).
 - Debugger (DAP), profiler, coverage.
 - Documentation generator.
 
@@ -391,7 +390,7 @@ The locked syntax already reserves what this needs: `kernel`, `launch`, `device`
 | Editor extension | VS Code Marketplace, Open VSX | $0 |
 | Playground | Static page; the toolchain is already JavaScript | $0 |
 | Community | GitHub Discussions, Discord, Matrix | $0 |
-| Package registry | Static index on GitHub Pages, in its own public repo | $0 |
+| Package registry | Static index on GitHub Pages, at `/registry` | $0 |
 
 The only optional spend is a domain name (~$12/year). `nulfied.github.io`
 works until then.
@@ -402,10 +401,12 @@ Both of these are about repository *visibility*, and neither costs money as
 long as it is planned for:
 
 - **GitHub Pages needs a public repository** on GitHub Free; it is a paid
-  feature for private ones. The site and the package registry therefore live
-  in their own public repository, which is why `DEFAULT_REGISTRY` points at
-  `nulfied.github.io/halka-registry` rather than at this repo. The compiler
-  itself can stay private for as long as it wants to.
+  feature for private ones. This repository is public, so the site and the
+  registry are served from its `docs/` directory and `DEFAULT_REGISTRY`
+  points at `nulfied.github.io/halka/registry`. Were the compiler ever to
+  go private, the registry would move to a public repository of its own and
+  nothing but that one constant would change — a registry is a directory of
+  files, and clients only know its URL.
 - **Actions minutes are metered on private repositories** (2,000/month on
   Free) and unmetered on public ones. Every job here runs on
   `ubuntu-latest`, which bills at 1x — Windows would be 2x and macOS 10x —

@@ -1,0 +1,5 @@
+package:
+    name: csv,
+    version: 0.1.0,
+    license: MIT OR Apache-2.0,
+    description: Reading and writing comma-separated values, with the quoting rules (RFC 4180)

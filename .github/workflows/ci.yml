@@ -40,7 +40,27 @@ jobs:
 
       - name: Check that everything is formatted
         working-directory: compiler
-        run: node bin/halka.mjs fmt --check ../examples ../stdlib test/cases test/native
+        run: node bin/halka.mjs fmt --check ../examples ../stdlib ../packages test/cases test/native
+
+      # The registry's index is derived from the archives beside it, so an
+      # index edited by hand -- or a submission whose index was never
+      # rebuilt -- is a registry that lies about its own contents.
+      - name: Check the registry index matches its archives
+        working-directory: compiler
+        run: node bin/halka.mjs pkg index ../docs/registry --check
+
+      - name: Check STATUS.md's counts match its own table
+        if: runner.os == 'Linux'
+        run: node tools/status-counts.mjs --check
+
+      - name: Run each package's own tests
+        working-directory: compiler
+        shell: bash
+        run: |
+          for d in ../packages/*/; do
+            echo "-- $(basename "$d")"
+            HALKA_PATH="$(cd "$d/src" && pwd)" node bin/halka.mjs test "$d/test" || exit 1
+          done
 
       - name: Compile the benchmarks natively and check they agree
         working-directory: compiler

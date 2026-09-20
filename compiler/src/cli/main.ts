@@ -1,6 +1,6 @@
 // The `halka` command-line driver.
 
-import { readFileSync, existsSync, writeFileSync, readdirSync, statSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, readdirSync, statSync, mkdirSync, rmSync } from "node:fs";
 import { resolve, dirname, join, basename, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
@@ -41,7 +41,9 @@ import {
 } from "../pkg/project.ts";
 import { formatManifest, type Dependency } from "../pkg/manifest.ts";
 import { compareVersions, formatVersion, parseReq, parseVersion } from "../pkg/semver.ts";
-import { Registry, cacheRoot, cachedPackages, clearIndexCache, registryRoot } from "../pkg/registry.ts";
+import { Registry, cacheRoot, cachedPackages, clearIndexCache, registryRoot, sha256 } from "../pkg/registry.ts";
+import { packProject } from "../pkg/pack.ts";
+import { buildRegistry, checkRegistry } from "../pkg/registry-build.ts";
 
 export { VERSION } from "../version.ts";
 import { VERSION } from "../version.ts";
@@ -798,7 +800,10 @@ async function cmdTree(_args: string[]): Promise<void> {
 }
 
 function cmdPkg(args: string[]): void {
-  if (args[0] !== "cache") die("usage: halka pkg cache [--clear]");
+  if (args[0] === "pack") return cmdPack(args.slice(1));
+  if (args[0] === "publish") return cmdPublish(args.slice(1));
+  if (args[0] === "index") return cmdIndex(args.slice(1));
+  if (args[0] !== "cache") die("usage: halka pkg <cache|pack|publish|index>");
   if (args.includes("--clear")) {
     clearIndexCache();
     process.stdout.write(`cleared the index cache under ${cacheRoot()}` + NL);
@@ -817,6 +822,133 @@ function cmdPkg(args: string[]): void {
   for (const p of packages.sort((a, b) => (a.name + a.version < b.name + b.version ? -1 : 1))) {
     process.stdout.write(`  ${p.name} ${p.version}` + NL);
   }
+}
+
+/**
+ * `halka pkg pack` — build the archive and stop, so its contents can be
+ * looked at before anyone commits to publishing them.
+ */
+function cmdPack(args: string[]): void {
+  const dir = args.find((a) => !a.startsWith("-") && a !== argAfter(args, "-o")) ?? ".";
+  let packed;
+  try {
+    packed = packProject(resolve(dir));
+  } catch (e) {
+    die(e instanceof Error ? e.message : String(e));
+  }
+  const name = `${packed.manifest.name}-${formatVersion(packed.manifest.version)}.tar.gz`;
+  const out = argAfter(args, "-o") ?? name;
+  writeFileSync(out, packed.archive);
+  for (const f of packed.files) process.stdout.write(`  ${f}` + NL);
+  process.stdout.write(
+    `${packed.files.length} files, ${(packed.archive.length / 1024).toFixed(1)} KiB -> ${out}` + NL);
+  process.stdout.write(`sha256 ${sha256(packed.archive)}` + NL);
+}
+
+/**
+ * `halka pkg publish` — pack, then put the archive where the registry can
+ * serve it.
+ *
+ * There is no upload endpoint and no account, because the registry is a
+ * directory of files (P5). Against a local one this copies the archive in
+ * and rebuilds the index; against the public one, which is a git
+ * repository, it says what to commit. Either way the thing that makes a
+ * version real is a file appearing, and the hash of that file is what every
+ * lockfile pins.
+ */
+function cmdPublish(args: string[]): void {
+  const dir = args.find((a) => !a.startsWith("-")) ?? ".";
+  let packed;
+  try {
+    packed = packProject(resolve(dir));
+  } catch (e) {
+    die(e instanceof Error ? e.message : String(e));
+  }
+  const version = formatVersion(packed.manifest.version);
+  const rel = `pkg/${packed.manifest.name}/${version}.tar.gz`;
+  const root = registryRoot();
+  const local = /^https?:\/\//.test(root) ? null : root.startsWith("file:")
+    ? new URL(root).pathname.replace(/^\/([A-Za-z]:)/, "$1") : root;
+
+  if (local === null) {
+    const name = `${packed.manifest.name}-${version}.tar.gz`;
+    writeFileSync(name, packed.archive);
+    process.stdout.write(`packed ${name}  (sha256 ${sha256(packed.archive)})` + NL + NL);
+    process.stdout.write(`${root} is served from a git repository, so publishing is a pull request:` + NL);
+    process.stdout.write(`  1. add the archive as ${rel}` + NL);
+    process.stdout.write(`  2. run \`halka pkg index <registry> --write\` to rebuild the index` + NL);
+    process.stdout.write(`  3. open the pull request; CI rebuilds the index and checks it matches` + NL + NL);
+    process.stdout.write(`A published version is never replaced — its hash is in other people's lockfiles.` + NL);
+    return;
+  }
+
+  const target = join(local, rel);
+  if (existsSync(target)) {
+    die(`${packed.manifest.name} ${version} is already published.\n` +
+      `  A version is immutable: other people's lockfiles record its hash. Publish ${bumpHint(version)} instead.`);
+  }
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, packed.archive);
+  const built = buildRegistry(local);
+  if (built.problems.length) {
+    rmSync(target, { force: true });
+    die(`the registry refused it, and nothing was written:\n  ${built.problems.join("\n  ")}`);
+  }
+  for (const [file, text] of built.files) {
+    mkdirSync(dirname(join(local, file)), { recursive: true });
+    writeFileSync(join(local, file), text);
+  }
+  process.stdout.write(`published ${packed.manifest.name} ${version} to ${local}` + NL);
+  process.stdout.write(`  ${rel}  (sha256 ${sha256(packed.archive)})` + NL);
+  process.stdout.write(`  index/${packed.manifest.name}.json rebuilt` + NL);
+}
+
+function bumpHint(version: string): string {
+  const parts = version.split(".");
+  const patch = Number(parts[2] ?? 0);
+  return Number.isFinite(patch) ? `${parts[0]}.${parts[1]}.${patch + 1}` : "a new version";
+}
+
+/**
+ * `halka pkg index <dir>` — rebuild a registry's index from its archives,
+ * or with `--check` verify that what is committed matches them.
+ */
+function cmdIndex(args: string[]): void {
+  const dir = resolve(args.find((a) => !a.startsWith("-")) ?? ".");
+  const built = buildRegistry(dir);
+  if (built.problems.length) {
+    for (const p of built.problems) process.stderr.write(`  ${p}` + NL);
+    die(`${built.problems.length} problem(s) in ${dir}`);
+  }
+
+  const versions = built.packages.reduce((n, p) => n + p.versions.length, 0);
+  if (args.includes("--check")) {
+    const wrong = checkRegistry(dir, built);
+    if (wrong.length) {
+      for (const w of wrong) process.stderr.write(`  ${w}` + NL);
+      die("the committed index does not match the archives");
+    }
+    process.stdout.write(`the index matches the archives: ${built.packages.length} packages, ${versions} versions` + NL);
+    return;
+  }
+  if (!args.includes("--write")) {
+    process.stdout.write(`${built.packages.length} packages, ${versions} versions (nothing written; pass --write)` + NL);
+    for (const p of built.packages) {
+      process.stdout.write(`  ${p.name}  ${p.versions.map((v) => formatVersion(v.version)).join(", ")}` + NL);
+    }
+    return;
+  }
+  for (const [file, text] of built.files) {
+    mkdirSync(dirname(join(dir, file)), { recursive: true });
+    writeFileSync(join(dir, file), text);
+  }
+  process.stdout.write(`wrote ${built.files.size} index file(s) for ${versions} versions` + NL);
+}
+
+/** The value after a flag, for the handful of flags that take one. */
+function argAfter(args: string[], flag: string): string | undefined {
+  const at = args.indexOf(flag);
+  return at >= 0 ? args[at + 1] : undefined;
 }
 
 const HELP = `Halka ${VERSION} — the Halka programming language
@@ -873,6 +1005,16 @@ packages (spec/PACKAGES.md):
   update [name]          re-resolve, ignoring the lockfile's pins
   tree                   show the resolved dependency graph
   pkg cache [--clear]    show or clear the package cache
+  pkg pack [dir]         build the publishable archive and stop
+                           -o <path>  where to write it
+  pkg publish [dir]      pack, then put it in the registry. Against a
+                           local registry it is written and the index
+                           rebuilt; against the public one it prints the
+                           pull request to open. A published version is
+                           never replaced
+  pkg index <dir>        rebuild a registry's index from its archives
+                           --write    write the index files
+                           --check    verify the committed index matches
 
 environment:
   HALKA_GRANTS=A,B       grant capabilities to the program (#45)

@@ -1,0 +1,12 @@
+{
+  "name": "csv",
+  "versions": [
+    {
+      "version": "0.1.0",
+      "sha256": "10dbb4ed5aee4573e74a2b0c851ba9abb4ca34ccd70d6758f5cdc9995603cc3f",
+      "deps": {},
+      "description": "Reading and writing comma-separated values, with the quoting rules (RFC 4180)",
+      "license": "MIT OR Apache-2.0"
+    }
+  ]
+}

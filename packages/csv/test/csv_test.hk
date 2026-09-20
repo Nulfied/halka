@@ -1,0 +1,79 @@
+### Tests for the csv package.
+
+Every case here is one of the rules that makes CSV harder than splitting on
+commas. The round-trip at the end is the one that matters most: whatever
+`parse` accepts, `format` must be able to write back out unchanged.
+###
+
+from testing import section, check_equal, check
+import csv
+
+# A small helper: the rows of a document, or a failure the test can see.
+rows_of(text),
+    match csv.parse(text),
+        Ok(rows),
+            give rows,
+        Error(message),
+            panic "expected a parse, got: {message}"
+
+section "the easy shape"
+check_equal(rows_of("a,b\nc,d\n"), [["a", "b"], ["c", "d"]], "two rows")
+check_equal(rows_of("a,b\nc,d"), [["a", "b"], ["c", "d"]], "no trailing newline")
+check_equal(rows_of("a"), [["a"]], "one field")
+check_equal(rows_of(""), [], "nothing at all")
+
+section "empty fields are fields"
+check_equal(rows_of("a,,c"), [["a", "", "c"]], "an empty field in the middle")
+check_equal(rows_of(",a"), [["", "a"]], "an empty field at the start")
+check_equal(rows_of("a,"), [["a", ""]], "an empty field at the end")
+check_equal(rows_of("\n"), [[""]], "a line with nothing on it")
+
+section "quoting"
+check_equal(rows_of("\"a\",b"), [["a", "b"]], "a quoted field")
+check_equal(rows_of("\"a,b\",c"), [["a,b", "c"]], "a separator inside quotes")
+check_equal(rows_of("\"a\"\"b\""), [["a\"b"]], "a doubled quote is one quote")
+check_equal(
+    rows_of("\"line\nbreak\",x"),
+    [["line\nbreak", "x"]],
+    "a newline inside quotes"
+)
+check_equal(rows_of("\"\""), [[""]], "an empty quoted field")
+
+section "line endings"
+check_equal(rows_of("a\r\nb\r\n"), [["a"], ["b"]], "CRLF ends one record")
+check_equal(rows_of("a\rb"), [["a"], ["b"]], "a bare CR ends one too")
+
+section "what is refused"
+check(csv.parse("\"unclosed") is error, "an unterminated quote is an Error")
+check(csv.parse("a,b") is ok, "a sound document is not")
+
+section "other separators"
+match csv.parse("a\tb\tc", "\t"),
+    Ok(rows),
+        check_equal(rows, [["a", "b", "c"]], "tab separated"),
+    Error(message),
+        panic "expected a parse, got: {message}"
+section "writing"
+check_equal(csv.format([["a", "b"], ["c", "d"]]), "a,b\nc,d", "the plain case")
+check_equal(csv.format([["a,b"]]), "\"a,b\"", "a separator forces quotes")
+check_equal(csv.format([["a\"b"]]), "\"a\"\"b\"", "so does a quote, doubled")
+check_equal(csv.format([["a\nb"]]), "\"a\nb\"", "and a newline")
+check_equal(csv.format([["plain"]]), "plain", "and nothing else does")
+
+section "round trip"
+let awkward: [["a,b", "c\"d"], ["e\nf", ""], ["", "plain"]]
+check_equal(rows_of(csv.format(awkward)), awkward, "format then parse is the identity")
+
+section "records"
+match csv.parse_records("name,age\nada,36\ngrace,45\n"),
+    Ok(records),
+        check_equal(records.length, 2, "one record per row after the header"),
+        check_equal(records[0]["name"], "ada", "fields are keyed by the header"),
+        check_equal(records[1]["age"], "45", "and so is the second row"),
+    Error(message),
+        panic "expected records, got: {message}"
+match csv.parse_records("a,b,c\n1\n"),
+    Ok(records),
+        check_equal(records[0]["c"], "", "a short row is filled, not dropped"),
+    Error(message),
+        panic "expected records, got: {message}"

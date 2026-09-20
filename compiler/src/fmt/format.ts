@@ -46,7 +46,7 @@ class Formatter {
     );
     pending.forEach((c, i) => {
       this.used.add(c);
-      for (const l of c.text.split("\n")) this.push(depth, l.trim());
+      for (const l of commentLines(c, depth)) this.out.push(l);
       // Keep a blank line only where the author left one. What follows is the
       // next comment in this run, or — for the last one — the statement.
       const nextLine = pending[i + 1]?.span.start.line ?? line;
@@ -68,7 +68,7 @@ class Formatter {
     for (const c of this.comments) {
       if (this.used.has(c)) continue;
       this.used.add(c);
-      for (const l of c.text.split("\n")) this.push(depth, l.trim());
+      for (const l of commentLines(c, depth)) this.out.push(l);
     }
   }
 
@@ -595,6 +595,34 @@ function looseness(e: A.Expr): number {
     case "IsExpr": return PREC_IS;
     default: return Number.POSITIVE_INFINITY;
   }
+}
+
+/**
+ * A comment's lines, ready to emit at `depth`.
+ *
+ * A `#` comment is one line and is simply trimmed. A `###` block is not:
+ * its body is prose, and prose holds indented things -- an example, a list,
+ * a table. Trimming every line flattened all of it, so a doc comment
+ * carrying a code sample came back out with the sample's shape gone.
+ * Nothing caught that, because a comment is not in the tree: neither the
+ * reparse check nor the fuzzer can see inside one.
+ *
+ * The block's own least-indented line sets the left margin, and everything
+ * keeps its offset from that.
+ */
+function commentLines(c: Comment, depth: number): string[] {
+  const pad = INDENT.repeat(depth);
+  const raw = c.text.split("\n");
+  if (!c.block || raw.length <= 2) return raw.map((l) => (l.trim() ? pad + l.trim() : ""));
+
+  const body = raw.slice(1, -1);
+  const indents = body.filter((l) => l.trim()).map((l) => l.length - l.trimStart().length);
+  const margin = indents.length ? Math.min(...indents) : 0;
+  return [
+    pad + raw[0]!.trim(),
+    ...body.map((l) => (l.trim() ? (pad + l.slice(margin)).trimEnd() : "")),
+    pad + raw[raw.length - 1]!.trim(),
+  ];
 }
 
 function escape(s: string): string {

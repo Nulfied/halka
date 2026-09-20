@@ -1,0 +1,20 @@
+### A doc comment whose body has shape.
+
+The formatter used to trim every line of a block comment, which flattened
+anything indented inside one: an example, a list, a table. A comment is not
+in the tree, so neither the reparse check nor the fuzzer can see inside one.
+Only a case like this can.
+
+    let indented: "four spaces"
+        let deeper: "eight"
+
+  - a list item
+    continued underneath it
+
+The blank line above and the one below are part of it too.
+
+###
+say "after the block"
+
+# An ordinary comment is still just trimmed.
+say "end"

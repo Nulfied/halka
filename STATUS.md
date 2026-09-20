@@ -4,9 +4,14 @@ The ecosystem plan has 55 areas. This file says, for each one, what actually
 exists today. It is the answer to "is that implemented or is that planned?",
 and it is updated in the same commit as the work it describes.
 
+The counts below are derived from the table by `tools/status-counts.mjs`,
+which CI runs: they were hand-kept once and drifted six rows out of date.
+They cover 54 areas, because #54 is the organising principle and has no
+state to be in.
+
 **Legend** — ✅ done · 🟡 partial · ⬜ not started · 🔗 belongs in the ecosystem, not the core
 
-Counts today: **16 done · 12 partial · 23 not started · 4 ecosystem**
+Counts today: **16 done · 19 partial · 13 not started · 6 ecosystem**
 
 ---
 
@@ -60,7 +65,7 @@ Counts today: **16 done · 12 partial · 23 not started · 4 ecosystem**
 | 28 | Testing ecosystem | ✅ | `halka test` for user projects; 160 internal tests across spec conformance, rejection, golden output, formatter, native-vs-interpreter equivalence, real C and Python FFI calls, ownership, and a zero-leak assertion on every compiled binary. |
 | 29 | Build system | 🟡 | `halka build` compiles a whole program — imported modules and installed packages included — to one native binary, by linking every module into one unit before emitting C (R23.5). `halka.pkg` defines a project. No incremental compilation (whole-program by design for now) and no cross-compilation yet. |
 | 30 | Package management | ✅ | `halka init/add/remove/install/update/tree`. `halka.pkg` manifests, semver with caret and exact requirements, Minimal Version Selection, `halka.lock` with SHA-256 per archive, a per-user cache, and path dependencies. No install scripts of any kind. [spec/PACKAGES.md](spec/PACKAGES.md). |
-| 31 | Package registry | 🟡 | The client works against any static registry (`index/<name>.json` + `pkg/<name>/<ver>.tar.gz`), which is a directory or a URL via `HALKA_REGISTRY`. Archives are verified by hash before extraction and rejected if they contain links or escaping paths. No public registry is published yet. |
+| 31 | Package registry | ✅ | Live at `nulfied.github.io/halka/registry`, and `HALKA_REGISTRY` points at any other static tree or local directory. `halka pkg pack` builds an archive reproducibly, `publish` puts it in a registry, `index` derives every `index/<name>.json` from the archives themselves so the two cannot disagree — CI rebuilds and checks it. Archives are verified by hash before extraction and rejected if they hold links or escaping paths. Publishing over an existing version is refused: lockfiles pin its hash. |
 | 32 | CLI | ✅ | `run build check fmt test repl lsp ast tokens toolchain`. |
 | 33 | IDE & editor integration | ✅ | VS Code extension, TextMate grammar, Tree-sitter grammar, and setup for Neovim, Helix, Zed, Sublime. |
 | 50 | Compiler API | 🟡 | `halka ast --json` exposes the canonical AST. No stable library API, no IR access, no plugins. |

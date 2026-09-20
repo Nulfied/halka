@@ -41,6 +41,7 @@ import { runKernelTests } from "./kernel.ts";
 import { suiteCross } from "./cross.ts";
 import { suiteIncremental } from "./incremental.ts";
 import { suiteFuzz, shapeOf } from "./fuzz.ts";
+import { suiteRegistry } from "./registry.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -588,6 +589,7 @@ suiteLink({ ok: (n) => ok("link", n), bad: (n, d) => bad("link", n, d) }, findTo
 suiteCross(ok, bad);
 suiteIncremental(ok, bad);
 suiteFuzz(ok, bad);
+suiteRegistry(ok, bad);
 await runKernelTests(ok, bad);
 const ms = Date.now() - t0;
 

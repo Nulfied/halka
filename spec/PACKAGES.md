@@ -165,7 +165,8 @@ The lockfile is committed. It is the answer to "it works on my machine".
 
 ## P5 — The registry is a static index
 
-The default registry is a static file tree, served by GitHub Pages at no cost:
+The default registry is **https://nulfied.github.io/halka/registry** — a
+static file tree, served by GitHub Pages at no cost:
 
 ```
 <registry>/index/<name>.json      the versions of one package
@@ -204,6 +205,44 @@ deps:
 A path dependency is never fetched, never hashed and never published; a
 package with one cannot be uploaded to the registry.
 
+### The index is derived, never maintained
+
+Every index file is built from the archives beside it, by reading each
+one's `halka.pkg` and hashing its bytes. Nothing about a published version
+is recorded anywhere else, so an index cannot contradict what a client will
+actually download. `halka pkg index <dir> --write` rebuilds one and
+`--check` verifies it, which is what CI runs on every change.
+
+### Publishing
+
+There is no account, no token and no upload endpoint. A version becomes
+real when a file appears at `pkg/<name>/<version>.tar.gz`, and against the
+public registry — a directory in a git repository — the pull request that
+adds it is the review.
+
+```
+halka pkg pack       build the archive and stop, to look at what is in it
+halka pkg publish    pack, then publish: into a local registry directly,
+                       or, for the public one, by saying what to commit
+```
+
+An archive holds `halka.pkg`, `README`, `LICENSE`, `CHANGELOG` and the
+`.hk` files under `src/`. The list says what goes in rather than what stays
+out: an ignore list is wrong the first time someone adds a directory nobody
+anticipated, and a published archive cannot be withdrawn.
+
+Archives are written reproducibly — entries sorted, no modification times,
+no owner, fixed permissions, and the platform stripped from the gzip
+header — so the same source packed on another machine gives the same bytes
+and therefore the same hash.
+
+### A published version is immutable
+
+It is never replaced and never removed. A lockfile records its SHA-256 and
+builds pinned to it must keep working, so a mistake is corrected by
+publishing a new version, not by changing an old one. Publishing over an
+existing version is refused.
+
 ---
 
 ## P6 — Where packages land
@@ -226,7 +265,11 @@ write outside its own directory.
 
 ## Status
 
-Implemented: P1 manifest, P2 versions and ranges, P3 resolution, P4 lockfile,
-P6 cache layout and archive safety. P5's fetch path works against any static
-registry; no public registry is published yet, so today's useful
-configurations are path dependencies and a self-hosted index.
+Implemented: all of it. P1 manifest, P2 versions and ranges, P3 resolution,
+P4 lockfile, P5 registry — fetch, pack, publish and index — and P6 cache
+layout and archive safety.
+
+The public registry is live at https://nulfied.github.io/halka/registry and
+serves its first package. `HALKA_REGISTRY` points the toolchain at any
+other static tree, including a local directory, which is what the tests
+run against.

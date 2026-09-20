@@ -1,0 +1,133 @@
+### csv — reading and writing comma-separated values (RFC 4180).
+
+CSV looks like splitting on commas until the first field contains one. The
+rules that make it awkward are the ones this handles: a field may be quoted,
+a quoted field may contain the separator, a newline, or a quote written
+twice, and records may end with either LF or CRLF.
+
+    from csv import parse, format
+
+    match parse("name,age\nada,36\n"),
+        Ok(rows),
+            say rows[1][0],
+        Error(message),
+            say "bad csv: {message}"
+
+Parsing is fallible, so it gives a `Result` (#22, #23). Formatting is not.
+###
+
+# Parse `text` into rows of fields.
+#
+# A malformed document -- today that means a quoted field nobody closed --
+# gives an Error rather than a guess, because the guess would be a row count
+# that is wrong in a way nothing downstream can detect.
+parse(text: string, sep: string: ","),
+    let rows: [],
+    let row: [],
+    let field: "",
+    let chars: text.chars(),
+    let n: chars.length,
+    let i: 0,
+    let quoted: false,
+
+    # Whether anything has been seen since the last record ended. Without it
+    # a trailing newline -- which nearly every file has -- would add an empty
+    # row at the end.
+    let pending: false,
+
+    while i < n,
+        let ch: "{chars[i]}",
+        if quoted,
+            if ch == "\"",
+                if i + 1 < n and "{chars[i + 1]}" == "\"",
+                    # A doubled quote inside a quoted field is one quote.
+                    field: field + "\"",
+                    i: i + 2,
+                else,
+                    quoted: false,
+                    i: i + 1,
+            else,
+                field: field + ch,
+                i: i + 1,
+        else if ch == "\"" and field == "",
+            quoted: true,
+            pending: true,
+            i: i + 1,
+        else if ch == sep,
+            row.push(field),
+            field: "",
+            pending: true,
+            i: i + 1,
+        else if ch == "\n" or ch == "\r",
+            row.push(field),
+            field: "",
+            rows.push(row),
+            row: [],
+            pending: false,
+
+            # CRLF ends one record, not two.
+            if ch == "\r" and i + 1 < n and "{chars[i + 1]}" == "\n",
+                i: i + 2,
+            else,
+                i: i + 1,
+        else,
+            field: field + ch,
+            pending: true,
+            i: i + 1,
+    if quoted,
+        give Error("a quoted field was never closed"),
+    # A document that does not end in a newline still ends in a record.
+    if pending or field != "",
+        row.push(field),
+        rows.push(row),
+    give Ok(rows)
+
+# Write rows back out. The result parses back to what went in.
+format(rows, sep: string: ","),
+    let lines: [],
+    for row in rows,
+        let cells: [],
+        for field in row,
+            cells.push(quote(field, sep)),
+        lines.push(cells.join(sep)),
+    give lines.join("\n")
+
+# Quote a field only when leaving it bare would change what it means.
+quote(field: string, sep: string: ","),
+    let special: field.contains(sep) or field.contains("\""),
+    let needs: special or field.contains("\n") or field.contains("\r"),
+    if not needs,
+        give field,
+    give "\"" + field.replace("\"", "\"\"") + "\""
+
+# The rows of `text` as maps, taking the first row as the header.
+#
+# This is what most callers of a CSV reader actually want, and doing it by
+# hand is where the off-by-one lives: a row shorter than the header is
+# filled with empty strings rather than being silently dropped.
+parse_records(text: string, sep: string: ","),
+    match parse(text, sep),
+        Error(message),
+            give Error(message),
+        Ok(rows),
+            if rows.length == 0,
+                give Ok([]),
+            let header: rows[0],
+            let out: [],
+            for i in 1..rows.length,
+                let row: rows[i],
+
+                # Seeded with the first column rather than started empty:
+                # Halka has no spelling for an empty map literal, and `[]`
+                # is a list.
+                let record: [header[0]: cell(row, 0)],
+                for c in 1..header.length,
+                    record[header[c]]: cell(row, c),
+                out.push(record),
+            give Ok(out)
+
+# The `c`th field of `row`, or "" when the row stops short of it.
+cell(row, c: int),
+    if c < row.length,
+        give row[c],
+    give ""
