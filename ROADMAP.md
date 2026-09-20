@@ -102,6 +102,20 @@ name matches anything, `null` included, so it ends the chain and a following
 disagreed with the interpreter on exactly the case the arm exists for. An
 optional of a struct or enum is refused rather than mis-ordered in C.
 
+**Bounds checks survive `--release`.** They used to be dropped wholesale,
+so a release binary had no memory safety -- an odd position for a language
+whose pitch is being as fast as C *without* that pain. Three changes, in
+the order they mattered. The check was a *function call* per element, which
+also stopped the loop vectorising; inlining it to one unsigned compare and
+a cold branch took a checked build from 5.9x an unchecked one to 1.9x.
+Then `--release` started keeping them. Then the idiomatic loop stopped
+needing them at all: `for i in 0..len(xs),` bounds `i` for the body, so
+`xs[i]` inside is emitted unchecked, which is worth 1.7x on a proven loop.
+The analysis is deliberately conservative -- anything that could resize the
+list, rebind either name, or hand the list to code it cannot see gives up --
+because being wrong reintroduces exactly the read the check exists to stop.
+`--no-bounds-checks` is the explicit opt-out.
+
 **`unsafe:` is checked statically** (#46). The interpreter had always
 enforced it, but only when the line ran: a raw dereference down a branch
 nobody took was never reported, `halka check` passed programs `halka run`

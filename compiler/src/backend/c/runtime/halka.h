@@ -40,7 +40,15 @@ typedef bool     hk_bool;
 
 /* Aborts with a message and the Halka source location, like an unrecoverable
  * error in any language. Recoverable failure is Result<T> (#22, #23). */
-void hk_panic(const char *msg, const char *file, hk_int line);
+/* `exit`s, so the optimiser can treat the failing branch as unreachable
+   and keep it out of the hot path. */
+#if defined(_MSC_VER)
+#  define HK_NORETURN __declspec(noreturn)
+#else
+#  define HK_NORETURN __attribute__((noreturn))
+#endif
+
+HK_NORETURN void hk_panic(const char *msg, const char *file, hk_int line);
 
 #define HK_PANIC(msg) hk_panic((msg), __FILE__, __LINE__)
 
@@ -189,9 +197,25 @@ void     hk_list_release(hk_list *l);
 hk_int   hk_list_check(hk_list *l, hk_int i, const char *file, hk_int line);
 
 /* Typed access. HK_AT is the unchecked form the optimiser emits once the
- * index is proven in range; HK_IDX is the checked form. */
+ * index is proven in range; HK_IDX is the checked form.
+ *
+ * The check is inline on purpose. It used to call `hk_list_check` for every
+ * element, which is a function call in the middle of the hot loop: it
+ * blocked vectorisation and made a checked build about six times slower
+ * than an unchecked one, which is why `--release` dropped the checks
+ * wholesale. Inlined, it is a single unsigned compare -- one that covers
+ * both ends at once, since a negative index wraps to a huge unsigned -- and
+ * a branch to a cold function that never returns. */
+HK_NORETURN void hk_list_oob(hk_list *l, hk_int i, const char *file, hk_int line);
+
+static inline hk_int hk_list_at(hk_list *l, hk_int i, const char *file, hk_int line) {
+  hk_int j = i < 0 ? i + l->len : i;   /* negative indices count from the end (#54) */
+  if ((unsigned long long)j >= (unsigned long long)l->len) hk_list_oob(l, i, file, line);
+  return j;
+}
+
 #define HK_AT(l, T, i)  (((T *)(l)->data)[(i)])
-#define HK_IDX(l, T, i) (((T *)(l)->data)[hk_list_check((l), (i), __FILE__, __LINE__)])
+#define HK_IDX(l, T, i) (((T *)(l)->data)[hk_list_at((l), (i), __FILE__, __LINE__)])
 
 #define HK_PUSH(l, T, v) do {                 \
     hk_list *hk__l = (l);                     \

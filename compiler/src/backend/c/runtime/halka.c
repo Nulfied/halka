@@ -31,7 +31,7 @@
 
 /* ---- diagnostics -------------------------------------------------------- */
 
-void hk_panic(const char *msg, const char *file, hk_int line) {
+HK_NORETURN void hk_panic(const char *msg, const char *file, hk_int line) {
   fflush(stdout);
   fprintf(stderr, "halka: %s\n  at %s:%lld\n", msg, file, (long long)line);
   fflush(stderr);
@@ -243,15 +243,15 @@ void hk_list_release(hk_list *l) {
   }
 }
 
+HK_NORETURN void hk_list_oob(hk_list *l, hk_int i, const char *file, hk_int line) {
+  char buf[96];
+  snprintf(buf, sizeof buf, "index %lld is out of range for length %lld",
+           (long long)i, (long long)l->len);
+  hk_panic(buf, file, line);
+}
+
 hk_int hk_list_check(hk_list *l, hk_int i, const char *file, hk_int line) {
-  hk_int j = i < 0 ? i + l->len : i;   /* negative indices count from the end (#54) */
-  if (j < 0 || j >= l->len) {
-    char buf[96];
-    snprintf(buf, sizeof buf, "index %lld is out of range for length %lld",
-             (long long)i, (long long)l->len);
-    hk_panic(buf, file, line);
-  }
-  return j;
+  return hk_list_at(l, i, file, line);
 }
 
 /* A list prints the way `inspect` prints it (#53): strings are quoted and

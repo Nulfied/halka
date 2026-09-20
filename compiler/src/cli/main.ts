@@ -315,7 +315,13 @@ function cmdBuild(args: string[]): void {
   const escapes = analyseEscapes(linked, inferred.types, inferred.structFields, owningParams, inferred.enumVariants);
 
   const { c, diags: emitDiags, links, needsPython } = emitC(linked, inferred.types,
-    emitOptionsFrom(inferred, { file: basename(file), release: flags.has("--release"), escapes, owningParams }));
+    emitOptionsFrom(inferred, {
+      file: basename(file),
+      release: flags.has("--release"),
+      uncheckedIndex: flags.has("--no-bounds-checks"),
+      escapes,
+      owningParams,
+    }));
   if (emitDiags.hasErrors) {
     report(emitDiags.items, sources);
     process.stderr.write(NL + "the native backend is still growing; `halka run` executes the whole language today." + NL);
@@ -780,7 +786,14 @@ usage: halka <command> [arguments]
 commands:
   run <file.hk>          run a program (reference interpreter)
   build <file.hk>        compile to a native binary via C99
-                           --release  optimise, drop overflow/bounds checks
+                           --release  optimise; bounds checks are kept
+                             unless the compiler can prove them
+                             unnecessary, so a release binary is still
+                             memory-safe
+                           --no-bounds-checks  drop them anyway, for code
+                             that has been measured and needs the last
+                             few percent. Out-of-range reads become
+                             undefined behaviour, as they are in C
                            --fast-math  let the C compiler reassociate
                              floating point, which is what lets it
                              vectorise a reduction. Results may differ

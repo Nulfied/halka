@@ -121,6 +121,12 @@ is about the language.
 **The arithmetic** — each implementation times its own compute region, so
 process start and library import are excluded. Best of 5:
 
+Every Halka row below was built with bounds checks dropped, which is what
+`--release` did when these were measured and what makes the comparison
+like-for-like: the hand-written C has no bounds checks either. That flag is
+now spelled `--no-bounds-checks`, because `--release` keeps the checks (see
+**Bounds checks** below).
+
 | implementation | compute | note |
 |---|---|---|
 | hand-written C, 1 thread | 76 ms | `/O2`, same compiler |
@@ -147,6 +153,31 @@ and it holds here.
 **The parallelism is real.** 74 ms to 12 ms is 6.2x on a 4-core machine
 with SMT, from adding a `parallel:` block around work that was already
 written. No GIL, no processes, no serialisation of results.
+
+### Bounds checks
+
+`--release` used to drop every bounds check, so a release binary had no
+memory safety at all — an odd position for a language whose pitch is being
+as fast as C *without* that pain. It keeps them now, and drops one only
+where the compiler can prove it unnecessary: `for i in 0..len(xs),` bounds
+`i` for the body, so `xs[i]` inside needs no check. On a proven loop that
+is worth 1.7x (74 ms against 128 ms summing a 2M-element list, measured
+back to back).
+
+This kernel does not benefit, because it indexes `x[xoff + j]` — computed,
+not the loop variable — and proving that needs symbolic reasoning the
+compiler does not do. So it pays for the checks, and the cost measured back
+to back on the same machine is **about 1.9x**. `--no-bounds-checks` gets the
+old codegen for code that has been measured and needs it.
+
+Two things worth separating. Most of that 1.9x was never the check itself:
+it was a *function call* per element, which also stopped the loop
+vectorising. Inlining the compare took the penalty from 5.9x to 1.9x before
+any elision existed. What is left is the branch and the lost vectorisation.
+
+The absolute numbers in the tables above were taken on a cool machine; the
+ratios in this section were measured back to back on a throttled one, which
+is why they are given as ratios.
 
 **With vectorisation enabled, Halka beats BLAS on this kernel** — 4 ms
 against 7 ms. That needs `--fast-math`, which is off by default and has to

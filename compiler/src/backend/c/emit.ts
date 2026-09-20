@@ -46,6 +46,12 @@ export interface EmitOptions {
   structFields?: Map<string, Ty[]>;
   /** Enum name -> variant -> payload types, from inference. */
   enumVariants?: Map<string, Map<string, { fields: Ty[]; names: string[] }>>;
+  /**
+   * Drop every bounds check, even the ones that were not proved safe. An
+   * explicit opt-out: `--release` keeps them now, because a release build
+   * that silently loses memory safety is not what this language is for.
+   */
+  uncheckedIndex?: boolean;
   /** Enum name -> type parameters. A generic enum gets a C type per use. */
   enumGenerics?: Map<string, string[]>;
   /**
@@ -981,6 +987,78 @@ export class CEmitter {
     return !!p && p.k === "any" && p.why === JSON_DOC;
   }
 
+  /** Loop variables proven to be a valid index into a particular list. */
+  private provenIdx: { varName: string; listName: string }[] = [];
+
+  /**
+   * Is `obj[index]` an access the compiler already knows is in range? Only
+   * the exact shape `xs[i]` inside `for i in 0..len(xs),` qualifies, which
+   * is the idiomatic loop and the one worth removing a branch from.
+   */
+  private isProven(obj: A.Expr, index: A.Expr): boolean {
+    if (obj.kind !== "Ident" || index.kind !== "Ident") return false;
+    return this.provenIdx.some((p) => p.varName === index.name && p.listName === obj.name);
+  }
+
+  /**
+   * If this loop is `for i in 0..len(xs),` and its body leaves both `i` and
+   * the length of `xs` alone, give back the pair that proves `xs[i]`.
+   *
+   * Conservative on purpose: anything that could resize the list, rebind
+   * either name, or hand the list to code this pass cannot see gives up.
+   * Being wrong here reintroduces exactly the out-of-bounds read the check
+   * exists to stop.
+   */
+  private boundedBy(it: A.RangeExpr, s: A.ForStmt): { varName: string; listName: string } | null {
+    if (it.inclusive || s.pattern.kind !== "BindPat") return null;
+    if (it.step && !(it.step.kind === "IntLit" && it.step.value === 1n)) return null;
+    if (!(it.lo && it.lo.kind === "IntLit" && it.lo.value >= 0n)) return null;
+    const hi = it.hi;
+    if (!hi || hi.kind !== "CallExpr" || hi.callee.kind !== "Ident" || hi.callee.name !== "len") return null;
+    const arg = hi.args[0]?.value;
+    if (!arg || arg.kind !== "Ident" || !this.isList(this.tyOf(arg))) return null;
+    const varName = s.pattern.name;
+    const listName = arg.name;
+    return this.stable(s.body, varName, listName) ? { varName, listName } : null;
+  }
+
+  /** Does this block leave the loop variable and the list's length alone? */
+  private stable(b: A.Block, varName: string, listName: string): boolean {
+    let ok = true;
+    const seeExpr = (e: A.Expr): void => {
+      if (!ok || !e) return;
+      if (e.kind === "CallExpr") {
+        // A method that can resize it, or the list handed to anything that
+        // might: `len` is the one call known to leave it alone.
+        if (e.callee.kind === "MemberExpr" && rootName(e.callee.obj) === listName) ok = false;
+        const callee = e.callee.kind === "Ident" ? e.callee.name : null;
+        for (const a of e.args) {
+          if (a.value.kind === "Ident" && a.value.name === listName && callee !== "len") ok = false;
+        }
+      }
+      // A task could run beside the loop and resize it.
+      if (e.kind === "StartExpr" || e.kind === "MoveExpr") ok = false;
+      for (const c of exprKids(e)) seeExpr(c);
+    };
+    const seeStmt = (st: A.Stmt): void => {
+      if (!ok) return;
+      if (st.kind === "AssignStmt" && st.target.kind === "Ident"
+        && (st.target.name === varName || st.target.name === listName)) ok = false;
+      if (st.kind === "LetStmt" && st.pattern.kind === "BindPat"
+        && (st.pattern.name === varName || st.pattern.name === listName)) ok = false;
+      if (st.kind === "ParallelStmt" || st.kind === "UnsafeStmt") ok = false;
+      for (const x of stmtKids(st)) {
+        if (x && typeof x === "object" && (x as { kind?: string }).kind === "Block") {
+          for (const inner of (x as A.Block).stmts) seeStmt(inner);
+        } else if (x) {
+          seeExpr(x as A.Expr);
+        }
+      }
+    };
+    for (const st of b.stmts) seeStmt(st);
+    return ok;
+  }
+
   private isMap(t: Ty | undefined): boolean {
     const p = t ? prune(t) : undefined;
     return !!p && p.k === "map";
@@ -1781,6 +1859,10 @@ export class CEmitter {
 
     // `for i in a..b` lowers to a plain C for loop — no iterator, no allocation.
     if (it.kind === "RangeExpr" && it.lo && it.hi) {
+      // `for i in 0..len(xs),` bounds `i` for the whole body, so `xs[i]`
+      // inside needs no check — provided nothing in there changes either.
+      const bounded = this.boundedBy(it, s);
+      if (bounded) this.provenIdx.push(bounded);
       const lo = this.expr(it.lo);
       const hi = this.fresh("hi");
       const cmp = it.inclusive ? "<=" : "<";
@@ -1789,6 +1871,7 @@ export class CEmitter {
       this.open(`for (hk_int ${v} = ${lo}; ${v} ${cmp} ${hi}; ${v} += ${step}) {`);
       this.suite(s.body, true);
       this.close();
+      if (bounded) this.provenIdx.pop();
       return;
     }
 
@@ -1904,7 +1987,7 @@ export class CEmitter {
         const ot = this.tyOf(e.obj);
         if (this.isList(ot)) {
           const et = this.cty(this.elemOf(ot), "element", e.span);
-          const acc = this.opts.release ? "HK_AT" : "HK_IDX";
+          const acc = this.opts.uncheckedIndex || this.isProven(e.obj, e.index) ? "HK_AT" : "HK_IDX";
           return `${acc}(${this.expr(e.obj)}, ${et}, ${this.expr(e.index)})`;
         }
         if (this.isJsonDoc(ot)) {
@@ -2629,6 +2712,52 @@ const MAP_KEY_CTYS = new Set(["hk_int", "hk_float", "hk_bool", "hk_char", "hk_by
 /** Value shapes it can copy, release and print. */
 const MAP_VALUE_CTYS = new Set([...MAP_KEY_CTYS, "hk_list *"]);
 
+/** The variable at the root of `a.b.c` or `a[i]`, if there is one. */
+function rootName(e: A.Expr): string | null {
+  let cur: A.Expr = e;
+  for (;;) {
+    if (cur.kind === "Ident") return cur.name;
+    if (cur.kind === "MemberExpr" || cur.kind === "IndexExpr") { cur = cur.obj; continue; }
+    return null;
+  }
+}
+
+/** Child expressions of an expression, without naming every shape. */
+function exprKids(e: A.Expr): A.Expr[] {
+  const out: A.Expr[] = [];
+  for (const [k, v] of Object.entries(e as unknown as Record<string, unknown>)) {
+    if (k === "span" || k === "kind" || k === "typeArgs") continue;
+    for (const x of Array.isArray(v) ? v : [v]) {
+      if (!x || typeof x !== "object" || !("kind" in (x as object))) continue;
+      const kind = (x as { kind: string }).kind;
+      if (kind.endsWith("Pat") || kind.endsWith("Type") || kind === "Block") continue;
+      out.push(x as A.Expr);
+      const inner = (x as { value?: unknown }).value;
+      if (inner && typeof inner === "object" && "kind" in (inner as object)) out.push(inner as A.Expr);
+    }
+  }
+  return out;
+}
+
+/** Child expressions and blocks of a statement. */
+function stmtKids(st: A.Stmt): unknown[] {
+  const out: unknown[] = [];
+  for (const [k, v] of Object.entries(st as unknown as Record<string, unknown>)) {
+    if (k === "span" || k === "kind" || k === "type" || k === "pattern") continue;
+    for (const x of Array.isArray(v) ? v : [v]) {
+      if (!x || typeof x !== "object" || !("kind" in (x as object))) continue;
+      const kind = (x as { kind: string }).kind;
+      if (kind.endsWith("Pat") || kind.endsWith("Type")) continue;
+      out.push(x);
+      for (const f of ["value", "body", "block"]) {
+        const inner = (x as Record<string, unknown>)[f];
+        if (inner && typeof inner === "object" && "kind" in (inner as object)) out.push(inner);
+      }
+    }
+  }
+  return out;
+}
+
 /** A value read from somewhere else, so the reader does not own it. */
 function isRead(e: A.Expr): boolean {
   return e.kind === "Ident" || e.kind === "MemberExpr" || e.kind === "IndexExpr";
@@ -2792,10 +2921,11 @@ export function emitOptionsFrom(
     enumVariants: Map<string, Map<string, { fields: Ty[]; names: string[] }>>;
     enumGenerics: Map<string, string[]>;
   },
-  o: { file: string; release: boolean; escapes?: EscapeInfo; owningParams?: Map<string, boolean[]> },
+  o: { file: string; release: boolean; uncheckedIndex?: boolean; escapes?: EscapeInfo; owningParams?: Map<string, boolean[]> },
 ): EmitOptions {
   return {
     release: o.release,
+    uncheckedIndex: o.uncheckedIndex,
     file: o.file,
     escapes: o.escapes,
     foreignImports: inferred.foreignImports,
