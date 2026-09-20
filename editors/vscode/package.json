@@ -2,7 +2,7 @@
   "name": "halka",
   "displayName": "Halka",
   "description": "Halka language support: syntax highlighting, diagnostics, formatting, hover, completion, and go-to-definition.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "halka-lang",
   "license": "MIT OR Apache-2.0",
   "engines": { "vscode": "^1.75.0" },

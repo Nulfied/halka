@@ -42,7 +42,8 @@ import { formatManifest, type Dependency } from "../pkg/manifest.ts";
 import { compareVersions, formatVersion, parseReq, parseVersion } from "../pkg/semver.ts";
 import { Registry, cacheRoot, cachedPackages, clearIndexCache, registryRoot } from "../pkg/registry.ts";
 
-export const VERSION = "0.1.0";
+export { VERSION } from "../version.ts";
+import { VERSION } from "../version.ts";
 
 const NL = "\n";
 const useColor = process.stdout.isTTY && !process.env["NO_COLOR"];

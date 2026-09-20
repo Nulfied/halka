@@ -5,6 +5,7 @@
 // Sublime, Zed, Kate, IntelliJ (LSP4IJ) — can use it with `halka lsp`.
 
 import { parse } from "../parser/parser.ts";
+import { VERSION } from "../version.ts";
 import { lex } from "../lexer/lexer.ts";
 import { check } from "../sema/check.ts";
 import { format } from "../fmt/format.ts";
@@ -87,7 +88,7 @@ function handle(msg: { id?: unknown; method?: string; params?: Record<string, un
           documentHighlightProvider: true,
           renameProvider: { prepareProvider: false },
         },
-        serverInfo: { name: "halka-lsp", version: "0.1.0" },
+        serverInfo: { name: "halka-lsp", version: VERSION },
       });
 
     case "initialized": return;

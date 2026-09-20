@@ -368,8 +368,11 @@ support, documentation, examples — is open.
 
 ```bash
 cd compiler
-npm test          # 160 tests: spec conformance, rejections, golden output,
-                  #            formatter, native/interpreter equivalence, FFI, ownership
+npm test          # the full suite: spec conformance, rejections, golden output,
+                  #   formatter, native/interpreter equivalence, FFI, ownership,
+                  #   packages, linking, the Jupyter kernel, cross-compilation
+                  #   and incremental builds. It prints the count; this file
+                  #   does not, because a number here goes stale silently.
 npm run typecheck
 ```
 

@@ -5,9 +5,25 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Halka — a learnable systems language</title>
 <meta name="description" content="Halka is a general-purpose language with one assignment operator, one separator, and no redundant syntax. Locked V49 specification, working reference toolchain.">
+<link rel="canonical" href="https://nulfied.github.io/halka/">
 <meta property="og:title" content="Halka">
 <meta property="og:description" content="One assignment operator. One separator. One way to write things.">
 <meta property="og:type" content="website">
+<meta property="og:url" content="https://nulfied.github.io/halka/">
+<meta property="og:site_name" content="Halka">
+<meta property="og:locale" content="en">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Halka">
+<meta name="twitter:description" content="One assignment operator. One separator. One way to write things.">
+<!-- For a large image preview: rasterise docs/og-card.svg to og-card.png
+     (1200x630), uncomment the three lines below, and change twitter:card
+     above to "summary_large_image". SVG is deliberately not used here --
+     X, Facebook, LinkedIn and Slack all ignore it, so linking the SVG
+     would leave those platforms with no preview rather than a small one.
+<meta property="og:image" content="https://nulfied.github.io/halka/og-card.png">
+<meta property="og:image:alt" content="Halka - one assignment operator, one separator, one way to write things.">
+<meta name="twitter:image" content="https://nulfied.github.io/halka/og-card.png">
+-->
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⬡</text></svg>">
 <style>
   :root {
@@ -147,8 +163,8 @@
       <a href="#perf">Performance</a>
       <a href="#why">Why</a>
       <a href="#editors">Editors</a>
-      <a href="https://github.com/halka-lang/halka/blob/main/spec/V49-LOCKED.md">Spec</a>
-      <a href="https://github.com/halka-lang/halka">GitHub</a>
+      <a href="https://github.com/Nulfied/halka/blob/main/spec/V49-LOCKED.md">Spec</a>
+      <a href="https://github.com/Nulfied/halka">GitHub</a>
     </nav>
   </div>
 </header>
@@ -167,8 +183,8 @@
   </p>
   <div class="cta">
     <a class="btn primary" href="#start">Get started</a>
-    <a class="btn" href="https://github.com/halka-lang/halka">Source on GitHub</a>
-    <a class="btn" href="https://github.com/halka-lang/halka/blob/main/spec/V49-LOCKED.md">Read the spec</a>
+    <a class="btn" href="https://github.com/Nulfied/halka">Source on GitHub</a>
+    <a class="btn" href="https://github.com/Nulfied/halka/blob/main/spec/V49-LOCKED.md">Read the spec</a>
   </div>
 </div>
 
@@ -233,7 +249,7 @@
   <div class="wrap">
     <h2>Get started</h2>
     <p class="note">The reference toolchain needs Node 22.6 or newer and has no runtime dependencies.</p>
-<pre><code>git clone https://github.com/halka-lang/halka.git
+<pre><code>git clone https://github.com/Nulfied/halka.git
 cd halka/compiler
 npm link
 
@@ -277,7 +293,7 @@ python 8 threads: 3681 ms   <span class="c">speedup 0.51x   &lt;- the GIL</span>
       Adding threads made Python twice as slow — pure-Python threads cannot run
       bytecode concurrently. Halka's <code>parallel:</code> lowers to real OS
       threads and the runtime has no interpreter lock.
-      <a href="https://github.com/halka-lang/halka/blob/main/bench/README.md">Methodology and caveats &rarr;</a>
+      <a href="https://github.com/Nulfied/halka/blob/main/bench/README.md">Methodology and caveats &rarr;</a>
     </p>
   </div>
 </section>
@@ -352,9 +368,9 @@ python 8 threads: 3681 ms   <span class="c">speedup 0.51x   &lt;- the GIL</span>
       </div>
     </div>
     <p style="margin-top:18px">
-      <a href="https://github.com/halka-lang/halka/blob/main/spec/V49-LOCKED.md">The 54 locked rules →</a>
+      <a href="https://github.com/Nulfied/halka/blob/main/spec/V49-LOCKED.md">The 54 locked rules →</a>
       &nbsp;&nbsp;
-      <a href="https://github.com/halka-lang/halka/blob/main/spec/RESOLUTIONS.md">Grammar resolutions →</a>
+      <a href="https://github.com/Nulfied/halka/blob/main/spec/RESOLUTIONS.md">Grammar resolutions →</a>
     </p>
   </div>
 </section>
@@ -392,7 +408,7 @@ python 8 threads: 3681 ms   <span class="c">speedup 0.51x   &lt;- the GIL</span>
       <tr><td>v0.7</td><td>Tensors, GPU kernels, compile-time shape checking</td></tr>
       <tr><td>v1.0</td><td>Frozen semantics, package registry, debugger</td></tr>
     </table>
-    <p style="margin-top:16px"><a href="https://github.com/halka-lang/halka/blob/main/ROADMAP.md">The full roadmap →</a></p>
+    <p style="margin-top:16px"><a href="https://github.com/Nulfied/halka/blob/main/ROADMAP.md">The full roadmap →</a></p>
   </div>
 </section>
 
@@ -406,7 +422,7 @@ python 8 threads: 3681 ms   <span class="c">speedup 0.51x   &lt;- the GIL</span>
       <li><strong>Standard library</strong> — written in Halka.</li>
       <li><strong>Adversarial tests</strong> — find a program with two parses. Rule #52 says that is a bug.</li>
     </ul>
-    <p style="margin-top:16px"><a href="https://github.com/halka-lang/halka/blob/main/CONTRIBUTING.md">How to contribute →</a></p>
+    <p style="margin-top:16px"><a href="https://github.com/Nulfied/halka/blob/main/CONTRIBUTING.md">How to contribute →</a></p>
   </div>
 </section>
 
@@ -415,8 +431,8 @@ python 8 threads: 3681 ms   <span class="c">speedup 0.51x   &lt;- the GIL</span>
 <footer>
   <div class="wrap">
     Halka is dual-licensed under
-    <a href="https://github.com/halka-lang/halka/blob/main/LICENSE-MIT">MIT</a> or
-    <a href="https://github.com/halka-lang/halka/blob/main/LICENSE-APACHE">Apache-2.0</a>.
+    <a href="https://github.com/Nulfied/halka/blob/main/LICENSE-MIT">MIT</a> or
+    <a href="https://github.com/Nulfied/halka/blob/main/LICENSE-APACHE">Apache-2.0</a>.
     &nbsp;·&nbsp; Pre-1.0: the syntax is stable, the libraries are not.
   </div>
 </footer>

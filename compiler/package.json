@@ -1,6 +1,6 @@
 {
   "name": "halka-lang",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The Halka programming language — reference toolchain (compiler, VM, formatter, LSP).",
   "license": "MIT OR Apache-2.0",
   "type": "module",

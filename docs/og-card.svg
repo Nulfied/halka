@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Source for the social share card.
+
+  Not referenced by og:image directly: X, Facebook, LinkedIn and Slack all
+  ignore SVG, so pointing at this would give those platforms no preview at
+  all. Rasterise it to og-card.png (1200x630) and add the og:image and
+  twitter:image tags in index.html, which are commented out there and ready.
+
+  Any of these work:
+    magick docs/og-card.svg docs/og-card.png
+    inkscape docs/og-card.svg -o docs/og-card.png -w 1200 -h 630
+    rsvg-convert -w 1200 -h 630 docs/og-card.svg -o docs/og-card.png
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#16181d"/>
+  <rect x="0" y="0" width="1200" height="8" fill="#3b6fe0"/>
+  <text x="80" y="210" font-family="Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="110" font-weight="700" fill="#ffffff">Halka</text>
+  <text x="80" y="300" font-family="Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="42" fill="#c9ced6">One assignment operator. One separator.</text>
+  <text x="80" y="360" font-family="Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="42" fill="#c9ced6">One way to write things.</text>
+  <text x="80" y="470" font-family="Consolas, monospace" font-size="30" fill="#7fa6f0"
+        >compiles to C99  ·  memory-safe  ·  no GC  ·  real threads</text>
+  <text x="80" y="550" font-family="Consolas, monospace" font-size="26" fill="#7b828c"
+        >github.com/Nulfied/halka</text>
+</svg>
