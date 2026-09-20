@@ -165,7 +165,10 @@ void    hk_str_release(hk_str *s);
 #define HK_E_CHAR  3
 #define HK_E_STR   4
 #define HK_E_LIST  5
+#define HK_E_TUPLE 6
 #define HK_E_OWNS(k) ((k) >= HK_E_STR)
+
+struct hk_tupdesc;
 
 typedef struct hk_list {
   hk_int rc;
@@ -173,6 +176,8 @@ typedef struct hk_list {
   hk_int cap;
   hk_int esz;
   hk_int ekind;
+  /* Only for HK_E_TUPLE: the layout of the tuples held here. */
+  const struct hk_tupdesc *edesc;
   void  *data;
 } hk_list;
 
@@ -309,6 +314,31 @@ hk_list *hk_map_keys(const hk_map *m);
 hk_list *hk_map_values(const hk_map *m);
 hk_str  *hk_str_from_map(hk_map *m);
 hk_map  *hk_maps_merge(hk_map *a, hk_map *b);
+
+/* ---- tuples --------------------------------------------------------------
+ *
+ * Each tuple shape is its own C struct, so the runtime cannot know a layout
+ * ahead of time. The emitter therefore generates a static descriptor per
+ * shape, and one set of functions walks any tuple: release it, retain it,
+ * or render it the way `inspect` does.
+ *
+ * The descriptor is what lets a *list* of tuples work. `hk_list` records an
+ * element kind but not a layout, so without this a list of `(int, string)`
+ * would leak every string and print every tuple as an integer.
+ */
+typedef struct hk_tupdesc {
+  hk_int n;
+  const hk_int *kinds;                   /* HK_E_* per field */
+  const hk_int *offs;                    /* byte offset per field */
+  const struct hk_tupdesc *const *subs;  /* per field; only set for a nested tuple */
+} hk_tupdesc;
+
+void    hk_tuple_retain(void *p, const hk_tupdesc *d);
+void    hk_tuple_drop(void *p, const hk_tupdesc *d);
+hk_str *hk_str_from_tuple(const void *p, const hk_tupdesc *d);
+/** Tell a list the layout of the tuples it holds. */
+void    hk_list_set_desc(hk_list *l, const hk_tupdesc *d);
+
 
 
 /* ---- capabilities (#45) --------------------------------------------------

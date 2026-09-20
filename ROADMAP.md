@@ -102,6 +102,18 @@ name matches anything, `null` included, so it ends the chain and a following
 disagreed with the interpreter on exactly the case the arm exists for. An
 optional of a struct or enum is refused rather than mis-ordered in C.
 
+**Tuples compile natively**, and with them the two things maps were missing:
+`for e in m` and `maps.from_entries`. Each shape is its own C struct, so the
+runtime cannot know a layout ahead of time; the emitter writes a descriptor
+beside each struct -- field kinds and byte offsets -- and one runtime walk
+over that serves release, retain and printing. The descriptor is what makes a
+*list* of tuples work, and the first version without it is the cautionary
+case: a list of `(int, string)` compiled, ran, and printed its string
+pointers as integers. Indexing, destructuring, tuple patterns in `match`,
+equality, nesting and aliases all work compiled. A tuple index must be a
+literal, because the fields have different types; iterating a tuple is
+refused for the same reason.
+
 **Maps compile natively**, insertion-ordered. That ordering is the whole
 design constraint: the interpreter's map keeps insertion order, so printing
 one or listing its keys has to produce the same sequence (R23), and a plain

@@ -203,6 +203,7 @@ hk_list *hk_list_new(hk_int esz, hk_int cap, hk_int ekind) {
   l->cap = cap > 0 ? cap : 0;
   l->esz = esz;
   l->ekind = ekind;
+  l->edesc = NULL;
   l->data = l->cap ? hk_alloc((size_t)(l->cap * esz)) : NULL;
   return l;
 }
@@ -234,6 +235,8 @@ void hk_list_release(hk_list *l) {
       for (hk_int i = 0; i < l->len; i++) hk_str_release(((hk_str **)l->data)[i]);
     } else if (l->ekind == HK_E_LIST) {
       for (hk_int i = 0; i < l->len; i++) hk_list_release(((hk_list **)l->data)[i]);
+    } else if (l->ekind == HK_E_TUPLE) {
+      for (hk_int i = 0; i < l->len; i++) hk_tuple_drop((char *)l->data + i * l->esz, l->edesc);
     }
     hk_dealloc(l->data);
     hk_dealloc(l);
@@ -308,6 +311,7 @@ hk_str *hk_str_from_list(struct hk_list *l) {
       }
       case HK_E_STR:   piece = hk_str_quoted(HK_AT(l, hk_str *, i), HK_DQUOTE); break;
       case HK_E_LIST:  piece = hk_str_from_list(HK_AT(l, hk_list *, i)); break;
+      case HK_E_TUPLE: piece = hk_str_from_tuple((char *)l->data + i * l->esz, l->edesc); break;
       default:         piece = hk_str_from_int(HK_AT(l, hk_int, i)); break;
     }
     acc = hk_join2(acc, piece);
@@ -542,13 +546,19 @@ static void hk_elem_retain(hk_int ekind, void *slot) {
   else if (ekind == HK_E_LIST) hk_list_retain(*(hk_list **)slot);
 }
 
+/** As above, for a container that knows its tuple layout. */
+static void hk_slot_retain(hk_int ekind, void *slot, const hk_tupdesc *d) {
+  if (ekind == HK_E_TUPLE) hk_tuple_retain(slot, d);
+  else hk_elem_retain(ekind, slot);
+}
+
 /** Append `n` elements from `src` to `out`, retaining any it now co-owns. */
 static void hk_list_append(hk_list *out, const void *src, hk_int n) {
   if (n <= 0) return;
   hk_list_reserve(out, out->len + n);
   memcpy((char *)out->data + out->len * out->esz, src, (size_t)(n * out->esz));
   for (hk_int i = 0; i < n; i++) {
-    hk_elem_retain(out->ekind, (char *)out->data + (out->len + i) * out->esz);
+    hk_slot_retain(out->ekind, (char *)out->data + (out->len + i) * out->esz, out->edesc);
   }
   out->len += n;
 }
@@ -1095,4 +1105,49 @@ hk_map *hk_maps_merge(hk_map *a, hk_map *b) {
     if (b->live[e]) hk_map_set(out, b->keys + e * b->ksz, b->vals + e * b->vsz);
   }
   return out;
+}
+
+/* ---- tuples --------------------------------------------------------------
+ *
+ * See halka.h. One walk over a generated descriptor serves every shape.
+ */
+
+void hk_list_set_desc(hk_list *l, const hk_tupdesc *d) { l->edesc = d; }
+
+void hk_tuple_retain(void *p, const hk_tupdesc *d) {
+  if (!d) return;
+  for (hk_int i = 0; i < d->n; i++) {
+    void *f = (char *)p + d->offs[i];
+    switch (d->kinds[i]) {
+      case HK_E_STR:   hk_str_retain(*(hk_str **)f); break;
+      case HK_E_LIST:  hk_list_retain(*(hk_list **)f); break;
+      case HK_E_TUPLE: hk_tuple_retain(f, d->subs[i]); break;
+      default: break;
+    }
+  }
+}
+
+void hk_tuple_drop(void *p, const hk_tupdesc *d) {
+  if (!d) return;
+  for (hk_int i = 0; i < d->n; i++) {
+    void *f = (char *)p + d->offs[i];
+    switch (d->kinds[i]) {
+      case HK_E_STR:   hk_str_release(*(hk_str **)f); break;
+      case HK_E_LIST:  hk_list_release(*(hk_list **)f); break;
+      case HK_E_TUPLE: hk_tuple_drop(f, d->subs[i]); break;
+      default: break;
+    }
+  }
+}
+
+hk_str *hk_str_from_tuple(const void *p, const hk_tupdesc *d) {
+  hk_str *acc = hk_str_new("(", 1);
+  for (hk_int i = 0; i < d->n; i++) {
+    if (i) acc = hk_join2(acc, hk_str_new(", ", 2));
+    const char *f = (const char *)p + d->offs[i];
+    acc = hk_join2(acc, d->kinds[i] == HK_E_TUPLE
+                          ? hk_str_from_tuple(f, d->subs[i])
+                          : hk_cell_str(d->kinds[i], f));
+  }
+  return hk_join2(acc, hk_str_new(")", 1));
 }

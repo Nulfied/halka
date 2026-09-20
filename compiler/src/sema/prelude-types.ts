@@ -121,8 +121,9 @@ const LISTS: Record<string, PreludeMember> = {
 };
 
 const MAPS: Record<string, PreludeMember> = {
-  // `from_entries` takes a list of tuples, and the backend has no tuple
-  // type, so it stays interpreter-only until it does.
+  // No `c`: the backend emits `from_entries` inline, because the tuple's
+  // layout and the map's key and value sizes are known while compiling and
+  // a runtime function would have to be told all three.
   from_entries: gsig(["K", "V"], [["entries", list(tup([K, V]))]], map(K, V)),
   merge: gsig(["K", "V"], [["a", map(K, V)], ["b", map(K, V)]], map(K, V), "hk_maps_merge"),
 };

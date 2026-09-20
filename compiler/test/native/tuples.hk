@@ -1,0 +1,88 @@
+# Tuples in the compiled backend.
+#
+# Each shape is its own C struct, so the runtime cannot know a layout ahead
+# of time. Beside each struct the emitter writes a descriptor -- field kinds
+# and byte offsets -- and one runtime walk over that serves release, retain
+# and printing. That descriptor is what makes a *list* of tuples work: a list
+# records an element kind but not a layout, and without it a list of
+# `(int, string)` printed its string pointers as integers. It compiled and
+# ran; it was just wrong, which is the failure R23 exists to catch.
+import maps
+
+type Point: (int, int)
+
+swap(p: (int, string)): (string, int),
+    give (p[1], p[0])
+
+main(),
+    let t: (10, 20),
+    say t,
+    say t[0],
+    say t[1],
+    say len(t),
+
+    # Mixed field types, which is why an index must be a literal.
+    let mixed: (1, "two", 3.5, true),
+    say mixed,
+    say mixed[1],
+
+    # Through an alias, and across a call boundary both ways.
+    let p: Point: (3, 4),
+    say p,
+    say swap((7, "seven")),
+
+    # Equality is field by field.
+    say (1, 2) == (1, 2),
+    say (1, 2) == (1, 3),
+    say ("a", 1) == ("a", 1),
+    say ("a", 1) != ("b", 1),
+
+    # Nested tuples: the inner shape is declared, and described, first.
+    let nested: ((1, 2), (3, 4)),
+    say nested,
+    say nested[0][1],
+    say ((1, 2), 3) == ((1, 2), 3),
+
+    # Destructuring. The names borrow from a temporary, so the temporary
+    # outlives them when it is a value we own.
+    let (a, b): t,
+    say "{a} {b}",
+    let (x, y): (10, "ten"),
+    say "{x} {y}",
+
+    # A tuple pattern in a match.
+    match (1, "one"),
+        (k, v),
+            say "match {k} {v}",
+    # A list of tuples: printed through the descriptor, and released
+    # through it too.
+    let es: [(1, "a"), (2, "bb")],
+    say es,
+    say es[1][1],
+    for e in es,
+        say "{e[0]} = {e[1]}",
+    # Iterating a map yields `(key, value)` without building a list.
+    let m: ["a": 1, "b": 2],
+    for e in m,
+        say "{e[0]} -> {e[1]}",
+    # `entries` and `from_entries` are inverses, and neither disturbs its
+    # source.
+    say m.entries(),
+    let back: map(string, int): maps.from_entries(m.entries()),
+    say back,
+    say m,
+
+    let pairs: [("x", 10), ("y", 20)],
+    let built: map(string, int): maps.from_entries(pairs),
+    say built,
+    say pairs,
+
+    # Rebuilt every iteration, so a leak would accumulate rather than hide.
+    let total: 0,
+    for i in 0..30,
+        let owned: (i, "row {i}"),
+        let (num, text): owned,
+        let pair_list: [(i, "v{i}")],
+        let round: map(string, int): maps.from_entries([("k{i}", i)]),
+        total: total + num + len(text) + len(pair_list) + len(round),
+    say total

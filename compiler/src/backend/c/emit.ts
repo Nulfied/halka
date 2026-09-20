@@ -104,7 +104,7 @@ export class CEmitter {
    * must free; `live` is the subset already declared at the current point, so
    * an early `give` never frees something C has not seen yet.
    */
-  private blockStack: { owned: Set<string>; kinds: Map<string, "str" | "list" | "enum" | "opt" | "map">; types: Map<string, Ty | undefined>; declared: Set<string>; optVars: Set<string>; live: Owned[]; caps: number; isLoopBody: boolean }[] = [];
+  private blockStack: { owned: Set<string>; kinds: Map<string, "str" | "list" | "enum" | "opt" | "map" | "tuple">; types: Map<string, Ty | undefined>; declared: Set<string>; optVars: Set<string>; live: Owned[]; caps: number; isLoopBody: boolean }[] = [];
   /** Owning parameters of the current function, freed when it returns. */
   private frameParams: Owned[] = [];
   /** Values built inside the current statement, freed once it completes. */
@@ -284,10 +284,11 @@ export class CEmitter {
     let body = this.out.join("\n").replace("  hk_init(argc, argv);", bootstrap.join("\n"));
     if (this.needsPython) body = body.split("  hk_shutdown();").join("  hk_py_stop();\n  hk_shutdown();");
     const pyrt = this.needsPython ? [PY_RUNTIME] : [];
-    return [...head, ...this.optDecls(), ...this.structDecls(), ...this.enumDecls(), ...lits, "", ...this.decls, "", ...pyrt, ...this.aux, ...init, body, ""].join("\n");
+    return [...head, ...this.optDecls(), ...this.tupleDecls(), ...this.structDecls(), ...this.enumDecls(), ...lits, "", ...this.decls, "", ...pyrt, ...this.aux, ...init, body, ""].join("\n");
   }
 
   private optTypes = new Map<string, { key: string; cty: string }>();
+  private tupleTypes = new Map<string, { key: string; elems: Ty[]; ctys: string[]; depth: number }>();
   /** Parameters of the function being emitted that are stored as optionals. */
   private optParams = new Set<string>();
 
@@ -415,6 +416,11 @@ export class CEmitter {
         if (o) return o;
         break;
       }
+      case "tuple": {
+        const t2 = this.tupleRegister(p.elems, span);
+        if (t2) return t2;
+        break;
+      }
       default: break;
     }
     if (span) {
@@ -453,6 +459,236 @@ export class CEmitter {
       this.optTypes.set(key, { key, cty: this.cty(p, "optional value", span) });
     }
     return mangleType(key);
+  }
+
+  // --- tuples ---------------------------------------------------------------
+  //
+  // Each shape is its own C struct with fields `f0`, `f1`, ... Beside it the
+  // emitter writes a descriptor: field kinds and byte offsets, which is what
+  // lets the runtime release or print a tuple whose layout it cannot know --
+  // and therefore what lets a *list* of tuples work at all.
+
+  /** Register a tuple shape and give its C type, or null if unsupported. */
+  private tupleRegister(elems: Ty[], span?: Span): string | null {
+    if (elems.length === 0) {
+      if (span) this.err("E0701", "the native backend has no empty tuple", span);
+      return null;
+    }
+    const key = `tup_${elems.map(tyKey).join("_")}`;
+    const known = this.tupleTypes.get(key);
+    if (known) return mangleType(key);
+    const ctys: string[] = [];
+    for (const el of elems) {
+      const c = this.cty(el, "tuple field", span);
+      // The same ordering problem optionals have: a tuple of structs would
+      // need declaring after them, a struct with a tuple field before.
+      if (!TUPLE_FIELD_CTYS.has(c) && !c.startsWith("hk_T_tup_")) {
+        if (span) {
+          this.err("E0701", `the native backend cannot put ${show(prune(el))} in a tuple yet`, span,
+            "a tuple field may be a number, bool, char, byte, string, list, or another tuple");
+        }
+        return null;
+      }
+      ctys.push(c);
+    }
+    this.tupleTypes.set(key, { key, elems, ctys, depth: tupleDepth(elems) });
+    return mangleType(key);
+  }
+
+  /** The tuple type of `t`, if it is one and the backend can build it. */
+  private tupOf(t: Ty | undefined): { cty: string; elems: Ty[]; ctys: string[]; key: string } | null {
+    const p = t ? prune(t) : undefined;
+    if (!p || p.k !== "tuple") return null;
+    const c = this.tupleRegister(p.elems);
+    if (!c) return null;
+    const info = this.tupleTypes.get(`tup_${p.elems.map(tyKey).join("_")}`)!;
+    return { cty: c, elems: info.elems, ctys: info.ctys, key: info.key };
+  }
+
+  /**
+   * A comparator for one tuple shape, generated once. Lists are refused
+   * rather than compared: the interpreter compares them structurally and
+   * the C runtime has no deep list equality to match that with.
+   */
+  private tupleEq(info: { cty: string; elems: Ty[]; ctys: string[]; key: string }, span: Span): string | null {
+    const name = `hk_teq_${info.key}`;
+    if (this.wrappers.has(name)) return name;
+    const tests: string[] = [];
+    for (let i = 0; i < info.ctys.length; i++) {
+      const c = info.ctys[i]!;
+      const el = prune(info.elems[i]!);
+      if (el.k === "tuple") {
+        const subInfo = this.tupOf(el)!;
+        const subFn = this.tupleEq(subInfo, span);
+        if (!subFn) return null;
+        tests.push(`${subFn}(&a->f${i}, &b->f${i})`);
+      } else if (c === "hk_str *") {
+        tests.push(`hk_str_eq(a->f${i}, b->f${i})`);
+      } else if (c === "hk_list *") {
+        this.err("E0708", "the native backend cannot compare a tuple holding a list yet", span,
+          "compare the fields you need, or run it with `halka run`");
+        return null;
+      } else {
+        tests.push(`a->f${i} == b->f${i}`);
+      }
+    }
+    this.wrappers.add(name);
+    this.aux.push(
+      `static hk_bool ${name}(const ${info.cty} *a, const ${info.cty} *b) {`,
+      `  return ${tests.join(" && ")};`,
+      "}",
+      "",
+    );
+    return name;
+  }
+
+  /**
+   * `let (a, b): t`. The names are copied out of a temporary, so when that
+   * temporary is a value we own -- a fresh tuple rather than a variable --
+   * it stays alive for the block, because the names borrow its fields.
+   */
+  private destructureTuple(pat: A.TuplePat, value: A.Expr): void {
+    const info = this.tupOf(this.tyOf(value))!;
+    if (pat.elements.length > info.elems.length) {
+      this.err("E0702", `this pattern wants ${pat.elements.length} fields from a ${info.elems.length}-tuple`, pat.span);
+      return;
+    }
+    const tmp = this.fresh("dst");
+    this.line(`${info.cty} ${tmp} = ${this.expr(value)};`);
+    if (!isRead(value)) {
+      const here = this.blockStack[this.blockStack.length - 1];
+      here?.live.push({ name: tmp, kind: "tuple", ty: this.tyOf(value) });
+    }
+    pat.elements.forEach((el, i) => {
+      if (el.kind === "WildcardPat") return;
+      if (el.kind !== "BindPat") {
+        this.err("E0702", "the native backend only supports plain names in a tuple pattern yet", pat.span);
+        return;
+      }
+      this.line(`${info.ctys[i]} ${mangle(el.name)} = ${tmp}.f${i};`);
+      this.noteDecl(el.name, info.elems[i]);
+    });
+  }
+
+  /**
+   * `m.entries()` — a list of `(key, value)` tuples. Built here rather than
+   * in the runtime because the tuple's layout is per shape, and the list
+   * co-owns what it copies, so each entry is retained.
+   */
+  private mapEntries(obj: A.Expr, recv: string, e: A.CallExpr): string {
+    const info = this.tupOf(this.tyOf(e) ? this.elemOf(this.tyOf(e)) : undefined)
+      ?? this.tupOf(this.elemTypeOfMap(this.tyOf(obj)));
+    if (!info) {
+      this.err("E0711", "the native backend cannot build this map's entry tuple yet", e.span);
+      return "0";
+    }
+    const { kt, vt } = this.mapParts(this.tyOf(obj));
+    const kc = this.cty(kt, "map key", e.span);
+    const vc = this.cty(vt, "map value", e.span);
+    const mv = this.fresh("ent");
+    const out = this.fresh("entl");
+    const i = this.fresh("ei");
+    const tv = this.fresh("etv");
+    const desc = this.tupDescOf(info.key);
+    this.line(`hk_map *${mv} = ${recv};`);
+    this.line(`hk_list *${out} = hk_list_new(sizeof(${info.cty}), ${mv}->count, HK_E_TUPLE);`);
+    this.line(`hk_list_set_desc(${out}, &${desc});`);
+    this.open(`for (hk_int ${i} = 0; ${i} < ${mv}->used; ${i}++) {`);
+    this.line(`if (!${mv}->live[${i}]) continue;`);
+    this.line(`${info.cty} ${tv} = { .f0 = *(${kc} *)(${mv}->keys + ${i} * ${mv}->ksz),` +
+      ` .f1 = *(${vc} *)(${mv}->vals + ${i} * ${mv}->vsz) };`);
+    this.line(`hk_tuple_retain(&${tv}, &${desc});`);
+    this.line(`HK_PUSH(${out}, ${info.cty}, ${tv});`);
+    this.close();
+    return out;
+  }
+
+  /**
+   * `maps.from_entries(es)` — the inverse. Also emitted here: the runtime
+   * would need the tuple's layout and the map's key and value sizes, all of
+   * which are known while compiling.
+   */
+  private mapFromEntries(e: A.CallExpr, arg: string): string {
+    const rt = this.tyOf(e);
+    const { kt, vt } = this.mapParts(rt);
+    const info = this.tupOf(this.elemOf(this.tyOf(e.args[0]!.value)));
+    if (!info || !kt || !vt) {
+      this.err("E0711", "the native backend cannot tell what map `from_entries` builds here", e.span,
+        "annotate the result, e.g. `let m: map(string, int): maps.from_entries(es)`");
+      return "0";
+    }
+    const kc = this.cty(kt, "map key", e.span);
+    const vc = this.cty(vt, "map value", e.span);
+    const src = this.fresh("fes");
+    const out = this.fresh("fem");
+    const i = this.fresh("fi");
+    this.line(`hk_list *${src} = ${arg};`);
+    this.line(`hk_map *${out} = hk_map_new(sizeof(${kc}), sizeof(${vc}), ${ekindOf(kc)}, ${ekindOf(vc)}, ${src}->len);`);
+    this.open(`for (hk_int ${i} = 0; ${i} < ${src}->len; ${i}++) {`);
+    // `hk_map_set` retains what it keeps, so the source list is untouched.
+    this.line(`hk_map_set(${out}, &HK_AT(${src}, ${info.cty}, ${i}).f0, &HK_AT(${src}, ${info.cty}, ${i}).f1);`);
+    this.close();
+    if (!isRead(e.args[0]!.value)) this.line(`hk_list_release(${src});`);
+    return out;
+  }
+
+  /** The HK_E_* kind for a list element, which `ekindOf` cannot tell for a tuple. */
+  private elemKind(elemTy: Ty | undefined, cty: string): string {
+    const p = elemTy ? prune(elemTy) : undefined;
+    return p?.k === "tuple" ? "HK_E_TUPLE" : ekindOf(cty);
+  }
+
+  /** Give a list the tuple layout it holds, when it holds tuples. */
+  private attachDesc(listVar: string, elemTy: Ty | undefined): void {
+    const info = this.tupOf(elemTy);
+    if (info) this.line(`hk_list_set_desc(${listVar}, &${this.tupDescOf(info.key)});`);
+  }
+
+  /** The descriptor symbol for a tuple shape. */
+  private tupDescOf(key: string): string { return `hk_td_${key}`; }
+
+  private tupleDecls(): string[] {
+    const out: string[] = [];
+    // Shallowest first: a nested tuple must be a complete type before the
+    // tuple that contains it, and its descriptor must exist before being
+    // pointed at.
+    const all = [...this.tupleTypes.values()].sort((a, b) => a.depth - b.depth);
+    for (const t of all) {
+      const n = mangleType(t.key);
+      out.push(`typedef struct ${n} {`);
+      t.ctys.forEach((c, i) => out.push(`  ${c} f${i};`));
+      out.push(`} ${n};`);
+      out.push("");
+    }
+    for (const t of all) {
+      const n = mangleType(t.key);
+      const d = this.tupDescOf(t.key);
+      out.push(`static const hk_int ${d}_k[] = { ${t.ctys.map((c, i) => this.fieldKind(t.elems[i]!, c)).join(", ")} };`);
+      out.push(`static const hk_int ${d}_o[] = { ${t.ctys.map((_, i) => `offsetof(${n}, f${i})`).join(", ")} };`);
+      const subs = t.elems.map((el) => {
+        const sub2 = this.tupOf(el);
+        return sub2 ? `&${this.tupDescOf(sub2.key)}` : "NULL";
+      });
+      out.push(`static const hk_tupdesc *const ${d}_s[] = { ${subs.join(", ")} };`);
+      out.push(`static const hk_tupdesc ${d} = { ${t.ctys.length}, ${d}_k, ${d}_o, ${d}_s };`);
+      out.push("");
+    }
+    return out;
+  }
+
+  private fieldKind(el: Ty, c: string): string {
+    return prune(el).k === "tuple" ? "HK_E_TUPLE" : ekindOf(c);
+  }
+
+  /** `(a, b)` — a struct literal, with each field emitted in its own type. */
+  private tupleLit(e: A.TupleExpr): string {
+    const info = this.tupOf(this.tyOf(e));
+    if (!info) {
+      this.err("E0701", "the native backend cannot build this tuple yet", e.span);
+      return "0";
+    }
+    const parts = e.elements.map((x, i) => `.f${i} = ${this.coerce(x, info.elems[i])}`);
+    return `((${info.cty}){ ${parts.join(", ")} })`;
   }
 
   private optDecls(): string[] {
@@ -533,6 +769,55 @@ export class CEmitter {
     const t = this.fresh("cnd");
     this.line(`${o.cty} ${t} = ${this.expr(e)};`);
     return `${t}.has`;
+  }
+
+  /**
+   * `match t, (a, b), ...`. A tuple has one shape, so a pattern of plain
+   * names always matches and the first such arm is the whole match. A
+   * pattern with a literal field would need comparing, which is refused
+   * rather than silently ignored.
+   */
+  private matchTuple(m: A.MatchExpr, info: { cty: string; elems: Ty[]; ctys: string[]; key: string }): void {
+    const subject = this.fresh("mtup");
+    this.open("{");
+    this.line(`${info.cty} ${subject} = ${this.expr(m.subject)};`);
+    this.pushScope();
+    for (const arm of m.arms) {
+      if (arm.guard) {
+        this.err("E0704", "the native backend does not support a guard on a `match` arm yet", arm.span,
+          "run it with `halka run` while the backend catches up");
+        break;
+      }
+      const pat = arm.pattern;
+      if (pat.kind === "WildcardPat") { this.suite(arm.body); break; }
+      if (pat.kind === "BindPat") {
+        this.line(`${info.cty} ${mangle(pat.name)} = ${subject};`);
+        this.noteDecl(pat.name, this.tyOf(m.subject));
+        this.suite(arm.body);
+        break;
+      }
+      if (pat.kind !== "TuplePat") {
+        this.err("E0704", "matching a tuple takes a tuple pattern or a name", arm.span,
+          "run it with `halka run` while the backend catches up");
+        break;
+      }
+      if (!pat.elements.every((el) => el.kind === "BindPat" || el.kind === "WildcardPat")) {
+        this.err("E0704", "the native backend only supports plain names in a tuple pattern yet", arm.span,
+          "run it with `halka run` while the backend catches up");
+        break;
+      }
+      this.open("{");
+      pat.elements.forEach((el, i) => {
+        if (el.kind !== "BindPat") return;
+        this.line(`${info.ctys[i]} ${mangle(el.name)} = ${subject}.f${i};`);
+        this.noteDecl(el.name, info.elems[i]);
+      });
+      this.suite(arm.body);
+      this.close("}");
+      break; // a name-only tuple pattern matches every tuple of this shape
+    }
+    this.popScope();
+    this.close("}");
   }
 
   /** A block frame that owns nothing, for bindings introduced outside `suite`. */
@@ -696,6 +981,7 @@ export class CEmitter {
       return out;
     };
     switch (m) {
+      case "entries": return this.mapEntries(obj, recv, e);
       case "keys": return `hk_map_keys(${recv})`;
       case "values": return `hk_map_values(${recv})`;
       case "is_empty": return `(hk_map_len(${recv}) == 0)`;
@@ -744,6 +1030,8 @@ export class CEmitter {
   private matchStmt(m: A.MatchExpr): void {
     const o = this.optOf(this.tyOf(m.subject));
     if (o) { this.matchOptional(m, o); return; }
+    const tu = this.tupOf(this.tyOf(m.subject));
+    if (tu) { this.matchTuple(m, tu); return; }
     const def = this.enumOf(this.tyOf(m.subject), m.span);
     if (!def) {
       this.err("E0704", "the native backend can only `match` on an enum yet", m.span,
@@ -959,6 +1247,11 @@ export class CEmitter {
     { isVoid: true, needsCleanup: false, retTy: undefined };
 
   private releaseLocal(o: Owned): void {
+    if (o.kind === "tuple") {
+      const info = this.tupOf(o.ty);
+      if (info) this.line(`hk_tuple_drop(&${mangle(o.name)}, &${this.tupDescOf(info.key)});`);
+      return;
+    }
     if (o.kind === "map") { this.line(`hk_map_release(${mangle(o.name)});`); return; }
     if (o.kind === "opt") {
       // Only when it holds something: the wrapper owns nothing itself.
@@ -1110,6 +1403,10 @@ export class CEmitter {
         if (s.kind === "ConstDecl") {
           const t = this.tyOf(s.value);
           this.line(`${this.cty(t, `\`${s.name}\``, s.span)} ${mangle(s.name)} = ${this.expr(s.value)};`);
+          return;
+        }
+        if (s.pattern.kind === "TuplePat" && s.value && this.tupOf(this.tyOf(s.value))) {
+          this.destructureTuple(s.pattern, s.value);
           return;
         }
         if (s.pattern.kind !== "BindPat") {
@@ -1358,6 +1655,48 @@ export class CEmitter {
     this.close();
   }
 
+  /**
+   * `for e in m` — each entry as a `(key, value)` tuple, built per iteration
+   * straight from the map's dense arrays. No intermediate list is made, and
+   * the tuple borrows the key and value rather than retaining them, the way
+   * reading a list element does.
+   */
+  private forEachMapEntry(s: A.ForStmt, v: string, it: A.Expr, t: Ty | undefined): void {
+    const info = this.tupOf(this.tyOf(s.pattern as unknown as A.Node) ?? this.elemTypeOfMap(t));
+    if (!info) {
+      this.err("E0705", "the native backend cannot build this map's entry tuple yet", s.span);
+      return;
+    }
+    const { kt, vt } = this.mapParts(t);
+    const kc = this.cty(kt, "map key", s.span);
+    const vc = this.cty(vt, "map value", s.span);
+    const mv = this.fresh("mit");
+    const i = this.fresh("me");
+    const owns = !isRead(it);
+    this.open("{");
+    this.line(`hk_map *${mv} = ${this.expr(it)};`);
+    if (owns) {
+      this.pushScope();
+      this.blockStack[this.blockStack.length - 1]!.live.push({ name: mv, kind: "map" });
+    }
+    this.open(`for (hk_int ${i} = 0; ${i} < ${mv}->used; ${i}++) {`);
+    this.line(`if (!${mv}->live[${i}]) continue;`);
+    this.line(`${info.cty} ${v} = { .f0 = *(${kc} *)(${mv}->keys + ${i} * ${mv}->ksz),` +
+      ` .f1 = *(${vc} *)(${mv}->vals + ${i} * ${mv}->vsz) };`);
+    this.suite(s.body, true);
+    this.close();
+    if (owns) {
+      this.popScope();
+      this.line(`hk_map_release(${mv});`);
+    }
+    this.close();
+  }
+
+  private elemTypeOfMap(t: Ty | undefined): Ty | undefined {
+    const p = t ? prune(t) : undefined;
+    return p && p.k === "map" ? { k: "tuple", elems: [p.key, p.val] } as Ty : undefined;
+  }
+
   private forStmt(s: A.ForStmt): void {
     if (s.pattern.kind !== "BindPat") {
       this.err("E0702", "the native backend does not support destructuring in a for loop yet", s.span);
@@ -1408,6 +1747,8 @@ export class CEmitter {
       this.close();
       return;
     }
+
+    if (this.isMap(t)) { this.forEachMapEntry(s, v, it, t); return; }
 
     this.err("E0705", `the native backend cannot iterate ${show(prune(t ?? ({ k: "any" } as Ty)))} yet`, s.span,
       "iterate a range (`for i in 0..n,`) or a list");
@@ -1493,12 +1834,30 @@ export class CEmitter {
           return `${acc}(${this.expr(e.obj)}, ${et}, ${this.expr(e.index)})`;
         }
         if (this.isMap(ot)) return this.mapGet(e.obj, e.index, this.tyOf(e), e.span);
-        this.err("E0707", "the native backend can only index a list or a map so far", e.span);
+        const tu = this.tupOf(ot);
+        if (tu) {
+          // Each field has its own type, so which one is being read has to be
+          // known while compiling. A variable index cannot be.
+          if (e.index.kind !== "IntLit") {
+            this.err("E0707", "a tuple index must be a literal in compiled code", e.index.span,
+              "the fields have different types, so the index has to be known at compile time");
+            return "0";
+          }
+          const raw = Number(e.index.value);
+          const i = raw < 0 ? raw + tu.elems.length : raw;
+          if (i < 0 || i >= tu.elems.length) {
+            this.err("E0707", `index ${raw} is out of range for a ${tu.elems.length}-tuple`, e.index.span);
+            return "0";
+          }
+          return `${atom(this.expr(e.obj))}.f${i}`;
+        }
+        this.err("E0707", "the native backend can only index a list, a map or a tuple so far", e.span);
         return "0";
       }
 
       case "ListExpr": return this.listLit(e);
       case "MapExpr": return this.mapLit(e);
+      case "TupleExpr": return this.tupleLit(e);
 
       case "CastExpr": return this.cast(e);
 
@@ -1682,6 +2041,18 @@ export class CEmitter {
       return `(${t} ? ${t} : (${r}))`;
     }
 
+    // Tuples compare field by field, through a generated comparator.
+    const tueq = this.tupOf(lt) ?? this.tupOf(rt);
+    if (tueq && (e.op === "==" || e.op === "!=")) {
+      const fn = this.tupleEq(tueq, e.span);
+      if (!fn) return "false";
+      const la = this.fresh("ta");
+      const rb = this.fresh("tb");
+      this.line(`${tueq.cty} ${la} = ${l};`);
+      this.line(`${tueq.cty} ${rb} = ${r};`);
+      return `${e.op === "!=" ? "!" : ""}${fn}(&${la}, &${rb})`;
+    }
+
     // Strings
     if (this.isStr(lt) || this.isStr(rt)) {
       switch (e.op) {
@@ -1752,6 +2123,11 @@ export class CEmitter {
           if (this.isList(t)) return `(${args[0]})->len`;
           if (this.isStr(t)) return `hk_str_len_chars(${args[0]})`;
           if (this.isMap(t)) return `hk_map_len(${args[0]})`;
+          {
+            const tu = this.tupOf(t);
+            // A tuple's length is its shape, so it is known while compiling.
+            if (tu) return `INT64_C(${tu.elems.length})`;
+          }
           break;
         }
         case "div": return `hk_div(${args[0]}, ${args[1]}, ${this.loc(e.span)})`;
@@ -1850,6 +2226,7 @@ export class CEmitter {
           this.err("E0707", `\`${op.name}\` has no member \`${m}\``, e.span);
           return "0";
         }
+        if (op.name === "maps" && m === "from_entries") return this.mapFromEntries(e, args[0]!);
         if (!member.c) {
           this.err("E0707", `the native backend does not implement \`${op.name}.${m}\` yet`, e.span,
             "run it with `halka run` while the backend catches up");
@@ -1922,8 +2299,12 @@ export class CEmitter {
     const t = this.tyOf(e);
     const et = this.cty(this.elemOf(t), "element", e.span);
     const v = this.fresh("lit");
-    this.line(`hk_list *${v} = hk_list_new(sizeof(${et}), ${e.elements.length}, ${ekindOf(et)});`);
-    for (const x of e.elements) this.line(`HK_PUSH(${v}, ${et}, ${this.expr(x)});`);
+    const elemTy = this.elemOf(t);
+    this.line(`hk_list *${v} = hk_list_new(sizeof(${et}), ${e.elements.length}, ${this.elemKind(elemTy, et)});`);
+    // A list of tuples has to carry the layout, or releasing it would leak
+    // every owning field and printing it would render a pointer as an int.
+    this.attachDesc(v, elemTy);
+    for (const x of e.elements) this.line(`HK_PUSH(${v}, ${et}, ${this.coerce(x, elemTy)});`);
     return v;
   }
 
@@ -2012,6 +2393,18 @@ export class CEmitter {
       const v = this.fresh("osv");
       this.line(`${o.cty} ${v} = ${this.expr(e)};`);
       return `(${v}.has ? ${this.cStrOf(`${v}.v`, o.inner, e.span)} : hk_str_lit("null"))`;
+    }
+
+    // A tuple prints as `(a, b)` (#53), walked through its descriptor.
+    const tu = this.tupOf(t);
+    if (tu) {
+      if (isRead(e)) return `hk_str_from_tuple(&${atom(this.expr(e))}, &${this.tupDescOf(tu.key)})`;
+      const tv = this.fresh("ptup");
+      const sv = this.fresh("ptstr");
+      this.line(`${tu.cty} ${tv} = ${this.expr(e)};`);
+      this.line(`hk_str *${sv} = hk_str_from_tuple(&${tv}, &${this.tupDescOf(tu.key)});`);
+      this.line(`hk_tuple_drop(&${tv}, &${this.tupDescOf(tu.key)});`);
+      return sv;
     }
 
     // A map prints as `[k: v, ...]` in insertion order (#53).
@@ -2123,6 +2516,19 @@ function mangle(name: string): string {
  * of strings that reported HK_E_SCALAR freed its backing array and leaked
  * every string in it.
  */
+/** Field shapes a tuple may hold; a nested tuple is allowed separately. */
+const TUPLE_FIELD_CTYS = new Set(["hk_int", "hk_float", "hk_bool", "hk_char", "hk_byte", "hk_str *", "hk_list *"]);
+
+/** How deeply tuples nest, so the shallowest can be declared first. */
+function tupleDepth(elems: Ty[]): number {
+  let d = 0;
+  for (const el of elems) {
+    const p = prune(el);
+    if (p.k === "tuple") d = Math.max(d, 1 + tupleDepth(p.elems));
+  }
+  return d;
+}
+
 /** Key shapes the map runtime can hash and compare exactly. */
 const MAP_KEY_CTYS = new Set(["hk_int", "hk_float", "hk_bool", "hk_char", "hk_byte", "hk_str *"]);
 /** Value shapes it can copy, release and print. */
@@ -2262,7 +2668,9 @@ function describeStmt(s: A.Stmt): string {
 
 /** Does this initializer allocate a heap value the local then owns? */
 function allocates(e: A.Expr): boolean {
-  return e.kind === "ListExpr" || e.kind === "MapExpr" || e.kind === "SetExpr";
+  // A tuple is a plain struct, but the fields it is built from may be
+  // freshly allocated, and releasing the tuple is what releases them.
+  return e.kind === "ListExpr" || e.kind === "MapExpr" || e.kind === "SetExpr" || e.kind === "TupleExpr";
 }
 
 /**

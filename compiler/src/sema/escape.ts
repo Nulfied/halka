@@ -24,7 +24,7 @@ import { classifyOwnership, type OwnershipKind } from "./ownership.ts";
  * which payload needs freeing depends on the variant, and the backend
  * resolves that from the monomorphised instance.
  */
-export interface Owned { name: string; kind: "str" | "list" | "enum" | "opt" | "map"; ty?: Ty }
+export interface Owned { name: string; kind: "str" | "list" | "enum" | "opt" | "map" | "tuple"; ty?: Ty }
 
 export interface EscapeInfo {
   /**
@@ -89,7 +89,7 @@ class EscapeAnalysis {
     return classifyOwnership(this.types.get(n), (name) => this.structFields.get(name));
   }
 
-  private heapKind(t: Ty | undefined): "str" | "list" | "enum" | "opt" | "map" | null {
+  private heapKind(t: Ty | undefined): "str" | "list" | "enum" | "opt" | "map" | "tuple" | null {
     if (!t) return null;
     const p = prune(t);
     if (p.k === "prim" && p.name === "string") return "str";
@@ -103,6 +103,9 @@ class EscapeAnalysis {
     // `string?` owns its string when it has one. The wrapper itself is a
     // plain struct, so the release has to look at the tag first.
     if (p.k === "opt" && this.heapKind(p.inner)) return "opt";
+    // A tuple owns whatever its fields own, so `(i, "row {i}")` in a loop
+    // leaked a string per iteration until this was here.
+    if (p.k === "tuple" && p.elems.some((el) => this.heapKind(el))) return "tuple";
     return null;
   }
 
@@ -159,8 +162,8 @@ class EscapeAnalysis {
      * which over-approximates in the leak direction rather than the
      * double-free one.
      */
-    const owns: { name: string; kind: "str" | "list" | "enum" | "opt" | "map"; ty?: Ty; init: A.Expr | null; block: A.Block | null }[] = [];
-    const declare = (name: string, d: { kind: "str" | "list" | "enum" | "opt" | "map"; ty?: Ty; init: A.Expr | null; block: A.Block | null }) => {
+    const owns: { name: string; kind: "str" | "list" | "enum" | "opt" | "map" | "tuple"; ty?: Ty; init: A.Expr | null; block: A.Block | null }[] = [];
+    const declare = (name: string, d: { kind: "str" | "list" | "enum" | "opt" | "map" | "tuple"; ty?: Ty; init: A.Expr | null; block: A.Block | null }) => {
       // One release per (block, name); a block cannot free the same C
       // variable twice however many times the source rebinds it.
       const at = owns.findIndex((o) => o.name === name && o.block === d.block);
@@ -269,7 +272,10 @@ class EscapeAnalysis {
       for (const s of stmts) {
         switch (s.kind) {
           case "LetStmt": {
-            if (s.value) visit(s.value, "value");
+            // Destructuring copies fields out; the value itself is not moved,
+            // so the frame keeps owning it and still has to release it.
+            // Treating it as a move leaked the field of every `let (a, b): t`.
+            if (s.value) visit(s.value, s.pattern.kind === "TuplePat" ? "read" : "value");
             if (s.pattern.kind !== "BindPat" || !s.value) break;
             const hk = this.heapKind(this.types.get(s.pattern as unknown as A.Node) ?? this.types.get(s.value));
             // Only claim a value the frame demonstrably owns.
@@ -356,6 +362,10 @@ class EscapeAnalysis {
   private producesOwned(e: A.Expr): boolean {
     switch (e.kind) {
       case "ListExpr": case "MapExpr": case "SetExpr": case "RecordExpr":
+        return true;
+      case "TupleExpr":
+        // The struct itself is not heap, but a field built here is, and
+        // releasing the tuple is what releases it.
         return true;
       case "StrLit":
         // A literal with no interpolation is static; one with interpolation

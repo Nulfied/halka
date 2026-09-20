@@ -4,6 +4,11 @@
 # keeps insertion order, so printing one or listing its keys has to produce
 # the same sequence (R23). A plain hash table would have passed a test that
 # only checked membership and failed every test that printed.
+#
+# Named map_type, not maps: a file called maps.hk sits earlier on the module
+# search path than the prelude, so `import maps` in any sibling test would
+# resolve to this program rather than the module — and the backend, which
+# reads the prelude table directly, would not agree with the interpreter.
 import maps
 
 main(),
