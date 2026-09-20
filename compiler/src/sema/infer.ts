@@ -17,7 +17,7 @@ import {
   any, opt, list, arr, map, set, tup, named, fn, param, fresh,
   prune, unify, tryUnify, instantiate, show, isNumeric, UnifyError, resultOf, cty,
 } from "./types.ts";
-import { PRELUDE_MODULES, isPreludeModule, preludeMember } from "./prelude-types.ts";
+import { JSON_DOC, PRELUDE_MODULES, isPreludeModule, preludeMember } from "./prelude-types.ts";
 
 export type TypeMap = Map<A.Node, Ty>;
 
@@ -1022,7 +1022,13 @@ export class Inferencer {
       case "prim":
         if (ot.name === "string") { this.expect(it, INT, e.index.span, "an index"); return CHAR; }
         break;
-      case "any": case "var": return any("indexing an unknown type");
+      case "any":
+        // Indexing a parsed JSON document gives another document: the
+        // backend needs that to stay true, or `doc["a"][0]` loses the one
+        // type it can compile.
+        if (ot.why === JSON_DOC) return ot;
+        return any("indexing an unknown type");
+      case "var": return any("indexing an unknown type");
       default: break;
     }
     this.err("E0463", `${show(ot)} cannot be indexed`, e.span, { rule: "#54 — Indexing, slicing & ranges" });

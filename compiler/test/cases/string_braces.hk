@@ -1,0 +1,15 @@
+# A literal brace in a string (#2).
+#
+# This exists for the formatter, which the `fmt` suite runs over every case:
+# `{` opens an interpolation, so reprinting a string that holds one has to
+# escape it again. It did not, and `"a {b} c"` came back out as an
+# interpolation of a variable named `b` — a program that still compiled and
+# quietly did something else. No case had a brace in a string, so nothing
+# caught it.
+let who: "world"
+say "a \{b} c"
+say "plain } brace"
+say "both \{ and }"
+say "interpolated {who}"
+say "mixed \{literal} and {who}"
+say "json-ish: \{\"k\": [1, 2]}"

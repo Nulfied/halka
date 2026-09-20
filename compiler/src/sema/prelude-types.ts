@@ -128,9 +128,17 @@ const MAPS: Record<string, PreludeMember> = {
   merge: gsig(["K", "V"], [["a", map(K, V)], ["b", map(K, V)]], map(K, V), "hk_maps_merge"),
 };
 
+/**
+ * What `json.parse` gives back. It is an `any` because the document's shape
+ * is only known at run time, and the backend keys off this exact text to
+ * tell such a value from any other `any` -- the same trick the `c` and `py`
+ * boundaries already use.
+ */
+export const JSON_DOC = "a parsed JSON document";
+
 const JSON_MOD: Record<string, PreludeMember> = {
   // `parse` yields whatever the document held, which is `any` by nature.
-  parse: sig([["text", STRING]], any("a parsed JSON document")),
+  parse: sig([["text", STRING]], any(JSON_DOC)),
   stringify: gsig(["T"], [["value", T]], STRING),
 };
 

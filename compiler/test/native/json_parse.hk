@@ -1,0 +1,78 @@
+# `json.parse` in the compiled backend.
+#
+# Named json_parse, not json: a file called json.hk sits earlier on the
+# module search path than the prelude.
+#
+# A document's shape is only known at run time -- one object holds ints,
+# strings, arrays and bools at once -- so the backend gives it an opaque
+# dynamic value, in the same spirit as `PyObject *` at the Python boundary.
+# It has to print as the Halka value the interpreter would have built, which
+# is not printing it back as JSON: `say doc` uses `inspect` formatting while
+# `json.stringify(doc)` produces compact JSON.
+#
+# `\{` is a literal brace: a bare `{` opens an interpolation (#2).
+import json
+
+main(),
+    let doc: json.parse(
+        "\{\"n\": 1, \"f\": 2.5, \"s\": \"txt\", \"a\": [1,2], \"o\": \{\"k\": \"v\"}, \"b\": true, \"z\": null}"
+    ),
+    say doc,
+
+    # Reading fields. An integral number parses as an int, which is how the
+    # interpreter turns a JavaScript number back into a Halka value, so 2.0
+    # comes back as 2.
+    say doc["n"],
+    say doc["f"],
+    say doc["s"],
+    say doc["b"],
+    say doc["z"],
+
+    # Nested, and indexed through twice.
+    say doc["o"],
+    say doc["o"]["k"],
+    say doc["a"],
+    say doc["a"][0],
+    say doc["a"][1],
+
+    # A missing key reads as null (#7). An array index out of range is an
+    # error instead, the way it is for a list, so it is not exercised here.
+    say doc["missing"],
+
+    # `len` counts an object's entries and an array's elements.
+    say len(doc),
+    say len(doc["a"]),
+
+    # A document round-trips back to compact JSON.
+    say json.stringify(doc),
+
+    # A top-level array, and top-level scalars.
+    let arr: json.parse("[1, \"two\", [3]]"),
+    say arr,
+    say arr[1],
+    say arr[2],
+    say json.parse("  42  "),
+    say json.parse("\"bare\""),
+    say json.parse("true"),
+    say json.parse("null"),
+
+    # Numbers: integral ones become ints, exponent form included.
+    say json.parse("[2.0, 2.5, 1e3, -0.0]"),
+
+    # Escapes, including a surrogate pair.
+    say json.parse("[\"tab\\tsep\", \"quote\\\"q\", \"\\u0041\", \"\\ud83d\\ude00\"]"),
+
+    # A repeated key keeps the last value, as the interpreter does.
+    say json.parse("\{\"a\": 1, \"a\": 2}"),
+
+    # Empty containers. An empty object is a map, and an empty map prints as
+    # `map()` rather than `[]`, which is already how maps render.
+    say json.parse("[]"),
+    say json.parse("\{}"),
+
+    # Parsed fresh each iteration, so a leak would accumulate.
+    let n: 0,
+    for i in 0..30,
+        let d: json.parse("\{\"i\": 1, \"xs\": [1, 2, 3]}"),
+        n: n + len(d) + len(d["xs"]),
+    say n

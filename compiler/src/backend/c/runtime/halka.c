@@ -1282,3 +1282,375 @@ static hk_str *hk_json_value(hk_int kind, const void *slot, const hk_tupdesc *d)
     default:         return hk_json_int(*(const hk_int *)slot);
   }
 }
+
+/* ---- json documents ------------------------------------------------------
+ *
+ * See halka.h. The grammar is RFC 8259 as JavaScript's JSON.parse reads it,
+ * because the interpreter uses that and the two must agree (R23). The one
+ * place that needs saying: a number is an int when it is integral and a
+ * float otherwise, which is how the interpreter converts a JavaScript
+ * number back into a Halka value -- so `2.0` parses to `2`, not `2.0`.
+ */
+
+static hk_json *hk_json_alloc(hk_int tag) {
+  hk_json *v = (hk_json *)hk_alloc(sizeof(hk_json));
+  memset(v, 0, sizeof *v);
+  v->rc = 1;
+  v->tag = tag;
+  return v;
+}
+
+hk_json *hk_json_retain(hk_json *v) { if (v) v->rc++; return v; }
+
+void hk_json_release(hk_json *v) {
+  if (!v || --v->rc > 0) return;
+  if (v->tag == HK_J_STR) hk_str_release(v->as.s);
+  else if (v->tag == HK_J_ARR) {
+    for (hk_int i = 0; i < v->as.arr.len; i++) hk_json_release(v->as.arr.items[i]);
+    hk_dealloc(v->as.arr.items);
+  } else if (v->tag == HK_J_OBJ) {
+    for (hk_int i = 0; i < v->as.obj.len; i++) {
+      hk_str_release(v->as.obj.keys[i]);
+      hk_json_release(v->as.obj.vals[i]);
+    }
+    hk_dealloc(v->as.obj.keys);
+    hk_dealloc(v->as.obj.vals);
+  }
+  hk_dealloc(v);
+}
+
+/* --- parsing --- */
+
+typedef struct {
+  const char *p;
+  const char *end;
+  const char *start;
+  const char *file;
+  hk_int line;
+} hk_jp;
+
+static void hk_jp_fail(hk_jp *j) {
+  char buf[64];
+  snprintf(buf, sizeof buf, "invalid JSON at byte %lld", (long long)(j->p - j->start));
+  hk_panic(buf, j->file, j->line);
+}
+
+static hk_json *hk_jp_value(hk_jp *j);
+
+static void hk_jp_space(hk_jp *j) {
+  while (j->p < j->end) {
+    char c = *j->p;
+    if (c == ' ' || c == 9 || c == 10 || c == 13) j->p++;
+    else break;
+  }
+}
+
+static void hk_jp_lit(hk_jp *j, const char *word, hk_int n) {
+  /* Consume what matches before giving up, so the reported byte is where
+     the word stopped being right -- which is where JSON.parse points too. */
+  hk_int k = 0;
+  while (k < n && j->p < j->end && *j->p == word[k]) { j->p++; k++; }
+  if (k != n) hk_jp_fail(j);
+}
+
+/** Append one code point as UTF-8. */
+static hk_int hk_utf8_put(char *out, unsigned long cp) {
+  if (cp < 0x80) { out[0] = (char)cp; return 1; }
+  if (cp < 0x800) {
+    out[0] = (char)(0xC0 | (cp >> 6));
+    out[1] = (char)(0x80 | (cp & 0x3F));
+    return 2;
+  }
+  if (cp < 0x10000) {
+    out[0] = (char)(0xE0 | (cp >> 12));
+    out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    out[2] = (char)(0x80 | (cp & 0x3F));
+    return 3;
+  }
+  out[0] = (char)(0xF0 | (cp >> 18));
+  out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+  out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+  out[3] = (char)(0x80 | (cp & 0x3F));
+  return 4;
+}
+
+static unsigned long hk_jp_hex4(hk_jp *j) {
+  unsigned long v = 0;
+  for (int k = 0; k < 4; k++) {
+    if (j->p >= j->end) hk_jp_fail(j);
+    char c = *j->p++;
+    v <<= 4;
+    if (c >= '0' && c <= '9') v |= (unsigned long)(c - '0');
+    else if (c >= 'a' && c <= 'f') v |= (unsigned long)(c - 'a' + 10);
+    else if (c >= 'A' && c <= 'F') v |= (unsigned long)(c - 'A' + 10);
+    else hk_jp_fail(j);
+  }
+  return v;
+}
+
+static hk_str *hk_jp_string(hk_jp *j) {
+  if (j->p >= j->end || *j->p != '"') hk_jp_fail(j);
+  j->p++;
+  /* An escape never expands, so the raw span bounds the result. */
+  const char *from = j->p;
+  hk_int cap = (hk_int)(j->end - from) + 4;
+  hk_str *out = hk_str_new(NULL, cap);
+  hk_int at = 0;
+  while (1) {
+    if (j->p >= j->end) { hk_str_release(out); hk_jp_fail(j); }
+    unsigned char c = (unsigned char)*j->p;
+    if (c == '"') { j->p++; break; }
+    if (c < 0x20) { hk_str_release(out); hk_jp_fail(j); }
+    if (c != '\\') { out->data[at++] = (char)c; j->p++; continue; }
+    j->p++;
+    if (j->p >= j->end) { hk_str_release(out); hk_jp_fail(j); }
+    char e = *j->p++;
+    switch (e) {
+      case '"':  out->data[at++] = 34; break;
+      case '\\': out->data[at++] = 92; break;
+      case '/':  out->data[at++] = 47; break;
+      case 'b':  out->data[at++] = 8;  break;
+      case 'f':  out->data[at++] = 12; break;
+      case 'n':  out->data[at++] = 10; break;
+      case 'r':  out->data[at++] = 13; break;
+      case 't':  out->data[at++] = 9;  break;
+      case 'u': {
+        unsigned long cp = hk_jp_hex4(j);
+        /* A surrogate pair is two escapes that make one code point. */
+        if (cp >= 0xD800 && cp <= 0xDBFF && j->end - j->p >= 6 && j->p[0] == '\\' && j->p[1] == 'u') {
+          const char *save = j->p;
+          j->p += 2;
+          unsigned long lo = hk_jp_hex4(j);
+          if (lo >= 0xDC00 && lo <= 0xDFFF) cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+          else j->p = save;
+        }
+        at += hk_utf8_put(out->data + at, cp);
+        break;
+      }
+      default: hk_str_release(out); hk_jp_fail(j);
+    }
+  }
+  out->len = at;
+  out->data[at] = 0;
+  return out;
+}
+
+static hk_json *hk_jp_number(hk_jp *j) {
+  const char *from = j->p;
+  if (j->p < j->end && (*j->p == '-' || *j->p == '+')) j->p++;
+  while (j->p < j->end && ((*j->p >= '0' && *j->p <= '9') || *j->p == '.' ||
+                           *j->p == 'e' || *j->p == 'E' || *j->p == '-' || *j->p == '+')) {
+    j->p++;
+  }
+  if (j->p == from) hk_jp_fail(j);
+  char buf[350];
+  size_t n = (size_t)(j->p - from);
+  if (n >= sizeof buf) hk_jp_fail(j);
+  memcpy(buf, from, n);
+  buf[n] = 0;
+  char *stop = NULL;
+  double d = strtod(buf, &stop);
+  if (stop != buf + n) hk_jp_fail(j);
+  /* Integral becomes an int, matching how the interpreter turns a
+     JavaScript number back into a Halka value. */
+  if (d == floor(d) && isfinite(d) && fabs(d) < 9.2233720368547758e18) {
+    hk_json *v = hk_json_alloc(HK_J_INT);
+    v->as.i = (hk_int)d;
+    return v;
+  }
+  hk_json *v = hk_json_alloc(HK_J_FLOAT);
+  v->as.f = d;
+  return v;
+}
+
+static void hk_arr_push(hk_json *v, hk_json *item) {
+  if (v->as.arr.len == v->as.arr.cap) {
+    hk_int cap = v->as.arr.cap ? v->as.arr.cap * 2 : 8;
+    v->as.arr.items = (hk_json **)hk_realloc(v->as.arr.items, (size_t)cap * sizeof(hk_json *));
+    v->as.arr.cap = cap;
+  }
+  v->as.arr.items[v->as.arr.len++] = item;
+}
+
+static void hk_obj_push(hk_json *v, hk_str *key, hk_json *val) {
+  /* A repeated key keeps the last value, as JavaScript does. */
+  for (hk_int i = 0; i < v->as.obj.len; i++) {
+    if (hk_str_eq(v->as.obj.keys[i], key)) {
+      hk_str_release(key);
+      hk_json_release(v->as.obj.vals[i]);
+      v->as.obj.vals[i] = val;
+      return;
+    }
+  }
+  if (v->as.obj.len == v->as.obj.cap) {
+    hk_int cap = v->as.obj.cap ? v->as.obj.cap * 2 : 8;
+    v->as.obj.keys = (hk_str **)hk_realloc(v->as.obj.keys, (size_t)cap * sizeof(hk_str *));
+    v->as.obj.vals = (hk_json **)hk_realloc(v->as.obj.vals, (size_t)cap * sizeof(hk_json *));
+    v->as.obj.cap = cap;
+  }
+  v->as.obj.keys[v->as.obj.len] = key;
+  v->as.obj.vals[v->as.obj.len] = val;
+  v->as.obj.len++;
+}
+
+static hk_json *hk_jp_value(hk_jp *j) {
+  hk_jp_space(j);
+  if (j->p >= j->end) hk_jp_fail(j);
+  char c = *j->p;
+  if (c == '{') {
+    j->p++;
+    hk_json *v = hk_json_alloc(HK_J_OBJ);
+    hk_jp_space(j);
+    if (j->p < j->end && *j->p == '}') { j->p++; return v; }
+    while (1) {
+      hk_jp_space(j);
+      hk_str *key = hk_jp_string(j);
+      hk_jp_space(j);
+      if (j->p >= j->end || *j->p != ':') { hk_str_release(key); hk_json_release(v); hk_jp_fail(j); }
+      j->p++;
+      hk_obj_push(v, key, hk_jp_value(j));
+      hk_jp_space(j);
+      if (j->p < j->end && *j->p == ',') { j->p++; continue; }
+      if (j->p < j->end && *j->p == '}') { j->p++; return v; }
+      hk_json_release(v);
+      hk_jp_fail(j);
+    }
+  }
+  if (c == '[') {
+    j->p++;
+    hk_json *v = hk_json_alloc(HK_J_ARR);
+    hk_jp_space(j);
+    if (j->p < j->end && *j->p == ']') { j->p++; return v; }
+    while (1) {
+      hk_arr_push(v, hk_jp_value(j));
+      hk_jp_space(j);
+      if (j->p < j->end && *j->p == ',') { j->p++; continue; }
+      if (j->p < j->end && *j->p == ']') { j->p++; return v; }
+      hk_json_release(v);
+      hk_jp_fail(j);
+    }
+  }
+  if (c == '"') {
+    hk_json *v = hk_json_alloc(HK_J_STR);
+    v->as.s = hk_jp_string(j);
+    return v;
+  }
+  if (c == 't') { hk_jp_lit(j, "true", 4);  hk_json *v = hk_json_alloc(HK_J_BOOL); v->as.b = true;  return v; }
+  if (c == 'f') { hk_jp_lit(j, "false", 5); hk_json *v = hk_json_alloc(HK_J_BOOL); v->as.b = false; return v; }
+  if (c == 'n') { hk_jp_lit(j, "null", 4);  return hk_json_alloc(HK_J_NULL); }
+  return hk_jp_number(j);
+}
+
+hk_json *hk_json_parse(const hk_str *text, const char *file, hk_int line) {
+  hk_jp j;
+  j.start = text ? text->data : "";
+  j.p = j.start;
+  j.end = j.start + (text ? text->len : 0);
+  j.file = file;
+  j.line = line;
+  hk_json *v = hk_jp_value(&j);
+  hk_jp_space(&j);
+  if (j.p != j.end) { hk_json_release(v); hk_jp_fail(&j); }
+  return v;
+}
+
+/* --- reading --- */
+
+hk_json *hk_json_get(const hk_json *v, hk_str *key) {
+  if (v && v->tag == HK_J_OBJ) {
+    for (hk_int i = 0; i < v->as.obj.len; i++) {
+      if (hk_str_eq(v->as.obj.keys[i], key)) return v->as.obj.vals[i];
+    }
+  }
+  return NULL;   /* absent reads as null (#7) */
+}
+
+hk_json *hk_json_at(const hk_json *v, hk_int i, const char *file, hk_int line) {
+  hk_int len = (v && v->tag == HK_J_ARR) ? v->as.arr.len : 0;
+  hk_int k = i < 0 ? i + len : i;               /* negative indices count back (#54) */
+  if (v && v->tag == HK_J_ARR && k >= 0 && k < len) return v->as.arr.items[k];
+  /* An array index out of range is an error, the way it is for a list --
+     unlike a missing object key, which reads as null (#7). */
+  char buf[96];
+  snprintf(buf, sizeof buf, "index %lld is out of range for length %lld",
+           (long long)i, (long long)len);
+  hk_panic(buf, file, line);
+  return NULL;
+}
+
+hk_int hk_json_count(const hk_json *v) {
+  if (!v) return 0;
+  if (v->tag == HK_J_ARR) return v->as.arr.len;
+  if (v->tag == HK_J_OBJ) return v->as.obj.len;
+  if (v->tag == HK_J_STR) return hk_str_len_chars(v->as.s);
+  return 0;
+}
+
+/* --- rendering --- */
+
+hk_str *hk_json_inspect(const hk_json *v) {
+  if (!v) return hk_str_new("null", 4);
+  switch (v->tag) {
+    case HK_J_NULL:  return hk_str_new("null", 4);
+    case HK_J_BOOL:  return hk_str_from_bool(v->as.b);
+    case HK_J_INT:   return hk_str_from_int(v->as.i);
+    case HK_J_FLOAT: return hk_str_from_float(v->as.f);
+    case HK_J_STR:   return hk_str_quoted(v->as.s, HK_DQUOTE);
+    case HK_J_ARR: {
+      hk_str *acc = hk_str_new("[", 1);
+      for (hk_int i = 0; i < v->as.arr.len; i++) {
+        if (i) acc = hk_join2(acc, hk_str_new(", ", 2));
+        acc = hk_join2(acc, hk_json_inspect(v->as.arr.items[i]));
+      }
+      return hk_join2(acc, hk_str_new("]", 1));
+    }
+    default: {
+      /* An object is the Halka map the interpreter would have built, and an
+         empty map prints as `map()` rather than `[]`. */
+      if (v->as.obj.len == 0) return hk_str_new("map()", 5);
+      hk_str *acc = hk_str_new("[", 1);
+      for (hk_int i = 0; i < v->as.obj.len; i++) {
+        if (i) acc = hk_join2(acc, hk_str_new(", ", 2));
+        acc = hk_join2(acc, hk_str_quoted(v->as.obj.keys[i], HK_DQUOTE));
+        acc = hk_join2(acc, hk_str_new(": ", 2));
+        acc = hk_join2(acc, hk_json_inspect(v->as.obj.vals[i]));
+      }
+      return hk_join2(acc, hk_str_new("]", 1));
+    }
+  }
+}
+
+hk_str *hk_json_display(const hk_json *v) {
+  /* `say` shows a string bare and everything else as `inspect` does. */
+  if (v && v->tag == HK_J_STR) return hk_str_retain(v->as.s);
+  return hk_json_inspect(v);
+}
+
+hk_str *hk_json_dump(const hk_json *v) {
+  if (!v) return hk_json_null();
+  switch (v->tag) {
+    case HK_J_NULL:  return hk_json_null();
+    case HK_J_BOOL:  return hk_json_bool(v->as.b);
+    case HK_J_INT:   return hk_json_int(v->as.i);
+    case HK_J_FLOAT: return hk_json_float(v->as.f);
+    case HK_J_STR:   return hk_json_str(v->as.s);
+    case HK_J_ARR: {
+      hk_str *acc = hk_str_new("[", 1);
+      for (hk_int i = 0; i < v->as.arr.len; i++) {
+        if (i) acc = hk_join2(acc, hk_str_new(",", 1));
+        acc = hk_join2(acc, hk_json_dump(v->as.arr.items[i]));
+      }
+      return hk_join2(acc, hk_str_new("]", 1));
+    }
+    default: {
+      hk_str *acc = hk_str_new("{", 1);
+      for (hk_int i = 0; i < v->as.obj.len; i++) {
+        if (i) acc = hk_join2(acc, hk_str_new(",", 1));
+        acc = hk_join2(acc, hk_json_str(v->as.obj.keys[i]));
+        acc = hk_join2(acc, hk_str_new(":", 1));
+        acc = hk_join2(acc, hk_json_dump(v->as.obj.vals[i]));
+      }
+      return hk_join2(acc, hk_str_new("}", 1));
+    }
+  }
+}

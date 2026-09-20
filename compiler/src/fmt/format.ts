@@ -548,7 +548,13 @@ const PREC: Record<string, number> = {
 };
 
 function escape(s: string): string {
-  return s.replace(/[\\"\n\t\r]/g, (c) => ({ "\\": "\\\\", '"': '\\"', "\n": "\\n", "\t": "\\t", "\r": "\\r" })[c] ?? c);
+  // `{` must be escaped back. It opens an interpolation (#2), so a string
+  // holding a literal brace — any JSON document, for one — was reprinted as
+  // the start of one: `"a {{b} c"` became `"a {b} c"`, which interpolates a
+  // variable instead of printing a brace. `}` is only special after a `{`,
+  // so it is left as it is.
+  return s.replace(/[\\"\n\t\r{]/g, (c) =>
+    ({ "\\": "\\\\", '"': '\\"', "\n": "\\n", "\t": "\\t", "\r": "\\r", "{": "\\{" })[c] ?? c);
 }
 
 /** Commands whose second argument is written with the `:` association form. */

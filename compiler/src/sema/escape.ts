@@ -18,13 +18,14 @@ import type * as A from "../parser/ast.ts";
 import type { TypeMap } from "./infer.ts";
 import { type Ty, prune } from "./types.ts";
 import { classifyOwnership, type OwnershipKind } from "./ownership.ts";
+import { JSON_DOC } from "./prelude-types.ts";
 
 /**
  * A local the frame must release. `enum` carries its type too, because
  * which payload needs freeing depends on the variant, and the backend
  * resolves that from the monomorphised instance.
  */
-export interface Owned { name: string; kind: "str" | "list" | "enum" | "opt" | "map" | "tuple"; ty?: Ty }
+export interface Owned { name: string; kind: "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json"; ty?: Ty }
 
 export interface EscapeInfo {
   /**
@@ -89,7 +90,7 @@ class EscapeAnalysis {
     return classifyOwnership(this.types.get(n), (name) => this.structFields.get(name));
   }
 
-  private heapKind(t: Ty | undefined): "str" | "list" | "enum" | "opt" | "map" | "tuple" | null {
+  private heapKind(t: Ty | undefined): "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | null {
     if (!t) return null;
     const p = prune(t);
     if (p.k === "prim" && p.name === "string") return "str";
@@ -106,6 +107,9 @@ class EscapeAnalysis {
     // A tuple owns whatever its fields own, so `(i, "row {i}")` in a loop
     // leaked a string per iteration until this was here.
     if (p.k === "tuple" && p.elems.some((el) => this.heapKind(el))) return "tuple";
+    // A parsed JSON document owns its whole tree. Indexing one hands back a
+    // borrowed pointer into it, which is why that is not an owner.
+    if (p.k === "any" && p.why === JSON_DOC) return "json";
     return null;
   }
 
@@ -162,8 +166,8 @@ class EscapeAnalysis {
      * which over-approximates in the leak direction rather than the
      * double-free one.
      */
-    const owns: { name: string; kind: "str" | "list" | "enum" | "opt" | "map" | "tuple"; ty?: Ty; init: A.Expr | null; block: A.Block | null }[] = [];
-    const declare = (name: string, d: { kind: "str" | "list" | "enum" | "opt" | "map" | "tuple"; ty?: Ty; init: A.Expr | null; block: A.Block | null }) => {
+    const owns: { name: string; kind: "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json"; ty?: Ty; init: A.Expr | null; block: A.Block | null }[] = [];
+    const declare = (name: string, d: { kind: "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json"; ty?: Ty; init: A.Expr | null; block: A.Block | null }) => {
       // One release per (block, name); a block cannot free the same C
       // variable twice however many times the source rebinds it.
       const at = owns.findIndex((o) => o.name === name && o.block === d.block);

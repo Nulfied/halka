@@ -779,12 +779,120 @@ function osModule(): NativeV[] {
   ];
 }
 
+/**
+ * Where JSON stops being valid, as a byte offset.
+ *
+ * `JSON.parse` reports a position too, but it phrases and places its errors
+ * differently between engine versions, and the compiled backend has its own
+ * parser that cannot reproduce them. A program must fail the same way
+ * whichever engine runs it (R23), so both locate the error with this
+ * grammar instead. Only reached once parsing has already failed.
+ */
+function jsonErrorAt(text: string): number {
+  const b = Buffer.from(text, "utf8");
+  let p = 0;
+
+  const space = (): void => {
+    while (p < b.length && (b[p] === 32 || b[p] === 9 || b[p] === 10 || b[p] === 13)) p++;
+  };
+  const word = (w: string): boolean => {
+    let k = 0;
+    while (k < w.length && p < b.length && b[p] === w.charCodeAt(k)) { p++; k++; }
+    return k === w.length;
+  };
+  const str = (): boolean => {
+    if (p >= b.length || b[p] !== 34) return false;
+    p++;
+    for (;;) {
+      if (p >= b.length) return false;
+      const c = b[p]!;
+      if (c === 34) { p++; return true; }
+      if (c < 0x20) return false;
+      if (c !== 92) { p++; continue; }
+      p++;
+      if (p >= b.length) return false;
+      const e = String.fromCharCode(b[p]!);
+      p++;
+      if (e === "u") {
+        for (let k = 0; k < 4; k++) {
+          if (p >= b.length || !/[0-9a-fA-F]/.test(String.fromCharCode(b[p]!))) return false;
+          p++;
+        }
+      } else if (!'"\/bfnrt'.includes(e)) return false;
+    }
+  };
+  const num = (): boolean => {
+    const from = p;
+    if (p < b.length && (b[p] === 45 || b[p] === 43)) p++;
+    while (p < b.length) {
+      const c = b[p]!;
+      if ((c >= 48 && c <= 57) || c === 46 || c === 101 || c === 69 || c === 45 || c === 43) p++;
+      else break;
+    }
+    if (p === from) return false;
+    return !Number.isNaN(Number(b.subarray(from, p).toString("utf8")));
+  };
+
+  const value = (): boolean => {
+    space();
+    if (p >= b.length) return false;
+    const c = b[p]!;
+    if (c === 123) {            // {
+      p++;
+      space();
+      if (p < b.length && b[p] === 125) { p++; return true; }
+      for (;;) {
+        space();
+        if (!str()) return false;
+        space();
+        if (p >= b.length || b[p] !== 58) return false;   // :
+        p++;
+        if (!value()) return false;
+        space();
+        if (p < b.length && b[p] === 44) { p++; continue; }
+        if (p < b.length && b[p] === 125) { p++; return true; }
+        return false;
+      }
+    }
+    if (c === 91) {             // [
+      p++;
+      space();
+      if (p < b.length && b[p] === 93) { p++; return true; }
+      for (;;) {
+        if (!value()) return false;
+        space();
+        if (p < b.length && b[p] === 44) { p++; continue; }
+        if (p < b.length && b[p] === 93) { p++; return true; }
+        return false;
+      }
+    }
+    if (c === 34) return str();
+    if (c === 116) return word("true");
+    if (c === 102) return word("false");
+    if (c === 110) return word("null");
+    return num();
+  };
+
+  if (!value()) return p;
+  space();
+  return p;   // trailing content, or the end
+}
+
 function jsonModule(): NativeV[] {
   return [
     native("stringify", 1, 2, (a) => str(JSON.stringify(toJson(a[0]!), null, a[1] ? needNum(a[1], "stringify") : undefined))),
     native("parse", 1, 1, (a) => {
-      try { return fromJson(JSON.parse(needStr(a[0]!, "parse"))); }
-      catch (e) { fail(`invalid JSON: ${(e as Error).message}`); }
+      const text = needStr(a[0]!, "parse");
+      try { return fromJson(JSON.parse(text)); }
+      catch (e) {
+        // Not the engine's wording. `JSON.parse` phrases its errors
+        // differently between Node versions, and the compiled backend has
+        // its own parser that could never reproduce them -- so a program
+        // would fail differently depending on how it was run (R23). The
+        // position is the one part worth keeping, and both parsers report
+        // the byte they gave up at.
+        fail(`invalid JSON at byte ${jsonErrorAt(text)}`);
+      }
     }),
   ];
 }

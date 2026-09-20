@@ -354,6 +354,51 @@ hk_str *hk_json_list(const hk_list *l);
 hk_str *hk_json_map(const hk_map *m);
 hk_str *hk_json_tuple(const void *p, const hk_tupdesc *d);
 
+/* ---- json documents ------------------------------------------------------
+ *
+ * `json.parse` hands back a document whose shape is only known at run time:
+ * one object holds ints, strings, arrays and bools at once. The backend has
+ * no such type, so this is one -- an opaque dynamic value, in the same
+ * spirit as `PyObject *` at the Python boundary.
+ *
+ * A document renders two ways. `inspect` is how the interpreter prints the
+ * Halka value it would have built (`["n": 1, "a": [1, 2]]`), which is what
+ * `say` must produce; `dump` is compact JSON, which is what `json.stringify`
+ * must produce.
+ */
+#define HK_J_NULL  0
+#define HK_J_BOOL  1
+#define HK_J_INT   2
+#define HK_J_FLOAT 3
+#define HK_J_STR   4
+#define HK_J_ARR   5
+#define HK_J_OBJ   6
+
+typedef struct hk_json {
+  hk_int rc;
+  hk_int tag;
+  union {
+    hk_bool  b;
+    hk_int   i;
+    hk_float f;
+    hk_str  *s;
+    struct { struct hk_json **items; hk_int len, cap; } arr;
+    struct { hk_str **keys; struct hk_json **vals; hk_int len, cap; } obj;
+  } as;
+} hk_json;
+
+hk_json *hk_json_parse(const hk_str *text, const char *file, hk_int line);
+hk_json *hk_json_retain(hk_json *v);
+void     hk_json_release(hk_json *v);
+/** A missing key or an out-of-range index reads as null (#7). */
+hk_json *hk_json_get(const hk_json *v, hk_str *key);
+hk_json *hk_json_at(const hk_json *v, hk_int i, const char *file, hk_int line);
+hk_int   hk_json_count(const hk_json *v);
+hk_str  *hk_json_inspect(const hk_json *v);
+hk_str  *hk_json_display(const hk_json *v);
+hk_str  *hk_json_dump(const hk_json *v);
+
+
 
 
 /* ---- capabilities (#45) --------------------------------------------------

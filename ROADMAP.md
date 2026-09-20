@@ -102,6 +102,27 @@ name matches anything, `null` included, so it ends the chain and a following
 disagreed with the interpreter on exactly the case the arm exists for. An
 optional of a struct or enum is refused rather than mis-ordered in C.
 
+**`json` compiles natively**, both halves. `stringify` dispatches on the
+argument's static type, so the runtime has one function per shape rather
+than a generic walker; its conventions are JavaScript's, because that is
+what the interpreter delegates to and the two must agree byte for byte.
+`parse` needed something new: a document's shape is only known at run time,
+so the backend gives it an opaque dynamic value in the same spirit as
+`PyObject *` at the Python boundary. It prints as the Halka value the
+interpreter would have built, which is not the same as printing it back as
+JSON.
+
+The interpreter's parse error used to be V8's own wording, which changes
+between Node versions and which no C parser could reproduce -- so the same
+program failed differently depending on how it was run. Both engines now
+locate the error with the same grammar and report the same byte.
+
+Fixing this also turned up a formatter bug with nothing to do with JSON:
+`{` opens an interpolation, and reprinting a string that held one did not
+escape it again, so `"a \{b} c"` came back as `"a {b} c"` -- an
+interpolation of a variable. The program still compiled and quietly did
+something else. No test had a brace in a string.
+
 **Tuples compile natively**, and with them the two things maps were missing:
 `for e in m` and `maps.from_entries`. Each shape is its own C struct, so the
 runtime cannot know a layout ahead of time; the emitter writes a descriptor

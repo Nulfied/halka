@@ -19,7 +19,7 @@ import type { TypeMap, ForeignImport } from "../../sema/infer.ts";
 import type { EscapeInfo, Owned } from "../../sema/escape.ts";
 import { type Ty, prune, show, C_SCALARS } from "../../sema/types.ts";
 import { PY_RUNTIME, pyConverter, pyLifter } from "./pyruntime.ts";
-import { preludeMember } from "../../sema/prelude-types.ts";
+import { preludeMember, JSON_DOC } from "../../sema/prelude-types.ts";
 
 interface EnumVariantDef { name: string; tag: number; fields: { name: string; ty: Ty }[] }
 /** One monomorphised enum. `key` is the C name; `name` is the Halka name. */
@@ -104,7 +104,7 @@ export class CEmitter {
    * must free; `live` is the subset already declared at the current point, so
    * an early `give` never frees something C has not seen yet.
    */
-  private blockStack: { owned: Set<string>; kinds: Map<string, "str" | "list" | "enum" | "opt" | "map" | "tuple">; types: Map<string, Ty | undefined>; declared: Set<string>; optVars: Set<string>; live: Owned[]; caps: number; isLoopBody: boolean }[] = [];
+  private blockStack: { owned: Set<string>; kinds: Map<string, "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json">; types: Map<string, Ty | undefined>; declared: Set<string>; optVars: Set<string>; live: Owned[]; caps: number; isLoopBody: boolean }[] = [];
   /** Owning parameters of the current function, freed when it returns. */
   private frameParams: Owned[] = [];
   /** Values built inside the current statement, freed once it completes. */
@@ -421,6 +421,11 @@ export class CEmitter {
         if (t2) return t2;
         break;
       }
+      case "any":
+        // Only this one `any` has a representation: a parsed JSON document
+        // is an opaque dynamic value, like `PyObject *` at the py boundary.
+        if (p.why === JSON_DOC) return "hk_json *";
+        break;
       default: break;
     }
     if (span) {
@@ -659,6 +664,7 @@ export class CEmitter {
   /** The JSON of an already-emitted C expression of known type. */
   private jsonOf(cExpr: string, t: Ty | undefined, span: Span): string {
     const p = t ? prune(t) : undefined;
+    if (this.isJsonDoc(t)) return `hk_json_dump(${cExpr})`;
     const tu = this.tupOf(t);
     if (tu) {
       const v = this.fresh("jst");
@@ -969,6 +975,12 @@ export class CEmitter {
     const p = t ? prune(t) : undefined;
     return !!p && p.k === "prim" && p.name === "float";
   }
+  /** Is this the opaque dynamic value `json.parse` hands back? */
+  private isJsonDoc(t: Ty | undefined): boolean {
+    const p = t ? prune(t) : undefined;
+    return !!p && p.k === "any" && p.why === JSON_DOC;
+  }
+
   private isMap(t: Ty | undefined): boolean {
     const p = t ? prune(t) : undefined;
     return !!p && p.k === "map";
@@ -1303,6 +1315,7 @@ export class CEmitter {
     { isVoid: true, needsCleanup: false, retTy: undefined };
 
   private releaseLocal(o: Owned): void {
+    if (o.kind === "json") { this.line(`hk_json_release(${mangle(o.name)});`); return; }
     if (o.kind === "tuple") {
       const info = this.tupOf(o.ty);
       if (info) this.line(`hk_tuple_drop(&${mangle(o.name)}, &${this.tupDescOf(info.key)});`);
@@ -1435,13 +1448,16 @@ export class CEmitter {
       if (ac === "hk_list *") args[i] = this.holdTemp(args[i]!, "list");
       else if (ac === "hk_str *") args[i] = this.holdTemp(args[i]!, "str");
       else if (ac === "hk_map *") args[i] = this.holdTemp(args[i]!, "map");
+      else if (ac === "hk_json *") args[i] = this.holdTemp(args[i]!, "json");
     });
   }
 
   /** Bind a freshly built value so the statement can free it again. */
-  private holdTemp(cExpr: string, kind: "str" | "list" | "map"): string {
-    const cty = kind === "str" ? "hk_str *" : kind === "map" ? "hk_map *" : "hk_list *";
-    const v = this.fresh(kind === "str" ? "tstr" : kind === "map" ? "tmap" : "tlst");
+  private holdTemp(cExpr: string, kind: "str" | "list" | "map" | "json"): string {
+    const cty = kind === "str" ? "hk_str *" : kind === "map" ? "hk_map *"
+      : kind === "json" ? "hk_json *" : "hk_list *";
+    const v = this.fresh(kind === "str" ? "tstr" : kind === "map" ? "tmap"
+      : kind === "json" ? "tjsn" : "tlst");
     this.line(`${cty}${v} = ${cExpr};`);
     this.stmtTemps.push({ name: v, kind });
     return v;
@@ -1891,6 +1907,13 @@ export class CEmitter {
           const acc = this.opts.release ? "HK_AT" : "HK_IDX";
           return `${acc}(${this.expr(e.obj)}, ${et}, ${this.expr(e.index)})`;
         }
+        if (this.isJsonDoc(ot)) {
+          // A missing key or an out-of-range index reads as null (#7), which
+          // the runtime gives back as an absent document rather than failing.
+          return this.isStr(this.tyOf(e.index))
+            ? `hk_json_get(${this.expr(e.obj)}, ${this.expr(e.index)})`
+            : `hk_json_at(${this.expr(e.obj)}, ${this.expr(e.index)}, ${this.loc(e.span)})`;
+        }
         if (this.isMap(ot)) return this.mapGet(e.obj, e.index, this.tyOf(e), e.span);
         const tu = this.tupOf(ot);
         if (tu) {
@@ -2181,6 +2204,7 @@ export class CEmitter {
           if (this.isList(t)) return `(${args[0]})->len`;
           if (this.isStr(t)) return `hk_str_len_chars(${args[0]})`;
           if (this.isMap(t)) return `hk_map_len(${args[0]})`;
+          if (this.isJsonDoc(t)) return `hk_json_count(${args[0]})`;
           {
             const tu = this.tupOf(t);
             // A tuple's length is its shape, so it is known while compiling.
@@ -2291,6 +2315,7 @@ export class CEmitter {
         // Emitted here rather than called in the runtime: both need types
         // the emitter knows and a runtime function would have to be told.
         if (op.name === "maps" && m === "from_entries") return this.mapFromEntries(e, args[0]!);
+        if (op.name === "json" && m === "parse") return `hk_json_parse(${args[0]}, ${this.loc(e.span)})`;
         if (op.name === "json" && m === "stringify") return this.jsonStringify(e, args[0]!);
         if (!member.c) {
           this.err("E0707", `the native backend does not implement \`${op.name}.${m}\` yet`, e.span,
@@ -2454,6 +2479,15 @@ export class CEmitter {
       const v = this.fresh("osv");
       this.line(`${o.cty} ${v} = ${this.expr(e)};`);
       return `(${v}.has ? ${this.cStrOf(`${v}.v`, o.inner, e.span)} : hk_str_lit("null"))`;
+    }
+
+    // A parsed document prints as the Halka value the interpreter would
+    // have built: a string bare, everything else as `inspect` renders it.
+    if (this.isJsonDoc(t)) {
+      // Indexing borrows from the parent document, but a freshly parsed one
+      // printed straight away belongs to this statement.
+      const d = isRead(e) ? this.expr(e) : this.holdTemp(this.expr(e), "json");
+      return `hk_json_display(${d})`;
     }
 
     // A tuple prints as `(a, b)` (#53), walked through its descriptor.
