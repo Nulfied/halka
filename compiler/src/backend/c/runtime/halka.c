@@ -1151,3 +1151,134 @@ hk_str *hk_str_from_tuple(const void *p, const hk_tupdesc *d) {
   }
   return hk_join2(acc, hk_str_new(")", 1));
 }
+
+/* ---- json ----------------------------------------------------------------
+ *
+ * `json.stringify` only. Output has to match the interpreter byte for byte
+ * (R23), and the interpreter delegates to JavaScript's JSON.stringify, so
+ * the quirks copied here are JavaScript's: an integral float prints without
+ * a decimal point, a non-string map key is stringified, and a value that is
+ * not finite becomes `null`.
+ */
+
+static hk_str *hk_json_value(hk_int kind, const void *slot, const hk_tupdesc *d);
+
+hk_str *hk_json_int(hk_int v) { return hk_str_from_int(v); }
+
+hk_str *hk_json_bool(hk_bool v) { return hk_str_new(v ? "true" : "false", v ? 4 : 5); }
+
+hk_str *hk_json_null(void) { return hk_str_new("null", 4); }
+
+hk_str *hk_json_float(hk_float v) {
+  char buf[40];
+  if (!isfinite(v)) return hk_json_null();   /* JSON has no NaN or Infinity */
+  /* An integral value prints as an integer, the way JavaScript does, but
+     only below 1e21; past that JavaScript switches to exponent form too. */
+  if (v == floor(v) && fabs(v) < 1e21) {
+    snprintf(buf, sizeof buf, "%.0f", v);
+    /* "-0" is the one case where %.0f and JavaScript disagree. */
+    if (buf[0] == '-' && buf[1] == '0' && buf[2] == '\0') { buf[0] = '0'; buf[1] = '\0'; }
+    return hk_str_new(buf, (hk_int)strlen(buf));
+  }
+  /* Shortest representation that reads back exactly. */
+  for (int prec = 15; prec <= 17; prec++) {
+    snprintf(buf, sizeof buf, "%.*g", prec, v);
+    if (strtod(buf, NULL) == v) break;
+  }
+  return hk_str_new(buf, (hk_int)strlen(buf));
+}
+
+/** JSON string escaping, which is not the same as `inspect`'s. */
+hk_str *hk_json_str(const hk_str *s) {
+  hk_int cap = 2;
+  for (hk_int i = 0; s && i < s->len; i++) {
+    unsigned char c = (unsigned char)s->data[i];
+    cap += (c == 34 || c == 92 || c == 8 || c == 12 || c == 10 || c == 13 || c == 9) ? 2
+         : c < 32 ? 6 : 1;
+  }
+  hk_str *out = hk_str_new(NULL, cap);
+  hk_int at = 0;
+  out->data[at++] = 34;                       /* " */
+  for (hk_int i = 0; s && i < s->len; i++) {
+    unsigned char c = (unsigned char)s->data[i];
+    switch (c) {
+      case 34:  out->data[at++] = 92; out->data[at++] = 34;  break;  /* \" */
+      case 92:  out->data[at++] = 92; out->data[at++] = 92;  break;  /* \\ */
+      case 8:   out->data[at++] = 92; out->data[at++] = 98;  break;  /* \b */
+      case 12:  out->data[at++] = 92; out->data[at++] = 102; break;  /* \f */
+      case 10:  out->data[at++] = 92; out->data[at++] = 110; break;  /* \n */
+      case 13:  out->data[at++] = 92; out->data[at++] = 114; break;  /* \r */
+      case 9:   out->data[at++] = 92; out->data[at++] = 116; break;  /* \t */
+      default:
+        if (c < 32) {
+          static const char hex[] = "0123456789abcdef";
+          out->data[at++] = 92; out->data[at++] = 117;               /* \u */
+          out->data[at++] = 48; out->data[at++] = 48;                /* 00 */
+          out->data[at++] = hex[(c >> 4) & 15];
+          out->data[at++] = hex[c & 15];
+        } else {
+          out->data[at++] = (char)c;   /* UTF-8 passes through */
+        }
+    }
+  }
+  out->data[at++] = 34;
+  out->len = at;
+  out->data[at] = 0;
+  return out;
+}
+
+hk_str *hk_json_tuple(const void *p, const hk_tupdesc *d) {
+  /* A tuple has no JSON counterpart, so it becomes an array. */
+  hk_str *acc = hk_str_new("[", 1);
+  for (hk_int i = 0; i < d->n; i++) {
+    if (i) acc = hk_join2(acc, hk_str_new(",", 1));
+    acc = hk_join2(acc, hk_json_value(d->kinds[i], (const char *)p + d->offs[i],
+                                      d->kinds[i] == HK_E_TUPLE ? d->subs[i] : NULL));
+  }
+  return hk_join2(acc, hk_str_new("]", 1));
+}
+
+hk_str *hk_json_list(const hk_list *l) {
+  hk_str *acc = hk_str_new("[", 1);
+  for (hk_int i = 0; i < l->len; i++) {
+    if (i) acc = hk_join2(acc, hk_str_new(",", 1));
+    acc = hk_join2(acc, hk_json_value(l->ekind, (const char *)l->data + i * l->esz, l->edesc));
+  }
+  return hk_join2(acc, hk_str_new("]", 1));
+}
+
+/** A JSON object key is always a string, so a non-string key is converted. */
+static hk_str *hk_json_key(hk_int kind, const void *slot) {
+  if (kind == HK_E_STR) return hk_json_str(*(hk_str *const *)slot);
+  hk_str *plain = hk_json_value(kind, slot, NULL);
+  hk_str *out = hk_json_str(plain);
+  hk_str_release(plain);
+  return out;
+}
+
+hk_str *hk_json_map(const hk_map *m) {
+  hk_str *acc = hk_str_new("{", 1);
+  bool first = true;
+  for (hk_int e = 0; e < m->used; e++) {
+    if (!m->live[e]) continue;
+    if (!first) acc = hk_join2(acc, hk_str_new(",", 1));
+    first = false;
+    acc = hk_join2(acc, hk_json_key(m->kkind, m->keys + e * m->ksz));
+    acc = hk_join2(acc, hk_str_new(":", 1));
+    acc = hk_join2(acc, hk_json_value(m->vkind, m->vals + e * m->vsz, NULL));
+  }
+  return hk_join2(acc, hk_str_new("}", 1));
+}
+
+static hk_str *hk_json_value(hk_int kind, const void *slot, const hk_tupdesc *d) {
+  switch (kind) {
+    case HK_E_FLOAT: return hk_json_float(*(const hk_float *)slot);
+    case HK_E_BOOL:  return hk_json_bool(*(const hk_bool *)slot);
+    case HK_E_CHAR:  { hk_str *c = hk_str_from_char(*(const hk_char *)slot);
+                       hk_str *q = hk_json_str(c); hk_str_release(c); return q; }
+    case HK_E_STR:   return hk_json_str(*(hk_str *const *)slot);
+    case HK_E_LIST:  return hk_json_list(*(hk_list *const *)slot);
+    case HK_E_TUPLE: return hk_json_tuple(slot, d);
+    default:         return hk_json_int(*(const hk_int *)slot);
+  }
+}

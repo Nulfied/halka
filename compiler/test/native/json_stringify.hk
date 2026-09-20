@@ -1,0 +1,57 @@
+# `json.stringify` in the compiled backend.
+#
+# Named json_stringify, not json: a file called json.hk sits earlier on the
+# module search path than the prelude, so `import json` here would resolve
+# to this program.
+#
+# Output has to match the interpreter byte for byte (R23), and the
+# interpreter delegates to JavaScript's JSON.stringify. So the conventions
+# tested below are JavaScript's, not a stricter reading of the standard:
+# an integral float loses its decimal point, a non-string map key is
+# stringified, and a value that is not finite becomes null.
+import json
+
+main(),
+    # Scalars.
+    say json.stringify(42),
+    say json.stringify(-7),
+    say json.stringify("hi"),
+    say json.stringify(true),
+    say json.stringify(false),
+
+    # A float that happens to be integral prints as an integer.
+    say json.stringify(3.0),
+    say json.stringify(-0.5),
+    say json.stringify(2.25),
+
+    # JSON escaping, which is not the same as `inspect`'s.
+    say json.stringify("quote\" back\\ slash"),
+    say json.stringify("tab\there"),
+    say json.stringify("new\nline"),
+
+    # Containers.
+    say json.stringify([1, 2, 3]),
+    say json.stringify(["a", "b"]),
+    say json.stringify([[1, 2], [3]]),
+    say json.stringify(["x": 1, "y": 2]),
+
+    # A JSON object key is always a string, so an int key is converted.
+    say json.stringify([1: "a", 2: "b"]),
+
+    # A tuple has no JSON counterpart and becomes an array.
+    say json.stringify(("a", 1)),
+    say json.stringify([("a", 1), ("b", 2)]),
+
+    # An absent optional is null; a present one is its value.
+    let absent: string?,
+    say json.stringify(absent),
+    let present: string?: "here",
+    say json.stringify(present),
+
+    # Built fresh each iteration, so a leak would accumulate rather than hide.
+    let n: 0,
+    for i in 0..30,
+        let doc: ["k{i}": i],
+        let text: json.stringify(doc),
+        n: n + len(text),
+    say n

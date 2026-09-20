@@ -339,6 +339,21 @@ hk_str *hk_str_from_tuple(const void *p, const hk_tupdesc *d);
 /** Tell a list the layout of the tuples it holds. */
 void    hk_list_set_desc(hk_list *l, const hk_tupdesc *d);
 
+/* ---- json ----------------------------------------------------------------
+ *
+ * `stringify` only. The output must match the interpreter byte for byte
+ * (R23), and the interpreter uses JavaScript's JSON.stringify, so these
+ * follow its conventions rather than a stricter reading of the standard.
+ */
+hk_str *hk_json_int(hk_int v);
+hk_str *hk_json_float(hk_float v);
+hk_str *hk_json_bool(hk_bool v);
+hk_str *hk_json_null(void);
+hk_str *hk_json_str(const hk_str *s);
+hk_str *hk_json_list(const hk_list *l);
+hk_str *hk_json_map(const hk_map *m);
+hk_str *hk_json_tuple(const void *p, const hk_tupdesc *d);
+
 
 
 /* ---- capabilities (#45) --------------------------------------------------

@@ -632,6 +632,62 @@ export class CEmitter {
     return out;
   }
 
+  /**
+   * `json.stringify(x)`, dispatched on the static type of `x`. The runtime
+   * has one function per shape rather than a generic value, because the
+   * backend knows exactly what it is serialising.
+   *
+   * Output must match the interpreter byte for byte (R23), and that goes
+   * through JavaScript's JSON.stringify, so the conventions are its ones:
+   * an integral float loses its decimal point, a non-string map key is
+   * stringified, and an absent optional is `null`.
+   */
+  private jsonStringify(e: A.CallExpr, arg: string): string {
+    const a0 = e.args[0]!.value;
+    if (a0.kind === "NullLit") return "hk_json_null()";
+    const t = this.tyOf(a0);
+
+    const o = this.optOf(t);
+    if (o) {
+      const v = this.fresh("jso");
+      this.line(`${o.cty} ${v} = ${arg};`);
+      return `(${v}.has ? ${this.jsonOf(`${v}.v`, o.inner, e.span)} : hk_json_null())`;
+    }
+    return this.jsonOf(arg, t, e.span);
+  }
+
+  /** The JSON of an already-emitted C expression of known type. */
+  private jsonOf(cExpr: string, t: Ty | undefined, span: Span): string {
+    const p = t ? prune(t) : undefined;
+    const tu = this.tupOf(t);
+    if (tu) {
+      const v = this.fresh("jst");
+      this.line(`${tu.cty} ${v} = ${cExpr};`);
+      return `hk_json_tuple(&${v}, &${this.tupDescOf(tu.key)})`;
+    }
+    if (p?.k === "list" || p?.k === "array") return `hk_json_list(${cExpr})`;
+    if (p?.k === "map") return `hk_json_map(${cExpr})`;
+    if (p?.k === "prim") {
+      switch (p.name) {
+        case "string": return `hk_json_str(${cExpr})`;
+        case "int": case "byte": return `hk_json_int(${cExpr})`;
+        case "float": return `hk_json_float(${cExpr})`;
+        case "bool": return `hk_json_bool(${cExpr})`;
+        case "char": {
+          const c = this.fresh("jsc");
+          this.line(`hk_str *${c} = hk_str_from_char(${cExpr});`);
+          this.stmtTemps.push({ name: c, kind: "str" });
+          return `hk_json_str(${c})`;
+        }
+        case "null": return "hk_json_null()";
+        default: break;
+      }
+    }
+    this.err("E0711", `the native backend cannot serialise ${show(p ?? ({ k: "any" } as Ty))} to JSON yet`, span,
+      "run it with `halka run` while the backend catches up");
+    return `hk_str_lit("null")`;
+  }
+
   /** The HK_E_* kind for a list element, which `ekindOf` cannot tell for a tuple. */
   private elemKind(elemTy: Ty | undefined, cty: string): string {
     const p = elemTy ? prune(elemTy) : undefined;
@@ -1378,13 +1434,15 @@ export class CEmitter {
       const ac = at ? this.cty(at, "argument") : "";
       if (ac === "hk_list *") args[i] = this.holdTemp(args[i]!, "list");
       else if (ac === "hk_str *") args[i] = this.holdTemp(args[i]!, "str");
+      else if (ac === "hk_map *") args[i] = this.holdTemp(args[i]!, "map");
     });
   }
 
   /** Bind a freshly built value so the statement can free it again. */
-  private holdTemp(cExpr: string, kind: "str" | "list"): string {
-    const v = this.fresh(kind === "str" ? "tstr" : "tlst");
-    this.line(`${kind === "str" ? "hk_str *" : "hk_list *"}${v} = ${cExpr};`);
+  private holdTemp(cExpr: string, kind: "str" | "list" | "map"): string {
+    const cty = kind === "str" ? "hk_str *" : kind === "map" ? "hk_map *" : "hk_list *";
+    const v = this.fresh(kind === "str" ? "tstr" : kind === "map" ? "tmap" : "tlst");
+    this.line(`${cty}${v} = ${cExpr};`);
     this.stmtTemps.push({ name: v, kind });
     return v;
   }
@@ -2226,16 +2284,19 @@ export class CEmitter {
           this.err("E0707", `\`${op.name}\` has no member \`${m}\``, e.span);
           return "0";
         }
+        this.usePrelude(op.name);
+        // A prelude function copies what it is given and retains anything
+        // it keeps, so every argument is borrowed.
+        this.holdArgs(e, args);
+        // Emitted here rather than called in the runtime: both need types
+        // the emitter knows and a runtime function would have to be told.
         if (op.name === "maps" && m === "from_entries") return this.mapFromEntries(e, args[0]!);
+        if (op.name === "json" && m === "stringify") return this.jsonStringify(e, args[0]!);
         if (!member.c) {
           this.err("E0707", `the native backend does not implement \`${op.name}.${m}\` yet`, e.span,
             "run it with `halka run` while the backend catches up");
           return "0";
         }
-        this.usePrelude(op.name);
-        // A prelude function copies what it is given and retains anything
-        // it keeps, so every argument is borrowed.
-        this.holdArgs(e, args);
         // File operations are gated on a capability at run time (#45), and
         // a compiled program has to refuse on the same terms or the gate
         // would mean nothing once built.
