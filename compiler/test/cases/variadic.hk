@@ -1,0 +1,47 @@
+# Variadic parameters, and the list of lists that could not be built.
+#
+# A variadic parameter's type is the pack: a declared `xs: T, ...` is held
+# as `list(T)` and each argument is checked against the element. The
+# built-in table gave the element directly, and the call site stripped a
+# level that was never added -- harmless for every element type that is not
+# itself a list, and so for every element type anyone had tried.
+#
+# `rows.push(row)` therefore checked `row` against `string` and refused to
+# build a list of lists, with an explicit annotation on it. It was found by
+# writing the first library for the package registry: a CSV parser, whose
+# whole output is a list of lists.
+let rows: list(list(string)): [["seed"]]
+let row: ["a", "b"]
+rows.push(row)
+say rows
+say rows.length
+
+# A list of lists built from nothing, which is what a parser does.
+let built: []
+let first: ["x"]
+built.push(first)
+let second: ["y", "z"]
+built.push(second)
+say built
+say built[1][1]
+
+# Deeper still, since the bug was about stripping exactly one level.
+let deep: []
+deep.push(built)
+say deep[0][0][0]
+
+# The other variadic builtins, which the same change touched.
+say min(3, 1, 2)
+say max(3, 1, 2)
+print("a", "b", "c")
+say zip([1, 2], ["a", "b"])
+
+# A function that takes any number of extra arguments collects them in
+# `_varargs`, and each one is checked against the pack's element.
+first_of(fallback: string, ...),
+    if _varargs.is_empty(),
+        give fallback,
+    give _varargs[0]
+
+say first_of("none", "p", "q")
+say first_of("none")

@@ -249,7 +249,7 @@ export class Inferencer {
             // `from py "math" import sqrt` binds the names locally.
             for (const n of s.names) {
               scope.set(n.alias ?? n.name, s.foreign === "py"
-                ? fn([param("args", any("python argument"), { variadic: true })], cty("py", "object"))
+                ? fn([param("args", list(any("python argument")), { variadic: true })], cty("py", "object"))
                 : any(`${s.foreign} import`));
             }
             if (s.form === "module") scope.set(s.alias ?? lastSegment(s.path), { k: "module", name: s.path });
@@ -1118,6 +1118,14 @@ export class Inferencer {
     argTys.forEach((t, i) => {
       const p = sig.params[i];
       if (!p) return;
+      // A variadic parameter's type is the *pack*: `signatureOf` wraps a
+      // declared `xs: T` as `list(T)`, so each argument is checked against
+      // the element. The built-in table used to give the element directly
+      // and this stripped a level that was never added -- which the `??`
+      // fallback hid for every element type that is not itself a list, and
+      // so for every element type anyone had tried. `rows.push(row)` on a
+      // list of lists checked `row` against `string` and refused to build
+      // a list of lists at all, with an explicit annotation on it.
       if (p.variadic) { this.expect(t, (prune(p.ty) as { elem?: Ty }).elem ?? p.ty, e.args[i]!.span, `argument \`${p.name}\``); return; }
       this.expect(t, p.ty, e.args[i]!.span, `argument \`${p.name}\``);
     });
@@ -1327,7 +1335,7 @@ function builtinMemberType(ot: Ty, name: string): Ty | null {
   if (ot.k === "list" || ot.k === "array") {
     const E = ot.elem;
     switch (name) {
-      case "push": return fn([param("value", E, { variadic: true })], NOTHING);
+      case "push": return fn([param("value", list(E), { variadic: true })], NOTHING);
       case "pop": return fn([], opt(E));
       case "insert": return fn([param("index", INT), param("value", E)], NOTHING);
       case "remove_at": return fn([param("index", INT)], E);
@@ -1407,7 +1415,7 @@ const PRELUDE: [string, Ty][] = (() => {
     ["len", fn([param("value", any("any container"))], INT)],
     ["type_of", fn([param("value", any("any value"))], STRING)],
     ["inspect", fn([param("value", any("any value"))], STRING)],
-    ["print", fn([param("values", any("any value"), { variadic: true })], NOTHING)],
+    ["print", fn([param("values", list(any("any value")), { variadic: true })], NOTHING)],
     ["panic", fn([param("message", any("any value"))], NEVER)],
     ["assert", fn([param("condition", BOOL), param("message", STRING, { optional: true })], NOTHING)],
     ["id", fn([param("value", T)], T, ["T"])],
@@ -1420,7 +1428,7 @@ const PRELUDE: [string, Ty][] = (() => {
 
     ["list", fn([param("from", list(T), { optional: true })], list(T), ["T"])],
     ["array", fn([param("a", any("size or source"), { optional: true }), param("b", any("fill"), { optional: true })], list(any("array element")))],
-    ["tuple", fn([param("values", any("any value"), { variadic: true })], any("tuple"))],
+    ["tuple", fn([param("values", list(any("any value")), { variadic: true })], any("tuple"))],
     ["set", fn([param("from", list(T), { optional: true })], set(T), ["T"])],
     ["map", fn([param("pairs", list(tup([K, U])), { optional: true })], map(K, U), ["K", "U"])],
     ["range", fn([param("a", INT), param("b", INT, { optional: true }), param("step", INT, { optional: true })], { k: "range" })],
@@ -1434,14 +1442,14 @@ const PRELUDE: [string, Ty][] = (() => {
     ["ceil", fn([param("x", FLOAT)], INT)],
     ["sqrt", fn([param("x", FLOAT)], FLOAT)],
     ["pow", fn([param("base", T), param("exp", T)], T, ["T"])],
-    ["min", fn([param("values", T, { variadic: true })], T, ["T"])],
-    ["max", fn([param("values", T, { variadic: true })], T, ["T"])],
+    ["min", fn([param("values", list(T), { variadic: true })], T, ["T"])],
+    ["max", fn([param("values", list(T), { variadic: true })], T, ["T"])],
     ["sum", fn([param("items", list(T))], T, ["T"])],
 
     ["sorted", fn([param("items", list(T)), param("key", any("key function"), { optional: true })], list(T), ["T"])],
     ["reversed", fn([param("items", list(T))], list(T), ["T"])],
     ["enumerate", fn([param("items", list(T))], list(tup([INT, T])), ["T"])],
-    ["zip", fn([param("lists", any("list"), { variadic: true })], list(any("tuple")))],
+    ["zip", fn([param("lists", list(any("list")), { variadic: true })], list(any("tuple")))],
     ["contains", fn([param("haystack", any("container")), param("needle", any("value"))], BOOL)],
 
     ["add", fn([param("target", { k: "atomic", inner: INT }), param("delta", INT)], INT)],

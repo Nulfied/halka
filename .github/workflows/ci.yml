@@ -49,6 +49,13 @@ jobs:
         working-directory: compiler
         run: node bin/halka.mjs pkg index ../docs/registry --check
 
+      # docs/registry/README.md tells people they can rebuild an archive
+      # and get the published hash. An edit to a package without a version
+      # bump would quietly make that false.
+      - name: Check each package still packs to its published archive
+        if: runner.os == 'Linux'
+        run: node --experimental-strip-types tools/check-packages.mjs
+
       - name: Check STATUS.md's counts match its own table
         if: runner.os == 'Linux'
         run: node tools/status-counts.mjs --check
