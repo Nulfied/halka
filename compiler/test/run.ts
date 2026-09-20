@@ -557,6 +557,16 @@ if (failures.length) {
   for (const f of failures) {
     process.stdout.write(`\nFAIL  [${f.suite}] ${f.name}\n${indent(f.detail)}\n`);
   }
+  // On CI, also emit each failure as a workflow annotation. The run page
+  // shows annotations to anyone; the log behind them needs an account. A
+  // red build whose reason is only readable by someone signed in is a red
+  // build nobody fixes.
+  if (process.env["GITHUB_ACTIONS"]) {
+    for (const f of failures) {
+      const detail = f.detail.replace(/\r?\n/g, "%0A").replace(/::/g, ":​:");
+      process.stdout.write(`::error title=${f.suite}: ${f.name}::${detail}\n`);
+    }
+  }
 }
 process.stdout.write(`\n${passed} passed, ${failures.length} failed  (${ms}ms)\n`);
 process.exit(failures.length ? 1 : 0);
