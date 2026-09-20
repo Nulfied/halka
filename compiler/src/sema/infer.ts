@@ -587,6 +587,23 @@ export class Inferencer {
         const pt = prune(t);
         if (owner && pt.k === "named" && pt.name === owner.name) {
           owner.info.generics.forEach((g, i) => subst.set(g, pt.args[i] ?? fresh(g)));
+        } else if (owner) {
+          // The subject's type is not known to be this enum. That happens
+          // whenever it came from another module, because only the module
+          // being checked has its signatures collected -- so `match
+          // lib.parse(), Ok(rows)` knows the arm but not what is in it.
+          //
+          // Leaving the substitution empty bound `rows` to the enum's own
+          // declared parameter, and `T cannot be indexed` is an error
+          // about a type the program never wrote and cannot supply. The
+          // payload is simply unknown, so it is bound as unknown, which is
+          // what the arm with no variant at all already does below.
+          //
+          // `halka build` links every module into one before inferring and
+          // so never saw this, which left the two engines disagreeing
+          // about whether a program was legal at all (R23) -- `run`
+          // refusing what `build` compiled and ran.
+          owner.info.generics.forEach((g) => subst.set(g, any(`payload of \`${p.name}\``)));
         }
         p.args.forEach((a, i) => {
           const ft = vi?.fields[i];

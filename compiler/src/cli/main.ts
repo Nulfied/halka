@@ -143,24 +143,37 @@ function loadProgram(file: string): Loaded {
 // commands
 // ---------------------------------------------------------------------------
 
+/**
+ * Everything the compiler checks before a program runs: names and shapes,
+ * then types, then ownership, unsafe and sharing.
+ *
+ * `run` and `test` apply the same set, which they did not: `test` looked
+ * only for parse errors, so `halka test` passed a file that `halka run`
+ * refused three type errors' worth. A test runner that checks less than
+ * the compiler is a green suite that means nothing.
+ */
+function analyse(main: A.Module, deps: { path: string; mod: A.Module }[], diags: DiagnosticBag): void {
+  const sema = check(main, deps.map((d) => d.mod));
+  for (const d of sema.items) diags.items.push(d);
+  if (diags.hasErrors) return;
+
+  const inferred = inferTypes(main);
+  for (const d of inferred.diags.items) diags.items.push(d);
+  if (inferred.diags.hasErrors) return;
+
+  const own = checkOwnership(main, inferred.types, inferred.structFields);
+  for (const d of own.diags.items) diags.items.push(d);
+  for (const d of checkUnsafe(main, inferred.types).items) diags.items.push(d);
+  for (const d of checkShared(main, inferred).items) diags.items.push(d);
+}
+
 function cmdRun(args: string[]): void {
   const file = args[0];
   if (!file) die("usage: halka run <file.hk>");
   if (!existsSync(file)) die(`no such file: ${file}`);
 
   const { main, sources, deps, diags } = loadProgram(file);
-  const sema = check(main, deps.map((d) => d.mod));
-  for (const d of sema.items) diags.items.push(d);
-  if (!diags.hasErrors) {
-    const inferred = inferTypes(main);
-    for (const d of inferred.diags.items) diags.items.push(d);
-    if (!inferred.diags.hasErrors) {
-      const own = checkOwnership(main, inferred.types, inferred.structFields);
-      for (const d of own.diags.items) diags.items.push(d);
-      for (const d of checkUnsafe(main, inferred.types).items) diags.items.push(d);
-      for (const d of checkShared(main, inferred).items) diags.items.push(d);
-    }
-  }
+  analyse(main, deps, diags);
 
   if (diags.hasErrors) {
     report(diags.items, sources);
@@ -542,7 +555,13 @@ function cmdTest(args: string[]): void {
   let pass = 0, fail = 0;
   for (const f of files) {
     const { main, sources, deps, diags } = loadProgram(f);
-    if (diags.hasErrors) { report(diags.items, sources); fail++; continue; }
+    analyse(main, deps, diags);
+    if (diags.hasErrors) {
+      process.stdout.write(`  FAIL ${f}\n`);
+      report(diags.items, sources);
+      fail++;
+      continue;
+    }
     const out: string[] = [];
     const interp = new Interpreter({ out: (s) => out.push(s), err: (s) => out.push(s) });
     const envs = deps.map((d) => {

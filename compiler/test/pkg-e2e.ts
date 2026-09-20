@@ -149,6 +149,61 @@ export async function suitePkgE2E(r: Report): Promise<void> {
     );
   }
 
+  // ---- a Result from a dependency is usable ----------------------------
+
+  // `Result` is the only way a library reports failure (#22, #23), so a
+  // library whose Result cannot be read is a library nobody can use. The
+  // payload used to be bound to the enum's own declared parameter when the
+  // subject came from another module -- `T cannot be indexed`, about a type
+  // the program never wrote. `halka build` links every module into one
+  // before inferring and so accepted the same program, which left `run` and
+  // `build` disagreeing about whether it was legal at all (R23).
+  const resultDir = join(base, "result-app");
+  write(join(resultDir, "halka.pkg"), "package:\n    name: rapp,\n    version: 0.1.0\n\ndeps:\n    parsy: 1.0.0\n");
+  write(join(resultDir, "src", "main.hk"), [
+    "import parsy",
+    "",
+    'match parsy.rows("a,b"),',
+    "    Ok(fields),",
+    "        say fields[0],",
+    "        say fields.length,",
+    "        for f in fields,",
+    "            say f,",
+    "    Error(message),",
+    '        say "failed: {message}"',
+    "",
+  ].join("\n"));
+  buildFixtureRegistry(registryDir, [
+    { name: "parsy", version: "1.0.0", body: 'rows(text: string): Result<list(string)>,\n    give Ok(text.split(","))\n' },
+  ]);
+  await sync(loadProject(resultDir), { dev: false, offline: false, update: false, registry: new Registry(registryDir, false) });
+  const used = spawnSync(process.execPath, [CLI, "run", join(resultDir, "src", "main.hk")], { encoding: "utf8", env });
+  if ((used.stdout ?? "").trim().split(/\r?\n/).join("|") === "a|2|a|b") {
+    r.ok("e2e: a Result from a dependency can be read, iterated and indexed");
+  } else {
+    r.bad("e2e: a Result from a dependency can be read, iterated and indexed",
+      `status ${used.status}\nstdout: ${(used.stdout ?? "").trim()}\nstderr: ${(used.stderr ?? "").trim()}`);
+  }
+
+  // ---- `halka test` checks what `halka run` checks ----------------------
+
+  // It looked only for parse errors, so a test file the compiler refuses
+  // reported `1 passed`.
+  //
+  // The error here is in a function nothing calls, which is the case that
+  // separates the two: an error on a line that *runs* fails the test either
+  // way, and a first attempt at this test passed with the fix reverted for
+  // exactly that reason.
+  const badTestDir = join(base, "bad-test");
+  write(join(badTestDir, "wrong_test.hk"), 'never_called(): int,\n    give "not an int"\n\nsay "reached"\n');
+  const tested = spawnSync(process.execPath, [CLI, "test", badTestDir], { encoding: "utf8", env });
+  const testedOut = `${tested.stdout ?? ""}${tested.stderr ?? ""}`;
+  if (tested.status !== 0 && /FAIL/.test(testedOut) && /expected int, found string/.test(testedOut)) {
+    r.ok("e2e: `halka test` fails a file the compiler would reject");
+  } else {
+    r.bad("e2e: `halka test` fails a file the compiler would reject", `status ${tested.status}\n${testedOut.trim()}`);
+  }
+
   // ---- a package may not take a built-in module's name ------------------
   const shadowDir = join(base, "shadow");
   write(join(shadowDir, "halka.pkg"), "package:\n    name: app,\n    version: 0.1.0\n\ndeps:\n    json: 1.0.0\n");
