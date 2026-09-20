@@ -639,7 +639,12 @@ export class CEmitter {
     // `hk_map_set` retains what it keeps, so the source list is untouched.
     this.line(`hk_map_set(${out}, &HK_AT(${src}, ${info.cty}, ${i}).f0, &HK_AT(${src}, ${info.cty}, ${i}).f1);`);
     this.close();
-    if (!isRead(e.args[0]!.value)) this.line(`hk_list_release(${src});`);
+    // No release here. `holdArgs` runs before this and has already made a
+    // freshly built entries list the statement's to free; releasing it
+    // again is a use-after-free. It was correct when this ran *before*
+    // holdArgs, and reordering the prelude dispatch made it wrong --
+    // invisibly on Windows, where the allocator tolerated it, and visibly
+    // on Linux and macOS.
     return out;
   }
 

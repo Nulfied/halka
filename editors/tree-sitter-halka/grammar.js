@@ -431,8 +431,12 @@ module.exports = grammar({
     string: ($) => choice($._triple_string, $._single_string),
     _triple_string: ($) => seq('"""', repeat(choice($.interpolation, $.escape_sequence, $.string_fragment_multi)), '"""'),
     _single_string: ($) => seq('"', repeat(choice($.interpolation, $.escape_sequence, $.string_fragment)), '"'),
-    string_fragment: (_) => token.immediate(prec(1, /[^"\\{}\n]+/)),
-    string_fragment_multi: (_) => token.immediate(prec(1, /[^"\\{}]+/)),
+    // `}` is ordinary text in a string. It is only special as the end of an
+    // interpolation, and the interpolation rule consumes that one itself --
+    // excluding it here meant `"plain } brace"` failed to parse, though the
+    // compiler has always accepted it.
+    string_fragment: (_) => token.immediate(prec(1, /[^"\\{\n]+/)),
+    string_fragment_multi: (_) => token.immediate(prec(1, /[^"\\{]+/)),
     raw_string: (_) => token(seq('r"', /[^"]*/, '"')),
     interpolation: ($) => seq("{", $._expression, "}"),
     escape_sequence: (_) => token.immediate(seq("\\", choice(/[ntr0\\"'{}e]/, /u\{[0-9a-fA-F]+\}/))),

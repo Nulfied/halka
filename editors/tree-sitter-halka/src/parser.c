@@ -4351,8 +4351,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
           lookahead == ' ') ADVANCE(87);
       if (lookahead != 0 &&
           lookahead != '\t' &&
-          lookahead != '\n' &&
-          lookahead != '}') ADVANCE(93);
+          lookahead != '\n') ADVANCE(93);
       END_STATE();
     case 15:
       if (lookahead == '"') ADVANCE(11);
@@ -4361,8 +4360,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
       if (lookahead == '{') ADVANCE(61);
       if (lookahead == '\t' ||
           lookahead == ' ') ADVANCE(100);
-      if (lookahead != 0 &&
-          lookahead != '}') ADVANCE(104);
+      if (lookahead != 0) ADVANCE(104);
       END_STATE();
     case 16:
       if (lookahead == '#') ADVANCE(43);
@@ -4744,8 +4742,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
           lookahead != '"' &&
           lookahead != '#' &&
           lookahead != '\\' &&
-          lookahead != '{' &&
-          lookahead != '}') ADVANCE(93);
+          lookahead != '{') ADVANCE(93);
       END_STATE();
     case 88:
       ACCEPT_TOKEN(sym_string_fragment);
@@ -4755,8 +4752,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
           lookahead != '"' &&
           lookahead != '#' &&
           lookahead != '\\' &&
-          lookahead != '{' &&
-          lookahead != '}') ADVANCE(93);
+          lookahead != '{') ADVANCE(93);
       END_STATE();
     case 89:
       ACCEPT_TOKEN(sym_string_fragment);
@@ -4766,8 +4762,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
           lookahead != '"' &&
           lookahead != '#' &&
           lookahead != '\\' &&
-          lookahead != '{' &&
-          lookahead != '}') ADVANCE(93);
+          lookahead != '{') ADVANCE(93);
       END_STATE();
     case 90:
       ACCEPT_TOKEN(sym_string_fragment);
@@ -4777,8 +4772,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
           lookahead != '"' &&
           lookahead != '#' &&
           lookahead != '\\' &&
-          lookahead != '{' &&
-          lookahead != '}') ADVANCE(92);
+          lookahead != '{') ADVANCE(92);
       END_STATE();
     case 91:
       ACCEPT_TOKEN(sym_string_fragment);
@@ -4788,8 +4782,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
           lookahead != '"' &&
           lookahead != '#' &&
           lookahead != '\\' &&
-          lookahead != '{' &&
-          lookahead != '}') ADVANCE(93);
+          lookahead != '{') ADVANCE(93);
       END_STATE();
     case 92:
       ACCEPT_TOKEN(sym_string_fragment);
@@ -4799,8 +4792,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
           lookahead != '"' &&
           lookahead != '#' &&
           lookahead != '\\' &&
-          lookahead != '{' &&
-          lookahead != '}') ADVANCE(92);
+          lookahead != '{') ADVANCE(92);
       END_STATE();
     case 93:
       ACCEPT_TOKEN(sym_string_fragment);
@@ -4808,8 +4800,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
           lookahead != '\n' &&
           lookahead != '"' &&
           lookahead != '\\' &&
-          lookahead != '{' &&
-          lookahead != '}') ADVANCE(93);
+          lookahead != '{') ADVANCE(93);
       END_STATE();
     case 94:
       ACCEPT_TOKEN(sym_string_fragment_multi);
@@ -4819,8 +4810,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
           lookahead != '"' &&
           lookahead != '#' &&
           lookahead != '\\' &&
-          lookahead != '{' &&
-          lookahead != '}') ADVANCE(97);
+          lookahead != '{') ADVANCE(97);
       END_STATE();
     case 95:
       ACCEPT_TOKEN(sym_string_fragment_multi);
@@ -4830,8 +4820,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
           lookahead != '"' &&
           lookahead != '#' &&
           lookahead != '\\' &&
-          lookahead != '{' &&
-          lookahead != '}') ADVANCE(97);
+          lookahead != '{') ADVANCE(97);
       END_STATE();
     case 96:
       ACCEPT_TOKEN(sym_string_fragment_multi);
@@ -4841,8 +4830,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
           lookahead != '"' &&
           lookahead != '#' &&
           lookahead != '\\' &&
-          lookahead != '{' &&
-          lookahead != '}') ADVANCE(97);
+          lookahead != '{') ADVANCE(97);
       END_STATE();
     case 97:
       ACCEPT_TOKEN(sym_string_fragment_multi);
@@ -4850,8 +4838,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
       if (lookahead != 0 &&
           lookahead != '"' &&
           lookahead != '\\' &&
-          lookahead != '{' &&
-          lookahead != '}') ADVANCE(97);
+          lookahead != '{') ADVANCE(97);
       END_STATE();
     case 98:
       ACCEPT_TOKEN(sym_string_fragment_multi);
@@ -4861,8 +4848,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
           lookahead != '"' &&
           lookahead != '#' &&
           lookahead != '\\' &&
-          lookahead != '{' &&
-          lookahead != '}') ADVANCE(99);
+          lookahead != '{') ADVANCE(99);
       END_STATE();
     case 99:
       ACCEPT_TOKEN(sym_string_fragment_multi);
@@ -4872,8 +4858,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
           lookahead != '"' &&
           lookahead != '#' &&
           lookahead != '\\' &&
-          lookahead != '{' &&
-          lookahead != '}') ADVANCE(99);
+          lookahead != '{') ADVANCE(99);
       END_STATE();
     case 100:
       ACCEPT_TOKEN(sym_string_fragment_multi);
@@ -4884,8 +4869,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
           lookahead != '"' &&
           lookahead != '#' &&
           lookahead != '\\' &&
-          lookahead != '{' &&
-          lookahead != '}') ADVANCE(104);
+          lookahead != '{') ADVANCE(104);
       END_STATE();
     case 101:
       ACCEPT_TOKEN(sym_string_fragment_multi);
@@ -4894,8 +4878,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
           lookahead != '"' &&
           lookahead != '#' &&
           lookahead != '\\' &&
-          lookahead != '{' &&
-          lookahead != '}') ADVANCE(104);
+          lookahead != '{') ADVANCE(104);
       END_STATE();
     case 102:
       ACCEPT_TOKEN(sym_string_fragment_multi);
@@ -4904,8 +4887,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
           lookahead != '"' &&
           lookahead != '#' &&
           lookahead != '\\' &&
-          lookahead != '{' &&
-          lookahead != '}') ADVANCE(103);
+          lookahead != '{') ADVANCE(103);
       END_STATE();
     case 103:
       ACCEPT_TOKEN(sym_string_fragment_multi);
@@ -4914,16 +4896,14 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
           lookahead != '"' &&
           lookahead != '#' &&
           lookahead != '\\' &&
-          lookahead != '{' &&
-          lookahead != '}') ADVANCE(103);
+          lookahead != '{') ADVANCE(103);
       END_STATE();
     case 104:
       ACCEPT_TOKEN(sym_string_fragment_multi);
       if (lookahead != 0 &&
           lookahead != '"' &&
           lookahead != '\\' &&
-          lookahead != '{' &&
-          lookahead != '}') ADVANCE(104);
+          lookahead != '{') ADVANCE(104);
       END_STATE();
     case 105:
       ACCEPT_TOKEN(sym_raw_string);
