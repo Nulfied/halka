@@ -102,6 +102,16 @@ name matches anything, `null` included, so it ends the chain and a following
 disagreed with the interpreter on exactly the case the arm exists for. An
 optional of a struct or enum is refused rather than mis-ordered in C.
 
+**Stack promotion landed**, which mostly meant using an answer that was
+already there. Escape analysis has computed `stackable` since M4 -- list
+literals that neither escape nor grow -- and the backend ignored the set
+entirely, so every one of them still took a malloc and a free. They are
+emitted as stack storage now, with the header marked never-free using the
+same `rc = -1` convention interned string literals already used. Scalar
+elements only: a list that is never released would never release owning
+elements either. On a loop building a three-element list three million
+times that is 747 ms to 16 ms, a 40x difference, for the same checksum.
+
 **Bounds checks survive `--release`.** They used to be dropped wholesale,
 so a release binary had no memory safety -- an odd position for a language
 whose pitch is being as fast as C *without* that pain. Three changes, in

@@ -2467,6 +2467,22 @@ export class CEmitter {
   private listLit(e: A.ListExpr): string {
     const t = this.tyOf(e);
     const et = this.cty(this.elemOf(t), "element", e.span);
+
+    // M4 — a list that neither escapes nor grows can live on the stack, so
+    // it costs no malloc and no free. Only for scalar elements: the header
+    // is marked never-free (`rc = -1`, the same convention interned string
+    // literals use), and a list that is never released would never release
+    // owning elements either.
+    if (this.opts.escapes?.stackable.has(e) && STACK_ELEM_CTYS.has(et)) {
+      const data = this.fresh("sd");
+      const hdr = this.fresh("sl");
+      this.line(`${et} ${data}[${Math.max(e.elements.length, 1)}];`);
+      e.elements.forEach((x, i) => this.line(`${data}[${i}] = ${this.expr(x)};`));
+      this.line(`hk_list ${hdr} = { .rc = -1, .len = ${e.elements.length}, .cap = ${e.elements.length},` +
+        ` .esz = sizeof(${et}), .ekind = ${ekindOf(et)}, .edesc = NULL, .data = ${data} };`);
+      return `(&${hdr})`;
+    }
+
     const v = this.fresh("lit");
     const elemTy = this.elemOf(t);
     this.line(`hk_list *${v} = hk_list_new(sizeof(${et}), ${e.elements.length}, ${this.elemKind(elemTy, et)});`);
@@ -2694,6 +2710,12 @@ function mangle(name: string): string {
  * of strings that reported HK_E_SCALAR freed its backing array and leaked
  * every string in it.
  */
+/**
+ * Element shapes a stack-promoted list may hold. Scalars only: the header is
+ * never released, so anything owning would never be released either.
+ */
+const STACK_ELEM_CTYS = new Set(["hk_int", "hk_float", "hk_bool", "hk_char", "hk_byte"]);
+
 /** Field shapes a tuple may hold; a nested tuple is allowed separately. */
 const TUPLE_FIELD_CTYS = new Set(["hk_int", "hk_float", "hk_bool", "hk_char", "hk_byte", "hk_str *", "hk_list *"]);
 
