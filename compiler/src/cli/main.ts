@@ -288,7 +288,17 @@ function cmdBuild(args: string[]): void {
   if (!existsSync(file)) die(`no such file: ${file}`);
 
   const oIdx = args.indexOf("-o");
-  const outName = oIdx >= 0 && args[oIdx + 1] ? args[oIdx + 1]! : defaultBinaryName(file);
+  const tIdx = args.indexOf("--target");
+  const target = tIdx >= 0 ? args[tIdx + 1] : undefined;
+  if (tIdx >= 0 && (!target || target.startsWith("-"))) {
+    die("`--target` needs a triple, e.g. `--target x86_64-linux-gnu`");
+  }
+  // Two combinations cannot mean anything, so they are refused rather than
+  // silently producing a binary that is wrong for the machine it names.
+  if (target && flags.has("--cpu-native")) {
+    die("`--cpu-native` targets the machine doing the build, so it cannot be combined with `--target`");
+  }
+  const outName = oIdx >= 0 && args[oIdx + 1] ? args[oIdx + 1]! : defaultBinaryName(file, target);
 
   const { main, sources, deps, diags } = loadProgram(file);
   const sema = check(main, deps.map((d) => d.mod));
@@ -338,6 +348,7 @@ function cmdBuild(args: string[]): void {
     quiet: flags.has("--quiet"),
     libs: links,
     needsPython,
+    target,
   });
 
   if (!outcome.ok) die(outcome.message ?? "the build failed");
@@ -357,6 +368,7 @@ function cmdBuild(args: string[]): void {
       flags.has("--release") ? "release" : "debug",
       ...(flags.has("--fast-math") ? ["fast-math"] : []),
       ...(flags.has("--cpu-native") ? ["cpu-native"] : []),
+      ...(target ? [`for ${target}`] : []),
       ...(outcome.python ? [`CPython ${outcome.python.version}`] : []),
       ...(links.length ? [`links ${links.join(" ")}`] : []),
     ].join(", ");
@@ -365,9 +377,15 @@ function cmdBuild(args: string[]): void {
   }
 }
 
-function defaultBinaryName(file: string): string {
+function defaultBinaryName(file: string, target?: string): string {
   const base = basename(file).replace(/\.hk$/, "");
-  return process.platform === "win32" ? `${base}.exe` : `./${base}`;
+  // The extension follows the platform the binary is *for*, so a Linux
+  // build made on Windows is not handed a `.exe` it is not.
+  const windows = target ? /windows|msvc|mingw/i.test(target) : process.platform === "win32";
+  if (windows) return `${base}.exe`;
+  // A cross-built binary does not run here, so it is named plainly rather
+  // than as something to execute from this shell.
+  return target ? base : `./${base}`;
 }
 
 /**
@@ -800,6 +818,10 @@ commands:
                              from the interpreter; measure before trusting
                            --cpu-native  target this machine's instruction
                              set; the binary may not run elsewhere
+                           --target <triple>  build for another platform,
+                             e.g. x86_64-linux-gnu. Needs a toolchain that
+                             carries that target's headers and libraries,
+                             which in practice means zig cc
                            --emit-c   write the generated C and stop
                            --keep-c   keep the generated C beside the binary
                            -o <path>  output path

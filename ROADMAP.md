@@ -102,6 +102,20 @@ name matches anything, `null` included, so it ends the chain and a following
 disagreed with the interpreter on exactly the case the arm exists for. An
 optional of a struct or enum is refused rather than mis-ordered in C.
 
+**Cross-compilation** works through `halka build --target <triple>`. The
+constraint is not the compiler but the target's headers and libraries: gcc
+cannot supply them and MSVC builds for this machine only, so a cross build
+picks `zig cc` (or clang) and says plainly what to install when neither is
+there, rather than failing at the link with something unreadable. Threading
+and the output extension follow the target rather than the host, so a Linux
+binary built on Windows is not handed a `.exe` it is not.
+
+Worth recording how it is tested. No compiler on the machine this was
+written on can cross-compile, so an end-to-end cross build is not in the
+suite; what is tested is the part that was written here -- which toolchain
+gets chosen and what it is told. Shipping the rest untested is how a feature
+turns out broken on the first machine that tries it.
+
 **Stack promotion landed**, which mostly meant using an answer that was
 already there. Escape analysis has computed `stackable` since M4 -- list
 literals that neither escape nor grow -- and the backend ignored the set

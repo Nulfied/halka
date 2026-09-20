@@ -47,6 +47,14 @@ export interface CompileOpts {
   libs?: string[];
   /** CPython embedding, when the program uses `py` (#37). */
   python?: PythonConfig | null;
+  /**
+   * Build for another platform, as an LLVM target triple. Only toolchains
+   * that carry their own sysroots can do this without one being supplied,
+   * which in practice means `zig cc`; plain clang needs `--sysroot` and gcc
+   * cannot at all, so `findToolchain` refuses them for a cross build rather
+   * than letting the link fail with something unreadable.
+   */
+  target?: string;
 }
 
 export interface PythonConfig {
@@ -180,33 +188,56 @@ function findMsvc(): Toolchain | null {
   };
 }
 
-function findUnixCc(): Toolchain | null {
-  for (const cand of [process.env["CC"], "cc", "gcc", "clang", "zig"].filter(Boolean) as string[]) {
-    const path = cand === "zig" ? which("zig") : which(cand);
+/**
+ * The flags a clang-style driver needs. Split out from the toolchain so it
+ * can be checked without one installed -- which matters for cross builds,
+ * since the machine writing this had no compiler able to do one and an
+ * untested code path is how a feature ships broken.
+ */
+export function unixFlags(sources: string[], out: string, opts: CompileOpts): string[] {
+  const py = opts.python;
+  const flags = [
+    "-std=c99", "-Wall",
+    ...(opts.target ? ["-target", opts.target] : []),
+    ...(opts.fastMath ? ["-ffast-math"] : []),
+    ...(opts.nativeCpu ? ["-march=native"] : []),
+    // Same reasoning as the MSVC block: a `c` declaration that does not
+    // match the real symbol must stop the build on every toolchain.
+    "-Werror=implicit-function-declaration",
+    "-Werror=incompatible-pointer-types",
+    "-Werror=int-conversion",
+    opts.release ? "-O2" : "-O0", opts.release ? "-DNDEBUG" : "-g",
+    ...opts.includeDirs.map((d) => `-I${d}`),
+    ...(py ? [`-I${py.include}`, `-DHK_PYTHONHOME="${py.prefix}"`] : []),
+    ...sources, "-o", out, "-lm",
+    ...(py ? [`-L${py.libDir}`, `-l${py.libName}`] : []),
+    ...(opts.libs ?? []).map((l) => (l.startsWith("-") ? l : `-l${l}`)),
+  ];
+  // Threading follows the *target*, not the machine doing the build.
+  if (!targetsWindows(opts.target)) flags.push("-pthread");
+  return flags;
+}
+
+/** Does this triple name a Windows target? Absent means "this machine". */
+export function targetsWindows(target?: string): boolean {
+  return target ? /windows|msvc|mingw/i.test(target) : process.platform === "win32";
+}
+
+function findUnixCc(forTarget?: string): Toolchain | null {
+  // For a cross build, prefer the toolchain that can actually do one: it
+  // has to carry the target's headers and libraries, and gcc does not.
+  const order = forTarget
+    ? ["zig", "clang"]
+    : [process.env["CC"], "cc", "gcc", "clang", "zig"].filter(Boolean) as string[];
+  for (const cand of order) {
+    const path = which(cand);
     if (!path) continue;
     const isZig = cand === "zig";
     return {
       kind: "unix",
       name: isZig ? "zig cc" : cand,
       compile(sources, out, opts) {
-        const py = opts.python;
-        const flags = [
-          "-std=c99", "-Wall",
-          ...(opts.fastMath ? ["-ffast-math"] : []),
-          ...(opts.nativeCpu ? ["-march=native"] : []),
-          // Same reasoning as the MSVC block: a `c` declaration that does not
-          // match the real symbol must stop the build on every toolchain.
-          "-Werror=implicit-function-declaration",
-          "-Werror=incompatible-pointer-types",
-          "-Werror=int-conversion",
-          opts.release ? "-O2" : "-O0", opts.release ? "-DNDEBUG" : "-g",
-          ...opts.includeDirs.map((d) => `-I${d}`),
-          ...(py ? [`-I${py.include}`, `-DHK_PYTHONHOME="${py.prefix}"`] : []),
-          ...sources, "-o", out, "-lm",
-          ...(py ? [`-L${py.libDir}`, `-l${py.libName}`] : []),
-          ...(opts.libs ?? []).map((l) => (l.startsWith("-") ? l : `-l${l}`)),
-        ];
-        if (process.platform !== "win32") flags.push("-pthread");
+        const flags = unixFlags(sources, out, opts);
         return isZig ? { cmd: path, args: ["cc", ...flags] } : { cmd: path, args: flags };
       },
     };
@@ -214,9 +245,19 @@ function findUnixCc(): Toolchain | null {
   return null;
 }
 
-export function findToolchain(): Toolchain | null {
+export function findToolchain(forTarget?: string): Toolchain | null {
+  // MSVC builds for this machine only, so it is not a candidate for a cross
+  // build even when it is the only thing installed.
+  if (forTarget) return findUnixCc(forTarget);
   return findUnixCc() ?? findMsvc();
 }
+
+/** Targets `zig cc` is known to carry a sysroot for, for the error message. */
+export const COMMON_TARGETS = [
+  "x86_64-linux-gnu", "x86_64-linux-musl", "aarch64-linux-gnu", "aarch64-linux-musl",
+  "x86_64-windows-gnu", "aarch64-windows-gnu",
+  "x86_64-macos", "aarch64-macos",
+];
 
 export function describeToolchains(): string {
   const found: string[] = [];
@@ -248,6 +289,8 @@ export interface BuildOptions {
   /** Print the C instead of compiling it. */
   emitOnly: boolean;
   quiet: boolean;
+  /** `--target`: build for another platform, as an LLVM target triple. */
+  target?: string;
 }
 
 export interface BuildOutcome {
@@ -270,7 +313,20 @@ export function buildNative(cSource: string, sourceName: string, opts: BuildOpti
 
   if (opts.emitOnly) return { ok: true, cFile };
 
-  const tc = findToolchain();
+  const tc = findToolchain(opts.target);
+  if (!tc && opts.target) {
+    return {
+      ok: false,
+      cFile,
+      message:
+        `no toolchain here can build for ${opts.target}.\n` +
+        "  Cross-compiling needs a compiler carrying the target's own headers and\n" +
+        "  libraries. `zig cc` does: `winget install zig.zig`, `brew install zig`,\n" +
+        "  or https://ziglang.org/download/.\n" +
+        `  Targets it ships: ${COMMON_TARGETS.join(", ")}\n` +
+        `  The generated C is at ${cFile} if you want to compile it yourself.`,
+    };
+  }
   if (!tc) {
     return {
       ok: false,
@@ -317,6 +373,7 @@ export function buildNative(cSource: string, sourceName: string, opts: BuildOpti
     objDir: workDir,
     fastMath: opts.fastMath,
     nativeCpu: opts.nativeCpu,
+    target: opts.target,
     release: opts.release,
     includeDirs: [workDir],
     libs: opts.libs,
