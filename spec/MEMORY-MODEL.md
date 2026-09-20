@@ -189,13 +189,18 @@ Cycles leak. This is stated plainly rather than hidden: `halka check` warns when
 a `shared` type can reach itself (`W1010`), and `weak(T)` breaks the cycle --
 a `weak` edge is not followed when working out whether a type reaches itself.
 
-**Implemented in the checker.** `shared(T)` and `weak(T)` type-check, read
-through to what they hold, and are copied rather than moved, so several
-owners of one value are allowed where a plain struct would be a move error.
-The cycle warning is implemented. What is *not* yet implemented is the
-runtime half: the interpreter is garbage-collected, so `shared` needs no
-counting there, and the native backend refuses `shared` by name (R23)
-rather than compiling it without one. Refcounting
+**Implemented.** `shared(T)` type-checks, reads through to what it holds,
+is copied rather than moved, and compiles: the payload goes in a counted
+box, binding a handle to a name retains, every scope exit releases, and the
+last owner runs the payload's releaser so a `shared` holding a string does
+not leak the string behind the box. The cycle warning is implemented too.
+
+`weak(T)` is checked but not compiled. It exists for the checker -- a
+`weak` edge breaks a cycle, which is what stops W1010 firing -- but reading
+one needs a way to ask whether the value is still alive, and the language
+has no such operation. The backend refuses it by name rather than reading
+freed memory (R23). Giving `weak` a readable form is a language question,
+not a backend one. Refcounting
 with an honest cycle warning is a better trade for a systems language than a
 tracing collector with unpredictable pauses.
 

@@ -1,0 +1,77 @@
+# M3 — `shared(T)` compiled, which means reference counting.
+#
+# Ownership is single by default, so the backend frees a value at the end
+# of the block that declared it. `shared` cannot work that way: several
+# handles own one value and the last one out frees it. So the payload goes
+# in a counted box, every handle retains, every scope exit releases, and
+# the count decides.
+#
+# The payload's own releaser runs when the count reaches zero, which is why
+# a `shared` holding a string does not leak the string behind the box.
+#
+# `weak` is deliberately absent: it does not keep its value alive, and the
+# language has no way to ask whether the value is still there, so the
+# backend refuses it rather than reading freed memory.
+Cache:
+    name: string,
+    hits: int
+
+Plain:
+    a: int,
+    b: int
+
+read(c: shared(Cache)): int,
+    give c.hits
+
+# Returning a handle a function built: the count it holds transfers to the
+# caller, and the frame must not release it on the way out.
+fresh(i: int): shared(Cache),
+    let c: shared(Cache): Cache("row {i}", i),
+    give c
+
+# Returning a *borrowed* parameter is the opposite case: the caller still
+# holds the only count, so this has to add one.
+passthru(c: shared(Cache)): shared(Cache),
+    give c
+
+label(c: shared(Cache)): int,
+    give len(c.name)
+
+main(),
+    # One value, two owners. A plain struct here would be a move error.
+    let cache: shared(Cache): Cache("primary", 7),
+    let worker: cache,
+    say cache.hits,
+    say worker.hits,
+    say cache.name,
+    say worker.name,
+
+    # Passing a handle does not move it away.
+    say read(cache),
+    say read(worker),
+    say label(cache),
+    say cache.hits,
+
+    # A third handle, then all three go out of scope together.
+    let third: worker,
+    say third.hits,
+
+    # A payload that owns nothing needs no releaser at all.
+    let flat: shared(Plain): Plain(3, 4),
+    let flat2: flat,
+    say flat.a + flat2.b,
+
+    # Handles crossing function boundaries, in and out.
+    let made: fresh(5),
+    say made.hits,
+    let relayed: passthru(made),
+    say relayed.name,
+
+    # Built and dropped every iteration: the count has to reach zero each
+    # time, and the string inside has to go with it, or this accumulates.
+    let total: 0,
+    for i in 0..40,
+        let c: shared(Cache): Cache("row {i}", i),
+        let alias: c,
+        total: total + alias.hits + len(c.name),
+    say total

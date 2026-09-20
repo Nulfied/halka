@@ -25,7 +25,7 @@ import { JSON_DOC } from "./prelude-types.ts";
  * which payload needs freeing depends on the variant, and the backend
  * resolves that from the monomorphised instance.
  */
-export interface Owned { name: string; kind: "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json"; ty?: Ty }
+export interface Owned { name: string; kind: "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | "struct" | "shared"; ty?: Ty }
 
 export interface EscapeInfo {
   /**
@@ -90,7 +90,7 @@ class EscapeAnalysis {
     return classifyOwnership(this.types.get(n), (name) => this.structFields.get(name));
   }
 
-  private heapKind(t: Ty | undefined): "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | null {
+  private heapKind(t: Ty | undefined): "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | "struct" | "shared" | null {
     if (!t) return null;
     const p = prune(t);
     if (p.k === "prim" && p.name === "string") return "str";
@@ -110,7 +110,26 @@ class EscapeAnalysis {
     // A parsed JSON document owns its whole tree. Indexing one hands back a
     // borrowed pointer into it, which is why that is not an owner.
     if (p.k === "any" && p.why === JSON_DOC) return "json";
+    // A struct owns whatever its fields own. Only enums were handled here,
+    // so `let b: B("x{i}")` in a loop leaked a string per iteration.
+    if (p.k === "named" && this.structOwns(p.name, new Set())) return "struct";
+    // A `shared` handle is one owner of a counted box (M3): every handle
+    // releases, and the last one frees the value.
+    if (p.k === "shared") return "shared";
     return null;
+  }
+
+  /** Does this struct own anything that has to be freed? */
+  private structOwns(name: string, seen: Set<string>): boolean {
+    if (seen.has(name)) return false;
+    seen.add(name);
+    const fields = this.structFields.get(name);
+    if (!fields) return false;
+    return fields.some((f) => {
+      const p = prune(f);
+      if (p.k === "named") return this.structOwns(p.name, seen);
+      return this.heapKind(f) !== null;
+    });
   }
 
   /** Does any variant of this enum carry something heap-allocated? */
@@ -166,8 +185,8 @@ class EscapeAnalysis {
      * which over-approximates in the leak direction rather than the
      * double-free one.
      */
-    const owns: { name: string; kind: "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json"; ty?: Ty; init: A.Expr | null; block: A.Block | null }[] = [];
-    const declare = (name: string, d: { kind: "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json"; ty?: Ty; init: A.Expr | null; block: A.Block | null }) => {
+    const owns: { name: string; kind: "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | "struct" | "shared"; ty?: Ty; init: A.Expr | null; block: A.Block | null }[] = [];
+    const declare = (name: string, d: { kind: "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | "struct" | "shared"; ty?: Ty; init: A.Expr | null; block: A.Block | null }) => {
       // One release per (block, name); a block cannot free the same C
       // variable twice however many times the source rebinds it.
       const at = owns.findIndex((o) => o.name === name && o.block === d.block);
@@ -390,6 +409,9 @@ class EscapeAnalysis {
         }
         if (e.callee.kind === "Ident") {
           if (this.fns.has(e.callee.name)) return true; // M2.3: it cannot be a borrow
+          // A struct literal: `B("x")` builds a fresh value, and whatever
+          // its fields own goes with it.
+          if (this.structFields.has(e.callee.name)) return true;
           return ALLOCATING.has(e.callee.name);
         }
         if (e.callee.kind === "MemberExpr") return ALLOCATING.has(e.callee.name);

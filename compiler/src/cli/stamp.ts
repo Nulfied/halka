@@ -12,9 +12,49 @@
 // version, because a new compiler emits different C from the same source.
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, statSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { readRuntimeSource } from "../backend/c/build.ts";
+
+/**
+ * A digest of the compiler's own source.
+ *
+ * The version number alone is not enough. It changes once per release,
+ * while the emitter changes many times in between — so editing the backend
+ * and rebuilding handed back the binary from *before* the edit and called
+ * it up to date. Anyone working on the compiler hits that within a minute,
+ * which is exactly how it was found.
+ */
+let compilerDigest: string | null = null;
+
+function digestCompiler(): string {
+  if (compilerDigest) return compilerDigest;
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const h = createHash("sha256");
+  const walk = (dir: string): void => {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const e of entries) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.name.endsWith(".ts")) {
+        h.update(e.name);
+        h.update(readFileSync(full));
+      }
+    }
+  };
+  try {
+    walk(root);
+  } catch {
+    // An installed build may ship compiled output rather than sources; the
+    // version then carries the difference on its own.
+    h.update("no-sources");
+  }
+  compilerDigest = h.digest("hex");
+  return compilerDigest;
+}
 
 /** Everything that, if changed, must produce a different binary. */
 export interface BuildInputs {
@@ -28,8 +68,9 @@ export interface BuildInputs {
 
 export function stampFor(inputs: BuildInputs): string {
   const h = createHash("sha256");
-  h.update("halka-build-v1\n");
+  h.update("halka-build-v2\n");
   h.update(inputs.version + "\n");
+  h.update(digestCompiler() + "\n");
   for (const f of [...inputs.flags].sort()) h.update("flag:" + f + "\n");
   // Sorted, so the order modules happened to be discovered in does not
   // change the stamp.

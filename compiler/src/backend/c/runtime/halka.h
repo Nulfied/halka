@@ -411,6 +411,33 @@ typedef struct hk_json {
   } as;
 } hk_json;
 
+
+/* ---- shared ownership (M3) ----------------------------------------------
+ *
+ * `shared(T)` is a reference-counted box around a T. Ownership is single by
+ * default in Halka; this is the opt-in escape for the cases where several
+ * owners really are needed, and the count is what decides when the value
+ * goes away.
+ *
+ * The payload sits in its own allocation rather than inline, so no
+ * alignment assumptions are needed for whatever T turns out to be. `drop`
+ * is the generated releaser for T, or NULL when T owns nothing.
+ */
+typedef void (*hk_dropfn)(void *);
+
+typedef struct hk_shared {
+  hk_int     rc;
+  hk_dropfn  drop;
+  void      *data;
+} hk_shared;
+
+hk_shared *hk_shared_new(const void *value, hk_int esz, hk_dropfn drop);
+hk_shared *hk_shared_retain(hk_shared *s);
+void       hk_shared_release(hk_shared *s);
+
+/** The payload, typed. The count guarantees it is alive. */
+#define HK_SHARED_AS(s, T) (*(T *)((s)->data))
+
 hk_json *hk_json_parse(const hk_str *text, const char *file, hk_int line);
 hk_json *hk_json_retain(hk_json *v);
 void     hk_json_release(hk_json *v);

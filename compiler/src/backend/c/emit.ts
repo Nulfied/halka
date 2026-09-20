@@ -110,7 +110,7 @@ export class CEmitter {
    * must free; `live` is the subset already declared at the current point, so
    * an early `give` never frees something C has not seen yet.
    */
-  private blockStack: { owned: Set<string>; kinds: Map<string, "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json">; types: Map<string, Ty | undefined>; declared: Set<string>; optVars: Set<string>; live: Owned[]; caps: number; isLoopBody: boolean }[] = [];
+  private blockStack: { owned: Set<string>; kinds: Map<string, "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | "struct" | "shared">; types: Map<string, Ty | undefined>; declared: Set<string>; optVars: Set<string>; live: Owned[]; caps: number; isLoopBody: boolean }[] = [];
   /** Owning parameters of the current function, freed when it returns. */
   private frameParams: Owned[] = [];
   /** Values built inside the current statement, freed once it completes. */
@@ -297,6 +297,8 @@ export class CEmitter {
   private tupleTypes = new Map<string, { key: string; elems: Ty[]; ctys: string[]; depth: number }>();
   /** Parameters of the function being emitted that are stored as optionals. */
   private optParams = new Set<string>();
+  /** Parameters of the function being emitted -> whether the callee owns it. */
+  private fnParams = new Map<string, boolean>();
 
   private structDecls(): string[] {
     const out: string[] = [];
@@ -427,6 +429,19 @@ export class CEmitter {
         if (t2) return t2;
         break;
       }
+      case "shared": return "hk_shared *";
+      case "weak":
+        // A weak handle does not keep its value alive, so reading one has
+        // to ask whether the value is still there. Halka has no operation
+        // that asks -- the memory model gives `weak` no upgrade form -- so
+        // compiling it would mean reading freed memory. Refused instead.
+        if (span) {
+          this.err("E0701", "the native backend cannot compile `weak` yet", span,
+            "`weak` breaks a reference cycle for the checker (W1010); reading one " +
+            "needs a way to ask whether the value is still alive, which the language " +
+            "does not have yet. Use `shared`, or run it with `halka run`.");
+        }
+        break;
       case "any":
         // Only this one `any` has a representation: a parsed JSON document
         // is an opaque dynamic value, like `PyObject *` at the py boundary.
@@ -945,15 +960,28 @@ export class CEmitter {
    * target is optional and the expression is not. This is where `let x: T?: v`
    * and passing a plain `T` to a `T?` parameter become well-typed C.
    */
-  private coerce(e: A.Expr, want: Ty | undefined): string {
-    return this.liftTo(this.expr(e), e, want);
+  private coerce(e: A.Expr, want: Ty | undefined, newOwner = true): string {
+    return this.liftTo(this.expr(e), e, want, newOwner);
   }
 
   /**
    * Lift already-emitted C text into `want` if that is an optional and the
    * expression did not already produce one.
    */
-  private liftTo(cExpr: string, e: A.Expr, want: Ty | undefined): string {
+  private liftTo(cExpr: string, e: A.Expr, want: Ty | undefined, newOwner = true): string {
+    const sh = this.sharedOf(want);
+    if (sh) {
+      if (this.sharedOf(this.tyOf(e))) {
+        // Whether to bump the count is a question about ownership, not
+        // syntax. Reading an existing handle and binding it to a name adds
+        // an owner, so the count goes up and that name releases later. A
+        // call that hands one back has already transferred its count, so
+        // retaining it again leaks. And an argument does not add an owner
+        // at all: a parameter borrows (M2.2) and the callee never releases.
+        return newOwner && isRead(e) ? `hk_shared_retain(${cExpr})` : cExpr;
+      }
+      return this.shareValue(cExpr, sh, e.span);
+    }
     const o = this.optOf(want);
     if (!o) return cExpr;
     if (e.kind === "NullLit") return this.optNone(o.cty);
@@ -1359,6 +1387,8 @@ export class CEmitter {
     this.optParams = new Set(
       f.params.filter((_, i) => fsig && this.optOf(paramOf(fsig, i))).map((p) => p.name),
     );
+    const owningFlags = this.opts.owningParams?.get(f.name);
+    this.fnParams = new Map(f.params.map((p, i) => [p.name, !!owningFlags?.[i]]));
 
     const sig = this.tyOf(f);
     const ret = sig ? retOf(sig) : undefined;
@@ -1397,7 +1427,35 @@ export class CEmitter {
   private fnCtx: { isVoid: boolean; needsCleanup: boolean; retTy: Ty | undefined } =
     { isVoid: true, needsCleanup: false, retTy: undefined };
 
+  /**
+   * The value a `give` hands back, with the count put right.
+   *
+   * A local holding a handle owns a count, either because it built the box
+   * or because binding it retained; returning one transfers that count and
+   * the frame does not release it. A *borrowed* parameter is the opposite:
+   * the caller still holds the only count, so handing it out without
+   * adding one frees the value while the caller is still using it.
+   *
+   * Which it is cannot be read off the syntax. It is not "is this name in
+   * the live list" either, since a value that escapes through `give` is
+   * deliberately left out of that list.
+   */
+  private giveValue(e: A.Expr): string {
+    const base = this.coerce(e, this.fnCtx.retTy, false);
+    if (e.kind !== "Ident" || !this.sharedOf(this.tyOf(e))) return base;
+    const owning = this.fnParams.get(e.name);
+    // Not a parameter, or one the caller handed over: the count is ours.
+    if (owning === undefined || owning) return base;
+    return `hk_shared_retain(${base})`;
+  }
+
   private releaseLocal(o: Owned): void {
+    if (o.kind === "shared") { this.line(`hk_shared_release(${mangle(o.name)});`); return; }
+    if (o.kind === "struct") {
+      const fn = this.structReleaser(this.structNameOf(o.ty) ?? "");
+      if (fn) this.line(`${fn}(&${mangle(o.name)});`);
+      return;
+    }
     if (o.kind === "json") { this.line(`hk_json_release(${mangle(o.name)});`); return; }
     if (o.kind === "tuple") {
       const info = this.tupOf(o.ty);
@@ -1455,6 +1513,79 @@ export class CEmitter {
       "",
     );
     return name;
+  }
+
+  /**
+   * A releaser for one struct: frees whatever its fields own. Generated
+   * once per struct that owns anything, and null when none of its fields
+   * do -- a struct of scalars needs no cleanup.
+   *
+   * Without this a struct local holding a string leaked it on every scope
+   * exit, because escape analysis only knew how to release enums.
+   */
+  private structReleaser(name: string): string | null {
+    const def = this.structs.get(name);
+    if (!def) return null;
+    const fn = `hk_free_s_${name}`;
+    if (this.wrappers.has(fn)) return fn;
+
+    const frees: string[] = [];
+    for (const f of def.fields) {
+      const c = this.cty(f.ty, f.name);
+      if (c === "hk_str *") frees.push(`  hk_str_release(v->${mangle(f.name)});`);
+      else if (c === "hk_list *") frees.push(`  hk_list_release(v->${mangle(f.name)});`);
+      else if (c === "hk_map *") frees.push(`  hk_map_release(v->${mangle(f.name)});`);
+      else {
+        const inner = this.structReleaser(this.structNameOf(f.ty) ?? "");
+        if (inner) frees.push(`  ${inner}(&v->${mangle(f.name)});`);
+      }
+    }
+    if (!frees.length) return null;
+
+    this.wrappers.add(fn);
+    this.aux.push(`static void ${fn}(${mangleType(name)} *v) {`, ...frees, "}", "");
+    return fn;
+  }
+
+  /** The payload type of a `shared(T)`, if this is one. */
+  private sharedOf(t: Ty | undefined): Ty | null {
+    const p = t ? prune(t) : undefined;
+    return p && p.k === "shared" ? p.inner : null;
+  }
+
+  /**
+   * A `void (*)(void *)` that releases one payload type, for the box to
+   * call when its last owner goes. Null when the payload owns nothing.
+   */
+  private sharedDrop(inner: Ty, span: Span): string {
+    const name = this.structNameOf(inner);
+    const rel = name ? this.structReleaser(name) : null;
+    if (!rel || !name) return "NULL";
+    const fn = `hk_drop_${name}`;
+    if (this.wrappers.has(fn)) return fn;
+    this.wrappers.add(fn);
+    // A wrapper rather than a cast: calling a function through a pointer of
+    // a different signature is undefined, however reliably it works.
+    this.aux.push(
+      `static void ${fn}(void *p) { ${rel}((${mangleType(name)} *)p); }`,
+      "",
+    );
+    void span;
+    return fn;
+  }
+
+  /** Put a plain T into a fresh `shared(T)` box. */
+  private shareValue(cExpr: string, inner: Ty, span: Span): string {
+    const ct = this.cty(inner, "shared value", span);
+    const tmp = this.fresh("shv");
+    this.line(`${ct} ${tmp} = ${cExpr};`);
+    return `hk_shared_new(&${tmp}, sizeof(${ct}), ${this.sharedDrop(inner, span)})`;
+  }
+
+  /** The struct this type names, if it names one. */
+  private structNameOf(t: Ty | undefined): string | null {
+    const p = t ? prune(t) : undefined;
+    return p && p.k === "named" && this.structs.has(p.name) ? p.name : null;
   }
 
   /** Emit a block's statements, freeing what it owns on the way out (M4). */
@@ -1646,13 +1777,13 @@ export class CEmitter {
           return;
         }
         if (this.fnCtx.needsCleanup) {
-          if (s.value && !this.fnCtx.isVoid) this.line(`hk_result = ${this.coerce(s.value, this.fnCtx.retTy)};`);
+          if (s.value && !this.fnCtx.isVoid) this.line(`hk_result = ${this.giveValue(s.value)};`);
           // Block-scoped values must go before the jump; C scopes end here.
           this.releaseForReturn(keep);
           this.line("goto hk_cleanup;");
           return;
         }
-        const value = s.value && !this.fnCtx.isVoid ? this.coerce(s.value, this.fnCtx.retTy) : null;
+        const value = s.value && !this.fnCtx.isVoid ? this.giveValue(s.value) : null;
         this.releaseForReturn(keep);
         this.line(value !== null ? `return ${value};` : "return;");
         return;
@@ -1962,6 +2093,13 @@ export class CEmitter {
 
       case "MemberExpr": {
         const ot = this.tyOf(e.obj);
+        // A `shared` handle reads through to its payload, the way the
+        // checker types it: `cache.hits`, not an unwrap at every use.
+        const shInner = this.sharedOf(ot);
+        if (shInner) {
+          const ct = this.cty(shInner, "shared value", e.span);
+          return `HK_SHARED_AS(${this.expr(e.obj)}, ${ct}).${mangle(e.name)}`;
+        }
         if (this.isList(ot) && (e.name === "length" || e.name === "size")) return `(${this.expr(e.obj)})->len`;
         if (this.isStr(ot) && (e.name === "length" || e.name === "size")) return `hk_str_len_chars(${this.expr(e.obj)})`;
         const p = ot ? prune(ot) : undefined;
@@ -2375,7 +2513,7 @@ export class CEmitter {
       // value that was freshly built and needs freeing, and the wrapper is
       // a plain struct that owns nothing itself.
       e.args.forEach((a, i) => {
-        args[i] = this.liftTo(args[i]!, a.value, csig ? paramOf(csig, i) : undefined);
+        args[i] = this.liftTo(args[i]!, a.value, csig ? paramOf(csig, i) : undefined, false);
       });
       return `${mangle(n)}(${args.join(", ")})`;
     }

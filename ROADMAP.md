@@ -102,6 +102,28 @@ name matches anything, `null` included, so it ends the chain and a following
 disagreed with the interpreter on exactly the case the arm exists for. An
 optional of a struct or enum is refused rather than mis-ordered in C.
 
+**`shared(T)` compiles.** The payload goes in a reference-counted box:
+binding a handle to a name retains, every scope exit releases, and the last
+owner runs the payload's own releaser so a `shared` holding a string does
+not leak the string behind the box. `weak` is refused by the backend --
+reading one needs a way to ask whether the value is still alive, and the
+language has no such operation, so compiling it would mean reading freed
+memory.
+
+Getting the counts right was three separate judgements, and none of them
+can be read off the syntax. Binding an existing handle to a name adds an
+owner, so it retains; a call that hands one back has already transferred
+its count, so retaining again leaks. An argument adds no owner at all,
+because a parameter borrows. And `give` transfers when it returns a local
+but has to retain when it returns a *borrowed* parameter, since the caller
+still holds the only count. Each of those was found by a leak count rather
+than by reading the code.
+
+It also turned up a leak with nothing to do with `shared`: a struct local
+holding a string was never released, because escape analysis only knew how
+to release enums. Structs now have a generated releaser -- which is the
+same function the shared box needs for its payload.
+
 **M3 (`shared(T)`) is checked.** Three of its type constructors did not
 parse at all: `shared`, `mutex` and `rwmutex` were in the type system's
 `toTy` and missing from the parser's list of type-constructor names, so
