@@ -11,7 +11,20 @@ export type Value =
   | ListV | TupleV | MapV | SetV | RecordV | StructV | VariantV
   | FnV | NativeV | BoundV
   | TaskV | ChannelV | MutexV | AtomicV | RefV | RangeV
-  | TypeV | CapabilityV | ModuleV | RawPtrV;
+  | TypeV | CapabilityV | ModuleV | RawPtrV | WeakV;
+
+/**
+ * The strong count behind a `shared(T)` (M3).
+ *
+ * The interpreter is garbage-collected, so it would never need this to
+ * free anything. It needs it to *agree* with the compiled program: a weak
+ * read has to find the value gone at the same moment in both, or R23 is
+ * only true until someone writes a program that notices.
+ */
+export interface SharedBox { strong: number; value: Value; dead: boolean }
+
+/** A handle that does not keep its value alive; reads as `T?` (M3). */
+export interface WeakV { t: "weak"; box: SharedBox }
 
 export interface NullV { t: "null" }
 export interface NothingV { t: "nothing" }
@@ -284,6 +297,9 @@ export function inspect(v: Value, seen = new Set<unknown>()): string {
     case "capability": return `<capability ${v.name}>`;
     case "module": return `<module ${v.name}>`;
     case "rawptr": return `<raw *${v.addr.toString(16)}>`;
+    // A weak handle resolves when it is read; seeing one here means it was
+    // printed directly, so show whether the value is still there.
+    case "weak": return v.box.dead ? "<weak gone>" : `<weak ${inspect(v.box.value, seen)}>`;
   }
 }
 
@@ -346,6 +362,7 @@ export function typeNameOf(v: Value): string {
     case "variant": return v.enumName;
     case "list": return "list";
     case "rawptr": return "raw";
+    case "weak": return "weak";
     default: return v.t;
   }
 }

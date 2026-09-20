@@ -9,7 +9,7 @@ import type * as A from "../parser/ast.ts";
 import { type Span, DiagnosticBag, renderDiagnostic } from "../util/diagnostics.ts";
 import {
   Env, Fiber, Channel, Mutex,
-  type Value, type Suspend, type Frame, type FnV, type NativeV, type NativeCtx,
+  type Value, type Suspend, type Frame, type FnV, type NativeV, type NativeCtx, type SharedBox,
   NULL, NOTHING, TRUE, FALSE,
   int, float, str, bool, list, tuple,
   display, inspect, keyOf, valueEq, truthy, typeNameOf, codePoints,
@@ -86,6 +86,49 @@ export class Interpreter {
   private topLevelEnv: Env | null = null;
   private callTrace: string[] = [];
   private moved = new WeakSet<object>();
+  /**
+   * Strong counts for `shared` values (M3).
+   *
+   * Nothing here frees anything -- this interpreter is garbage-collected.
+   * It exists so a `weak` read finds the value gone at the same moment the
+   * compiled program does. Without it the two disagree the first time a
+   * program drops its last owner and looks through a weak handle, and R23
+   * would be true only until someone wrote that program.
+   *
+   * The count follows the same rule the backend uses, which is syntactic:
+   * binding a handle to a name retains, leaving the block releases.
+   */
+  private sharedBoxes = new WeakMap<object, SharedBox>();
+
+  /** Make `v` a counted shared value, or add an owner if it already is. */
+  private retainShared(v: Value): Value {
+    if (typeof v !== "object") return v;
+    const existing = this.sharedBoxes.get(v as object);
+    if (existing) { existing.strong++; return v; }
+    this.sharedBoxes.set(v as object, { strong: 1, value: v, dead: false });
+    return v;
+  }
+
+  /** Drop one owner; the last one out marks the value gone. */
+  private releaseShared(v: Value): void {
+    if (typeof v !== "object") return;
+    const box = this.sharedBoxes.get(v as object);
+    if (!box || box.dead) return;
+    if (--box.strong <= 0) box.dead = true;
+  }
+
+  /** Every `shared` value this scope owned goes out with it. */
+  private releaseScope(env: Env): void {
+    for (const name of env.localNames()) {
+      const b = env.lookup(name);
+      if (b) this.releaseShared(b.value);
+    }
+  }
+
+  /** The box behind a value, if it is a counted `shared` one. */
+  private boxOf(v: Value): SharedBox | undefined {
+    return typeof v === "object" ? this.sharedBoxes.get(v as object) : undefined;
+  }
 
   constructor(opts: InterpOptions = {}) {
     this.out = opts.out ?? ((s) => process.stdout.write(s + "\n"));
@@ -313,7 +356,13 @@ export class Interpreter {
   *execBlock(env: Env, block: A.Block): Ex {
     const scope = env.child();
     this.hoist(block.stmts, scope);
-    yield* this.execStmts(scope, block.stmts);
+    try {
+      yield* this.execStmts(scope, block.stmts);
+    } finally {
+      // Leaving the block drops the owners it took, the way the compiled
+      // program does at the same point.
+      this.releaseScope(scope);
+    }
   }
 
   *execStmt(env: Env, s: A.Stmt): Ex {
@@ -335,7 +384,19 @@ export class Interpreter {
 
       // --- bindings ---------------------------------------------------------
       case "LetStmt": {
-        const v = s.value ? yield* this.eval(env, s.value) : NULL;
+        let v = s.value ? yield* this.eval(env, s.value) : NULL;
+        // M3 — `shared` and `weak` are decided by the annotation when there
+        // is one, and by the value itself when there is not.
+        const ctor = sharedCtorOf(s.type);
+        if (ctor === "weak") {
+          const box = this.boxOf(v) ?? { strong: 1, value: v, dead: false };
+          if (typeof v === "object" && !this.sharedBoxes.has(v as object)) {
+            this.sharedBoxes.set(v as object, box);
+          }
+          v = { t: "weak", box };
+        } else if (ctor === "shared" || this.boxOf(v)) {
+          v = this.retainShared(v);
+        }
         // A top-level `const` belongs to the module, not to the block the
         // top-level statements happen to run in. Functions close over
         // globals, so binding it anywhere else made every module-level
@@ -455,6 +516,18 @@ export class Interpreter {
         if (!b) {
           const f = fieldOfSelf(env, t.name);
           if (f) { f.set(value); return; }
+        }
+        // A name declared `weak` stays weak when it is reassigned: it takes
+        // the new value's count to watch, without adding an owner. Losing
+        // that on assignment made the handle strong again, so it never
+        // reported the value gone.
+        if (b && b.value.t === "weak") {
+          const box = this.boxOf(value) ?? { strong: 1, value, dead: false };
+          if (typeof value === "object" && !this.boxOf(value)) {
+            this.sharedBoxes.set(value as object, box);
+          }
+          b.value = { t: "weak", box };
+          return;
         }
         env.set(t.name, value);
         return;
@@ -640,6 +713,9 @@ export class Interpreter {
         if (typeof b.value === "object" && this.moved.has(b.value as object)) {
           this.fail(`\`${e.name}\` was moved and can no longer be used (rule #25)`, e.span, "E0504");
         }
+        // Reading a weak handle asks whether the value is still there; the
+        // checker has already made sure the answer is used as a `T?`.
+        if (b.value.t === "weak") return b.value.box.dead ? NULL : b.value.box.value;
         return b.value;
       }
 
@@ -1610,6 +1686,14 @@ export class Interpreter {
 // ---------------------------------------------------------------------------
 
 /** Bare names inside a method resolve against the receiver's fields (#16). */
+/** The / constructor an annotation names, if it names one. */
+function sharedCtorOf(t: A.TypeNode | undefined | null): "shared" | "weak" | null {
+  if (!t) return null;
+  const n = t as { kind?: string; name?: string };
+  if (n.kind === "NamedType" && (n.name === "shared" || n.name === "weak")) return n.name;
+  return null;
+}
+
 function fieldOfSelf(env: Env, name: string): { get: () => Value; set: (v: Value) => void } | null {
   const self = env.frame?.self;
   if (!self) return null;

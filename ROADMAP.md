@@ -102,6 +102,21 @@ name matches anything, `null` included, so it ends the chain and a following
 disagreed with the interpreter on exactly the case the arm exists for. An
 optional of a struct or enum is refused rather than mis-ordered in C.
 
+**`weak(T)` is readable**, and it needed no new syntax. A weak handle may
+find nothing, and #7 already has the word for a value that is not there,
+so a weak read is a `T?` -- `is null`, `or` and `match` all work on it
+unchanged, and reading a field straight off a handle is refused with the
+fix in the message. Compiled, a weak handle watches the same control block
+without owning the value, and the block outlives the value while anything
+is still watching, so asking is safe rather than a read of freed memory.
+
+The interesting half is the interpreter, which now counts owners despite
+being garbage-collected and needing no such thing for itself. It counts so
+that a weak read finds the value gone at the *same moment* the compiled
+program does; without it the two agree only until someone writes a program
+that drops its last owner and looks. Both engines now answer that question
+identically, which is what R23 is for.
+
 **`shared(T)` compiles.** The payload goes in a reference-counted box:
 binding a handle to a name retains, every scope exit releases, and the last
 owner runs the payload's own releaser so a `shared` holding a string does

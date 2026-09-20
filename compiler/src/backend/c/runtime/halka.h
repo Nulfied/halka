@@ -426,14 +426,22 @@ typedef struct hk_json {
 typedef void (*hk_dropfn)(void *);
 
 typedef struct hk_shared {
-  hk_int     rc;
+  hk_int     rc;   /* owners */
+  hk_int     wc;   /* weak handles watching */
   hk_dropfn  drop;
-  void      *data;
+  void      *data; /* NULL once the last owner has gone */
 } hk_shared;
 
 hk_shared *hk_shared_new(const void *value, hk_int esz, hk_dropfn drop);
 hk_shared *hk_shared_retain(hk_shared *s);
 void       hk_shared_release(hk_shared *s);
+
+/* A `weak(T)` watches the same control block without owning the value, so
+ * a cycle of weak edges does not keep itself alive. The block outlives the
+ * value when weak handles remain, which is what makes asking safe. */
+hk_shared *hk_weak_from(hk_shared *s);
+void       hk_weak_release(hk_shared *s);
+hk_bool    hk_weak_alive(const hk_shared *s);
 
 /** The payload, typed. The count guarantees it is alive. */
 #define HK_SHARED_AS(s, T) (*(T *)((s)->data))

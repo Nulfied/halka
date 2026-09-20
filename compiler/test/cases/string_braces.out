@@ -4,3 +4,4 @@ both { and }
 interpolated world
 mixed {literal} and world
 json-ish: {"k": [1, 2]}
+6

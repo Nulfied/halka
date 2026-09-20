@@ -251,6 +251,11 @@ export function unify(a: Ty, b: Ty): void {
   }
   if (y.k === "prim" && y.name === "null") return unify(y, x);
 
+  // Reading a `weak(T)` yields `T?`. The value may already be gone, and
+  // #7 already has the word for a value that is not there, so this needs
+  // no syntax of its own: `is null`, `or` and `match` all work on it.
+  if (x.k === "opt" && y.k === "weak") return unify(x.inner, y.inner);
+
   if (x.k === "opt" && y.k === "opt") return unify(x.inner, y.inner);
   // A plain T is acceptable where T? is expected (widening, never narrowing).
   if (x.k === "opt") return unify(x.inner, y);
@@ -260,12 +265,18 @@ export function unify(a: Ty, b: Ty): void {
   // without ceremony -- `let cache: shared(Cache): Cache()` is the form the
   // memory model documents (M3). They are not interchangeable with each
   // other, because one keeps the value alive and the other does not.
-  if (x.k === "shared" && y.k === "shared") return unify(x.inner, y.inner);
   if (x.k === "weak" && y.k === "weak") return unify(x.inner, y.inner);
+  // A `T` or a `shared(T)` goes into a `weak(T)` slot: that is how one is
+  // made. The other direction is refused -- a weak read is only valid as
+  // an optional, which the rule above allows.
+  if (x.k === "weak") return unify(x.inner, y);
+  if (y.k === "weak") {
+    throw new UnifyError(x, y, "a `weak` value may already be gone — read it into a `T?` and test it");
+  }
+
+  if (x.k === "shared" && y.k === "shared") return unify(x.inner, y.inner);
   if (x.k === "shared") return unify(x.inner, y);
   if (y.k === "shared") return unify(y, x);
-  if (x.k === "weak") return unify(x.inner, y);
-  if (y.k === "weak") return unify(y, x);
 
   // A foreign scalar and its Halka counterpart cross the boundary implicitly (#35).
   if (x.k === "cty" && y.k !== "cty") {

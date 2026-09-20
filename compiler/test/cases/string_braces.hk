@@ -13,3 +13,10 @@ say "both \{ and }"
 say "interpolated {who}"
 say "mixed \{literal} and {who}"
 say "json-ish: \{\"k\": [1, 2]}"
+
+# Brackets around a receiver are load-bearing too: access binds tighter
+# than any operator, so reprinting `(a or b).n` without them gives
+# `a or b.n`, which is a different program that still compiles.
+let fallback: "backup"
+let missing: string?
+say (missing or fallback).length

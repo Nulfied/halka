@@ -932,7 +932,18 @@ export class Inferencer {
 
     // A `shared` handle reads through to what it holds: the point of M3 is
     // several owners of one value, not a wrapper to unpack at every use.
-    while (ot.k === "shared" || ot.k === "weak") ot = prune(ot.inner);
+    while (ot.k === "shared") ot = prune(ot.inner);
+
+    // A `weak` one does not. It may already be gone, so it has to be read
+    // into a `T?` and tested first -- the same discipline #13 applies to
+    // any optional, rather than a second mechanism.
+    if (ot.k === "weak") {
+      this.err("E0463", `\`${e.name}\` cannot be read from ${show(ot)} — the value may already be gone`, e.span, {
+        rule: "M3 — shared(T) for genuine shared ownership",
+        help: `read it first: \`let v: ${show(prune(ot.inner))}?: ...\`, then test it with \`is null\``,
+      });
+      return any("member of a weak handle");
+    }
 
     if (ot.k === "opt") {
       this.err("E0461", `\`${e.name}\` cannot be read from ${show(ot)} — it may be null`, e.span, {

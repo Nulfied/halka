@@ -195,12 +195,30 @@ box, binding a handle to a name retains, every scope exit releases, and the
 last owner runs the payload's releaser so a `shared` holding a string does
 not leak the string behind the box. The cycle warning is implemented too.
 
-`weak(T)` is checked but not compiled. It exists for the checker -- a
-`weak` edge breaks a cycle, which is what stops W1010 firing -- but reading
-one needs a way to ask whether the value is still alive, and the language
-has no such operation. The backend refuses it by name rather than reading
-freed memory (R23). Giving `weak` a readable form is a language question,
-not a backend one. Refcounting
+`weak(T)` is readable, and needed no syntax to become so. A weak handle
+may find nothing, and #7 already has the word for a value that is not
+there -- so **a weak read is a `T?`**, handled by `is null`, `or` and
+`match` like any other optional. Reading a field straight off a weak
+handle is refused, with the fix in the message:
+
+```halka
+let w: weak(Cache): cache
+let live: Cache?: w        # the read: it may be nothing
+if live is null,
+    say "gone",
+else,
+    say live.hits
+```
+
+Compiled, a weak handle watches the same control block without owning the
+value, and the block outlives the value while anything is still watching,
+which is what makes asking safe rather than a read of freed memory.
+
+The interpreter counts owners too, which it has no need to do for its own
+sake -- it is garbage-collected and would keep the value alive forever.
+It counts so that a weak read finds the value gone at the same moment the
+compiled program does. Without that the two agree only until someone
+writes a program that drops its last owner and looks. Refcounting
 with an honest cycle warning is a better trade for a systems language than a
 tracing collector with unpredictable pauses.
 

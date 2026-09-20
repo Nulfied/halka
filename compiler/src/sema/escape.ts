@@ -25,7 +25,7 @@ import { JSON_DOC } from "./prelude-types.ts";
  * which payload needs freeing depends on the variant, and the backend
  * resolves that from the monomorphised instance.
  */
-export interface Owned { name: string; kind: "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | "struct" | "shared"; ty?: Ty }
+export interface Owned { name: string; kind: "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | "struct" | "shared" | "weak"; ty?: Ty }
 
 export interface EscapeInfo {
   /**
@@ -90,7 +90,7 @@ class EscapeAnalysis {
     return classifyOwnership(this.types.get(n), (name) => this.structFields.get(name));
   }
 
-  private heapKind(t: Ty | undefined): "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | "struct" | "shared" | null {
+  private heapKind(t: Ty | undefined): "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | "struct" | "shared" | "weak" | null {
     if (!t) return null;
     const p = prune(t);
     if (p.k === "prim" && p.name === "string") return "str";
@@ -116,6 +116,9 @@ class EscapeAnalysis {
     // A `shared` handle is one owner of a counted box (M3): every handle
     // releases, and the last one frees the value.
     if (p.k === "shared") return "shared";
+    // A weak handle owns no value, but it does hold the control block open
+    // so that asking is safe, and that has to be given back.
+    if (p.k === "weak") return "weak";
     return null;
   }
 
@@ -185,8 +188,8 @@ class EscapeAnalysis {
      * which over-approximates in the leak direction rather than the
      * double-free one.
      */
-    const owns: { name: string; kind: "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | "struct" | "shared"; ty?: Ty; init: A.Expr | null; block: A.Block | null }[] = [];
-    const declare = (name: string, d: { kind: "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | "struct" | "shared"; ty?: Ty; init: A.Expr | null; block: A.Block | null }) => {
+    const owns: { name: string; kind: "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | "struct" | "shared" | "weak"; ty?: Ty; init: A.Expr | null; block: A.Block | null }[] = [];
+    const declare = (name: string, d: { kind: "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | "struct" | "shared" | "weak"; ty?: Ty; init: A.Expr | null; block: A.Block | null }) => {
       // One release per (block, name); a block cannot free the same C
       // variable twice however many times the source rebinds it.
       const at = owns.findIndex((o) => o.name === name && o.block === d.block);
@@ -299,7 +302,17 @@ class EscapeAnalysis {
             // so the frame keeps owning it and still has to release it.
             // Treating it as a move leaked the field of every `let (a, b): t`.
             if (s.value) visit(s.value, s.pattern.kind === "TuplePat" ? "read" : "value");
-            if (s.pattern.kind !== "BindPat" || !s.value) break;
+            if (s.pattern.kind !== "BindPat") break;
+            if (!s.value) {
+              // `let w: weak(C)` with nothing in it yet still owns whatever
+              // it is assigned later, and something has to give that back.
+              const declared = this.types.get(s.pattern as unknown as A.Node);
+              const dk = this.heapKind(declared);
+              if (dk === "shared" || dk === "weak") {
+                declare(s.pattern.name, { kind: dk, ty: declared, init: null, block: current });
+              }
+              break;
+            }
             const hk = this.heapKind(this.types.get(s.pattern as unknown as A.Node) ?? this.types.get(s.value));
             // Only claim a value the frame demonstrably owns.
             if (hk && this.producesOwned(s.value)) {
@@ -316,9 +329,12 @@ class EscapeAnalysis {
               visit(s.target, "read");
               markEscape(s.value);
             } else {
-              // Rebinding drops what the name held; the frame no longer knows
-              // which value it owns, so stop tracking it.
-              escaped.add(s.target.name);
+              const k = this.heapKind(this.types.get(s.target));
+              // A handle is the exception: rebinding one releases the handle
+              // it held and takes the new one, so the frame still knows what
+              // it owns and still has to give it back. For anything else the
+              // frame loses track and stops claiming it.
+              if (k !== "shared" && k !== "weak") escaped.add(s.target.name);
             }
             break;
           case "GiveStmt":

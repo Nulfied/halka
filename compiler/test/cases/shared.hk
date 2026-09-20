@@ -29,12 +29,18 @@ main(),
     say read(worker_copy),
     say cache.hits,
 
-    # `weak` holds a handle without keeping the value alive; it reads the
-    # same way, and it is what breaks a reference cycle.
+    # `weak` holds a handle without keeping the value alive, so reading one
+    # may find nothing. That is what `T?` is for (#7), so a weak read is an
+    # optional and the existing `is null` / `match` machinery handles it --
+    # no second mechanism, and no way to read a value that has gone.
     let counter: shared(Counter): Counter(3),
     let observer: weak(Counter): counter,
-    say observer.n,
-
+    let live: Counter?: observer,
+    say live is null,
+    if live is null,
+        say "gone",
+    else,
+        say live.n,
     # A shared handle is copyable, so it can be rebound freely.
     let again: cache,
     let third: again,

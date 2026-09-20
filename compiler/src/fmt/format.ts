@@ -458,8 +458,8 @@ class Formatter {
         const args = e.args.map((a) => (a.name ? `${a.name}: ${this.flat(a.value)}` : this.flat(a.value))).join(", ");
         return `${this.flat(e.callee)}${this.typeArgs(e.typeArgs)}(${args})`;
       }
-      case "MemberExpr": return `${this.flat(e.obj)}.${e.name}`;
-      case "IndexExpr": return `${this.flat(e.obj)}[${this.flat(e.index)}]`;
+      case "MemberExpr": return `${this.receiver(e.obj)}.${e.name}`;
+      case "IndexExpr": return `${this.receiver(e.obj)}[${this.flat(e.index)}]`;
       case "SliceExpr": {
         const s = e.start ? this.flat(e.start) : "";
         const en = e.end ? this.flat(e.end) : "";
@@ -530,6 +530,20 @@ class Formatter {
    * It also holds for `+` and `*`, where reassociation is harmless for
    * integers but not for floats.
    */
+  /**
+   * The object of a `.` or `[]`, bracketed when it binds looser.
+   *
+   * Access binds tighter than any operator, so `(a or b).name` reprinted
+   * without its brackets becomes `a or b.name` -- a different program that
+   * still compiles. The same family as the operator-precedence and
+   * interpolation-brace bugs: the formatter dropped something the parser
+   * needed to see it the same way.
+   */
+  private receiver(e: A.Expr): string {
+    const s = this.flat(e);
+    return LOOSER_THAN_ACCESS.has(e.kind) ? `(${s})` : s;
+  }
+
   private wrap(child: A.Expr, parent: A.BinaryExpr, side: "left" | "right"): string {
     const s = this.flat(child);
     if (child.kind !== "BinaryExpr") return s;
@@ -556,6 +570,9 @@ function escape(s: string): string {
   return s.replace(/[\\"\n\t\r{]/g, (c) =>
     ({ "\\": "\\\\", '"': '\\"', "\n": "\\n", "\t": "\\t", "\r": "\\r", "{": "\\{" })[c] ?? c);
 }
+
+/** Expressions that bind looser than `.` and `[]`, so they need brackets there. */
+const LOOSER_THAN_ACCESS = new Set(["BinaryExpr", "UnaryExpr", "CastExpr", "IsExpr", "RangeExpr"]);
 
 /** Commands whose second argument is written with the `:` association form. */
 function isAssocCommand(name: string): boolean {

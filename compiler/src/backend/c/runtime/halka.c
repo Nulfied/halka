@@ -1660,6 +1660,7 @@ hk_str *hk_json_dump(const hk_json *v) {
 hk_shared *hk_shared_new(const void *value, hk_int esz, hk_dropfn drop) {
   hk_shared *s = (hk_shared *)hk_alloc(sizeof(hk_shared));
   s->rc = 1;
+  s->wc = 0;
   s->drop = drop;
   s->data = hk_alloc((size_t)esz);
   memcpy(s->data, value, (size_t)esz);
@@ -1677,5 +1678,20 @@ void hk_shared_release(hk_shared *s) {
      with it rather than leaking behind the box. */
   if (s->drop) s->drop(s->data);
   hk_dealloc(s->data);
-  hk_dealloc(s);
+  s->data = NULL;
+  /* The control block has to outlive the value while anything is still
+     watching, or asking a weak handle would read freed memory. */
+  if (s->wc == 0) hk_dealloc(s);
 }
+
+hk_shared *hk_weak_from(hk_shared *s) {
+  if (s) s->wc++;
+  return s;
+}
+
+void hk_weak_release(hk_shared *s) {
+  if (!s || --s->wc > 0) return;
+  if (s->rc == 0) hk_dealloc(s);
+}
+
+hk_bool hk_weak_alive(const hk_shared *s) { return s && s->rc > 0; }

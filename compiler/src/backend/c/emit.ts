@@ -110,7 +110,7 @@ export class CEmitter {
    * must free; `live` is the subset already declared at the current point, so
    * an early `give` never frees something C has not seen yet.
    */
-  private blockStack: { owned: Set<string>; kinds: Map<string, "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | "struct" | "shared">; types: Map<string, Ty | undefined>; declared: Set<string>; optVars: Set<string>; live: Owned[]; caps: number; isLoopBody: boolean }[] = [];
+  private blockStack: { owned: Set<string>; kinds: Map<string, "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | "struct" | "shared" | "weak">; types: Map<string, Ty | undefined>; declared: Set<string>; optVars: Set<string>; live: Owned[]; caps: number; isLoopBody: boolean }[] = [];
   /** Owning parameters of the current function, freed when it returns. */
   private frameParams: Owned[] = [];
   /** Values built inside the current statement, freed once it completes. */
@@ -290,10 +290,10 @@ export class CEmitter {
     let body = this.out.join("\n").replace("  hk_init(argc, argv);", bootstrap.join("\n"));
     if (this.needsPython) body = body.split("  hk_shutdown();").join("  hk_py_stop();\n  hk_shutdown();");
     const pyrt = this.needsPython ? [PY_RUNTIME] : [];
-    return [...head, ...this.optDecls(), ...this.tupleDecls(), ...this.structDecls(), ...this.enumDecls(), ...lits, "", ...this.decls, "", ...pyrt, ...this.aux, ...init, body, ""].join("\n");
+    return [...head, ...this.optDecls(false), ...this.tupleDecls(), ...this.structDecls(), ...this.enumDecls(), ...this.optDecls(true), ...lits, "", ...this.decls, "", ...pyrt, ...this.aux, ...init, body, ""].join("\n");
   }
 
-  private optTypes = new Map<string, { key: string; cty: string }>();
+  private optTypes = new Map<string, { key: string; cty: string; late?: boolean }>();
   private tupleTypes = new Map<string, { key: string; elems: Ty[]; ctys: string[]; depth: number }>();
   /** Parameters of the function being emitted that are stored as optionals. */
   private optParams = new Set<string>();
@@ -429,19 +429,9 @@ export class CEmitter {
         if (t2) return t2;
         break;
       }
-      case "shared": return "hk_shared *";
-      case "weak":
-        // A weak handle does not keep its value alive, so reading one has
-        // to ask whether the value is still there. Halka has no operation
-        // that asks -- the memory model gives `weak` no upgrade form -- so
-        // compiling it would mean reading freed memory. Refused instead.
-        if (span) {
-          this.err("E0701", "the native backend cannot compile `weak` yet", span,
-            "`weak` breaks a reference cycle for the checker (W1010); reading one " +
-            "needs a way to ask whether the value is still alive, which the language " +
-            "does not have yet. Use `shared`, or run it with `halka run`.");
-        }
-        break;
+      // Both are handles on the same control block; which one a value is
+      // comes from its Halka type, not its C type.
+      case "shared": case "weak": return "hk_shared *";
       case "any":
         // Only this one `any` has a representation: a parsed JSON document
         // is an opaque dynamic value, like `PyObject *` at the py boundary.
@@ -471,18 +461,24 @@ export class CEmitter {
   /** Register `T?` and give its C type, or null if `T` cannot be optional. */
   private optRegister(inner: Ty, span?: Span): string | null {
     const p = prune(inner);
+    const named = p.k === "named" && this.structs.has(p.name);
     const ok = (p.k === "prim" && p.name !== "nothing" && p.name !== "null")
-      || p.k === "list" || p.k === "array";
+      || p.k === "list" || p.k === "array" || p.k === "tuple" || named;
     if (!ok) {
       if (span) {
         this.err("E0701", `the native backend cannot represent ${show(p)}? yet`, span,
-          "an optional may hold a number, bool, char, byte, string, or list");
+          "an optional may hold a number, bool, char, byte, string, list, tuple or struct");
       }
       return null;
     }
     const key = `opt_${tyKey(p)}`;
     if (!this.optTypes.has(key)) {
-      this.optTypes.set(key, { key, cty: this.cty(p, "optional value", span) });
+      // An optional of a struct or tuple has to be declared *after* that
+      // type, while one of a scalar can come first -- and a struct with an
+      // optional field needs the optional first. The two groups are
+      // emitted on either side of the struct declarations so both orders
+      // are available.
+      this.optTypes.set(key, { key, cty: this.cty(p, "optional value", span), late: named || p.k === "tuple" });
     }
     return mangleType(key);
   }
@@ -779,9 +775,10 @@ export class CEmitter {
     return `((${info.cty}){ ${parts.join(", ")} })`;
   }
 
-  private optDecls(): string[] {
+  private optDecls(late: boolean): string[] {
     const out: string[] = [];
     for (const o of this.optTypes.values()) {
+      if (!!o.late !== late) continue;
       out.push(`typedef struct ${mangleType(o.key)} {`);
       out.push("  hk_bool has;");
       out.push(`  ${o.cty} v;`);
@@ -969,6 +966,24 @@ export class CEmitter {
    * expression did not already produce one.
    */
   private liftTo(cExpr: string, e: A.Expr, want: Ty | undefined, newOwner = true): string {
+    // Making a weak handle: it watches the block without owning the value.
+    const wk = this.weakOf(want);
+    if (wk) return this.weakOf(this.tyOf(e)) ? cExpr : `hk_weak_from(${cExpr})`;
+
+    // Reading one. The value may be gone, so it comes back as a `T?` and
+    // the checker has already made the caller treat it as one.
+    const fromWeak = this.weakOf(this.tyOf(e));
+    if (fromWeak && this.optOf(want)) {
+      const o = this.optOf(want)!;
+      const ct = this.cty(fromWeak, "weak value", e.span);
+      const h = this.fresh("wk");
+      const out = this.fresh("wv");
+      this.line(`hk_shared *${h} = ${cExpr};`);
+      this.line(`${o.cty} ${out} = { 0 };`);
+      this.line(`if (hk_weak_alive(${h})) { ${out}.has = true; ${out}.v = *(${ct} *)${h}->data; }`);
+      return out;
+    }
+
     const sh = this.sharedOf(want);
     if (sh) {
       if (this.sharedOf(this.tyOf(e))) {
@@ -1451,6 +1466,7 @@ export class CEmitter {
 
   private releaseLocal(o: Owned): void {
     if (o.kind === "shared") { this.line(`hk_shared_release(${mangle(o.name)});`); return; }
+    if (o.kind === "weak") { this.line(`hk_weak_release(${mangle(o.name)});`); return; }
     if (o.kind === "struct") {
       const fn = this.structReleaser(this.structNameOf(o.ty) ?? "");
       if (fn) this.line(`${fn}(&${mangle(o.name)});`);
@@ -1551,6 +1567,12 @@ export class CEmitter {
   private sharedOf(t: Ty | undefined): Ty | null {
     const p = t ? prune(t) : undefined;
     return p && p.k === "shared" ? p.inner : null;
+  }
+
+  /** The payload type of a `weak(T)`, if this is one. */
+  private weakOf(t: Ty | undefined): Ty | null {
+    const p = t ? prune(t) : undefined;
+    return p && p.k === "weak" ? p.inner : null;
   }
 
   /**
@@ -1725,7 +1747,16 @@ export class CEmitter {
 
       case "AssignStmt": {
         const t = s.target;
-        if (t.kind === "Ident") { this.line(`${mangle(t.name)} = ${this.coerce(s.value, this.tyOf(t))};`); return; }
+        if (t.kind === "Ident") {
+          // Rebinding a handle gives back the one it held first, or the
+          // count it was holding is lost.
+          const tt = this.tyOf(t);
+          const rebound = this.coerce(s.value, tt);
+          if (this.sharedOf(tt)) this.line(`hk_shared_release(${mangle(t.name)});`);
+          else if (this.weakOf(tt)) this.line(`hk_weak_release(${mangle(t.name)});`);
+          this.line(`${mangle(t.name)} = ${rebound};`);
+          return;
+        }
         if (t.kind === "MemberExpr") { this.line(`${this.expr(t)} = ${this.expr(s.value)};`); return; }
         if (t.kind === "IndexExpr") {
           const ot = this.tyOf(t.obj);

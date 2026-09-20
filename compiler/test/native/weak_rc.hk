@@ -1,0 +1,71 @@
+# M3 — reading a `weak(T)`.
+#
+# A weak handle does not keep its value alive, which is what lets it break
+# a reference cycle. The consequence is that reading one may find nothing,
+# and Halka already has a word for a value that is not there: `T?` (#7).
+# So a weak read *is* an optional, handled by `is null`, `or` and `match`
+# exactly like any other. No new syntax, and no way to read a value that
+# has gone -- `w.field` is refused, with the fix in the message.
+#
+# The hard part is R23: both engines have to agree on *when* it goes. The
+# interpreter is garbage-collected and would happily keep the value alive
+# forever, so it counts owners the same way the compiled program does --
+# binding retains, leaving the block releases -- purely so the two answer
+# this question identically.
+C:
+    name: string,
+    n: int
+
+main(),
+    # Alive while an owner is in scope.
+    let keeper: shared(C): C("kept", 1),
+    let w1: weak(C): keeper,
+    let r1: C?: w1,
+    say r1 is null,
+    if r1 is null,
+        say "gone",
+    else,
+        say r1.n,
+    # A weak handle declared outside the owner's block outlives the value.
+    let outlives: weak(C),
+    if true,
+        let owner: shared(C): C("temporary", 2),
+        outlives: owner,
+        let inside: C?: outlives,
+        say inside is null,
+    let outside: C?: outlives,
+    say outside is null,
+
+    # `or` supplies a fallback when the value has gone.
+    let fallback: C: C("fallback", 99),
+    let gone: C?: outlives,
+    say (gone or fallback).name,
+
+    # And `match` reads it the same way anything optional is read.
+    match gone,
+        null,
+            say "match saw nothing",
+        _,
+            say "match saw something",
+    # Two owners: the value survives until the second one goes too.
+    let a: shared(C): C("two", 3),
+    let watcher: weak(C),
+    watcher: a,
+    if true,
+        let b: a,
+        let still: C?: watcher,
+        say still is null,
+    let after_one: C?: watcher,
+    say after_one is null,
+
+    # Built and dropped each iteration, so the counts have to balance.
+    let seen: 0,
+    for i in 0..30,
+        let o: shared(C): C("row {i}", i),
+        let wk: weak(C): o,
+        let got: C?: wk,
+        if got is null,
+            seen: seen + 1000,
+        else,
+            seen: seen + got.n,
+    say seen
