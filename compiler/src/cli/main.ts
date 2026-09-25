@@ -157,14 +157,34 @@ function analyse(main: A.Module, deps: { path: string; mod: A.Module }[], diags:
   for (const d of sema.items) diags.items.push(d);
   if (diags.hasErrors) return;
 
-  const inferred = inferTypes(main);
+  // Everything below runs over the *linked* program -- the module being run
+  // with its dependencies folded in -- which is what `halka build` has
+  // always done and what `run` did not.
+  //
+  // `run` inferred `main` alone. A dependency's body was therefore never
+  // type-checked by it, so a call into one had an unknown type and a
+  // library could ship with errors in it that only compiling found. The
+  // registry's first package did exactly that: `halka build` refused
+  // csv.hk, `halka run` and its own tests were happy, and it was published.
+  //
+  // Worse, the two engines were deciding *legality* differently, which is
+  // R23's one rule. Sharing the analysis is the only way they cannot drift:
+  // there is no second implementation left to disagree.
+  //
+  // Linking builds a new tree and leaves the originals alone, so the
+  // interpreter below still runs the unlinked modules and keeps its own
+  // notion of what a module is. Spans point into the files they came from,
+  // so a diagnostic still reads as one about the dependency.
+  const linked = linkProgram({ main, deps }).module;
+
+  const inferred = inferTypes(linked);
   for (const d of inferred.diags.items) diags.items.push(d);
   if (inferred.diags.hasErrors) return;
 
-  const own = checkOwnership(main, inferred.types, inferred.structFields);
+  const own = checkOwnership(linked, inferred.types, inferred.structFields);
   for (const d of own.diags.items) diags.items.push(d);
-  for (const d of checkUnsafe(main, inferred.types).items) diags.items.push(d);
-  for (const d of checkShared(main, inferred).items) diags.items.push(d);
+  for (const d of checkUnsafe(linked, inferred.types).items) diags.items.push(d);
+  for (const d of checkShared(linked, inferred).items) diags.items.push(d);
 }
 
 function cmdRun(args: string[]): void {

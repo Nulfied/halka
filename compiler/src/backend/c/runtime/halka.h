@@ -158,6 +158,39 @@ int     hk_str_cmp(hk_str *a, hk_str *b);
 hk_str *hk_str_retain(hk_str *s);
 void    hk_str_release(hk_str *s);
 
+/* String methods.
+ *
+ * All of these are byte operations, which for UTF-8 is the same answer a
+ * code-point operation would give: the encoding is self-synchronising, so a
+ * valid sequence never appears inside another one and a byte search cannot
+ * match half a character. `chars` is the exception and decodes properly.
+ *
+ * The methods that are *not* here -- `upper`, `lower`, `trim*`, `pad_*`,
+ * `index_of` -- are the ones whose answer depends on Unicode tables or on
+ * JavaScript's UTF-16 indexing. The backend refuses them rather than
+ * guessing, because R23 lets it reject a program and never lets it run one
+ * differently. */
+hk_bool  hk_str_contains(hk_str *s, hk_str *needle);
+hk_bool  hk_str_starts_with(hk_str *s, hk_str *prefix);
+hk_bool  hk_str_ends_with(hk_str *s, hk_str *suffix);
+hk_str  *hk_str_replace(hk_str *s, hk_str *from, hk_str *to);
+hk_str  *hk_str_repeat(hk_str *s, hk_int times);
+struct hk_list *hk_str_split(hk_str *s, hk_str *sep);
+struct hk_list *hk_str_lines(hk_str *s);
+struct hk_list *hk_str_chars(hk_str *s);
+struct hk_list *hk_str_bytes(hk_str *s);
+hk_str  *hk_list_join(struct hk_list *l, hk_str *sep);
+
+/* Compare, then release whichever side was built for the comparison.
+ *
+ * A comparison consumes nothing, so an operand built for it alone has to be
+ * freed afterwards -- and it cannot be freed by hoisting a temporary out of
+ * the expression, because `a and b == c` must not evaluate `b` when `a` is
+ * false. Doing the release inside the call keeps the short circuit and
+ * still frees the string. */
+hk_bool hk_str_eq_rel(hk_str *a, hk_bool ra, hk_str *b, hk_bool rb);
+int     hk_str_cmp_rel(hk_str *a, hk_bool ra, hk_str *b, hk_bool rb);
+
 /* ---- lists -------------------------------------------------------------- */
 
 /* Unboxed storage: `data` is a flat array of `esz`-byte elements, so an

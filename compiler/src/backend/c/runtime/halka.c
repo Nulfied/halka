@@ -295,6 +295,214 @@ static hk_str *hk_join2(hk_str *a, hk_str *b) {
   return t;
 }
 
+/* String methods. See halka.h for which are here and which the backend
+ * deliberately refuses.
+ *
+ * Every search below is a byte search. That is not an approximation: UTF-8
+ * is self-synchronising, so a valid encoded sequence can never occur inside
+ * another one, and a byte match therefore always lands on a character
+ * boundary. `chars` is the one that has to decode, and it counts code
+ * points, which is what `length` on a string already counts. */
+
+/* The first occurrence of `needle` in `hay` at or after `from`, or -1. */
+static hk_int hk_bytes_find(const char *hay, hk_int hlen, const char *needle, hk_int nlen, hk_int from) {
+  if (nlen == 0) return from <= hlen ? from : -1;
+  if (nlen > hlen) return -1;
+  for (hk_int i = from; i + nlen <= hlen; i++) {
+    if (memcmp(hay + i, needle, (size_t)nlen) == 0) return i;
+  }
+  return -1;
+}
+
+hk_bool hk_str_contains(hk_str *s, hk_str *needle) {
+  return hk_bytes_find(s->data, s->len, needle->data, needle->len, 0) >= 0;
+}
+
+hk_bool hk_str_starts_with(hk_str *s, hk_str *prefix) {
+  if (prefix->len > s->len) return false;
+  return memcmp(s->data, prefix->data, (size_t)prefix->len) == 0;
+}
+
+hk_bool hk_str_ends_with(hk_str *s, hk_str *suffix) {
+  if (suffix->len > s->len) return false;
+  return memcmp(s->data + (s->len - suffix->len), suffix->data, (size_t)suffix->len) == 0;
+}
+
+hk_str *hk_str_replace(hk_str *s, hk_str *from, hk_str *to) {
+  /* Every occurrence, which is what `split(from).join(to)` does in the
+   * interpreter -- not just the first, as C programmers tend to assume.
+   *
+   * An empty `from` follows from that literally: it splits into characters
+   * and joins them with `to`, so `"abc".replace("", "-")` is `a-b-c`. */
+  if (from->len == 0) {
+    hk_list *parts = hk_str_split(s, from);
+    hk_str *joined = hk_list_join(parts, to);
+    hk_list_release(parts);
+    return joined;
+  }
+
+  hk_int count = 0;
+  for (hk_int i = hk_bytes_find(s->data, s->len, from->data, from->len, 0); i >= 0;
+       i = hk_bytes_find(s->data, s->len, from->data, from->len, i + from->len)) {
+    count++;
+  }
+  if (count == 0) return hk_str_retain(s);
+
+  hk_int n = s->len + count * (to->len - from->len);
+  hk_str *out = hk_str_new(NULL, n);
+  hk_int w = 0, r = 0;
+  for (;;) {
+    hk_int at = hk_bytes_find(s->data, s->len, from->data, from->len, r);
+    if (at < 0) break;
+    memcpy(out->data + w, s->data + r, (size_t)(at - r));
+    w += at - r;
+    memcpy(out->data + w, to->data, (size_t)to->len);
+    w += to->len;
+    r = at + from->len;
+  }
+  memcpy(out->data + w, s->data + r, (size_t)(s->len - r));
+  out->data[n] = '\0';
+  return out;
+}
+
+hk_str *hk_str_repeat(hk_str *s, hk_int times) {
+  if (times <= 0 || s->len == 0) return hk_str_new("", 0);
+  hk_int n = s->len * times;
+  hk_str *out = hk_str_new(NULL, n);
+  for (hk_int i = 0; i < times; i++) memcpy(out->data + i * s->len, s->data, (size_t)s->len);
+  out->data[n] = '\0';
+  return out;
+}
+
+/* Bytes of one code point starting at `i`, or 1 for anything malformed --
+ * which keeps the walk moving rather than looping forever on bad input. */
+static hk_int hk_utf8_width(const unsigned char *p, hk_int left) {
+  unsigned char c = p[0];
+  hk_int want = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 1;
+  if (want > left) return 1;
+  for (hk_int k = 1; k < want; k++) if ((p[k] & 0xC0) != 0x80) return 1;
+  return want;
+}
+
+static hk_char hk_utf8_decode(const unsigned char *p, hk_int width) {
+  switch (width) {
+    case 2: return (hk_char)(((p[0] & 0x1Fu) << 6) | (p[1] & 0x3Fu));
+    case 3: return (hk_char)(((p[0] & 0x0Fu) << 12) | ((p[1] & 0x3Fu) << 6) | (p[2] & 0x3Fu));
+    case 4: return (hk_char)(((p[0] & 0x07u) << 18) | ((p[1] & 0x3Fu) << 12) | ((p[2] & 0x3Fu) << 6) | (p[3] & 0x3Fu));
+    default: return (hk_char)p[0];
+  }
+}
+
+static void hk_push_str(hk_list *l, const char *bytes, hk_int len) {
+  hk_str *piece = hk_str_new(bytes, len);
+  hk_list_push_raw(l, &piece);
+}
+
+hk_list *hk_str_split(hk_str *s, hk_str *sep) {
+  hk_list *out = hk_list_new((hk_int)sizeof(hk_str *), 4, HK_E_STR);
+  /* An empty separator splits into characters. The interpreter agrees --
+   * it iterates code points rather than letting JavaScript hand back UTF-16
+   * halves, which is the only way the two can answer this the same. */
+  if (sep->len == 0) {
+    const unsigned char *p = (const unsigned char *)s->data;
+    for (hk_int i = 0; i < s->len;) {
+      hk_int w = hk_utf8_width(p + i, s->len - i);
+      hk_push_str(out, s->data + i, w);
+      i += w;
+    }
+    return out;
+  }
+  hk_int from = 0;
+  for (;;) {
+    hk_int at = hk_bytes_find(s->data, s->len, sep->data, sep->len, from);
+    if (at < 0) break;
+    hk_push_str(out, s->data + from, at - from);
+    from = at + sep->len;
+  }
+  hk_push_str(out, s->data + from, s->len - from);
+  return out;
+}
+
+hk_list *hk_str_lines(hk_str *s) {
+  hk_str *nl = hk_str_lit("\n");
+  return hk_str_split(s, nl);
+}
+
+hk_list *hk_str_chars(hk_str *s) {
+  /* HK_E_CHAR, not HK_E_INT: printing a list of characters shows `'a'`
+   * and printing a list of integers shows `97`, and R23 is about what the
+   * program prints. */
+  hk_list *out = hk_list_new((hk_int)sizeof(hk_char), 4, HK_E_CHAR);
+  const unsigned char *p = (const unsigned char *)s->data;
+  for (hk_int i = 0; i < s->len;) {
+    hk_int w = hk_utf8_width(p + i, s->len - i);
+    hk_char c = hk_utf8_decode(p + i, w);
+    hk_list_push_raw(out, &c);
+    i += w;
+  }
+  return out;
+}
+
+hk_list *hk_str_bytes(hk_str *s) {
+  hk_list *out = hk_list_new((hk_int)sizeof(hk_int), s->len > 0 ? s->len : 1, HK_E_INT);
+  for (hk_int i = 0; i < s->len; i++) {
+    hk_int b = (hk_int)(unsigned char)s->data[i];
+    hk_list_push_raw(out, &b);
+  }
+  return out;
+}
+
+hk_str *hk_list_join(hk_list *l, hk_str *sep) {
+  /* Elements are rendered the way `say` renders them, which for a list of
+   * strings is the string itself and for anything else is its display form
+   * -- the same rule the interpreter's `join` follows. */
+  hk_int total = 0;
+  hk_str **pieces = l->len > 0 ? (hk_str **)hk_alloc(sizeof(hk_str *) * (size_t)l->len) : NULL;
+  for (hk_int i = 0; i < l->len; i++) {
+    hk_str *piece;
+    switch (l->ekind) {
+      case HK_E_STR:  piece = hk_str_retain(((hk_str **)l->data)[i]); break;
+      case HK_E_INT:  piece = hk_str_from_int(((hk_int *)l->data)[i]); break;
+      case HK_E_FLOAT: piece = hk_str_from_float(((hk_float *)l->data)[i]); break;
+      case HK_E_BOOL: piece = hk_str_from_bool(((hk_bool *)l->data)[i]); break;
+      /* `join` renders an element the way `say` does, not the way a list
+       * literal does: a character joins as itself, with no quotes. */
+      case HK_E_CHAR: piece = hk_str_from_char(((hk_char *)l->data)[i]); break;
+      case HK_E_LIST: piece = hk_str_from_list(((hk_list **)l->data)[i]); break;
+      default:        piece = hk_str_lit(""); break;
+    }
+    pieces[i] = piece;
+    total += piece->len;
+  }
+  if (l->len > 1) total += sep->len * (l->len - 1);
+
+  hk_str *out = hk_str_new(NULL, total);
+  hk_int w = 0;
+  for (hk_int i = 0; i < l->len; i++) {
+    if (i > 0) { memcpy(out->data + w, sep->data, (size_t)sep->len); w += sep->len; }
+    memcpy(out->data + w, pieces[i]->data, (size_t)pieces[i]->len);
+    w += pieces[i]->len;
+    hk_str_release(pieces[i]);
+  }
+  out->data[total] = '\0';
+  if (pieces) hk_dealloc(pieces);
+  return out;
+}
+
+hk_bool hk_str_eq_rel(hk_str *a, hk_bool ra, hk_str *b, hk_bool rb) {
+  hk_bool r = hk_str_eq(a, b);
+  if (ra) hk_str_release(a);
+  if (rb) hk_str_release(b);
+  return r;
+}
+
+int hk_str_cmp_rel(hk_str *a, hk_bool ra, hk_str *b, hk_bool rb) {
+  int r = hk_str_cmp(a, b);
+  if (ra) hk_str_release(a);
+  if (rb) hk_str_release(b);
+  return r;
+}
+
 hk_str *hk_str_from_list(struct hk_list *l) {
   hk_str *acc = hk_str_new("[", 1);
   for (hk_int i = 0; i < l->len; i++) {

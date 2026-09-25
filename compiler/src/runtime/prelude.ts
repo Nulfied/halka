@@ -366,13 +366,28 @@ const METHODS: Record<string, Record<string, NativeV> | undefined> = {
     split: native("split", 1, 2, (a) => {
       const s = needStr(a[0]!, "split");
       const sep = a[1] ? needStr(a[1], "split") : " ";
+      // An empty separator splits into characters, and a character here is
+      // a code point -- the same thing `chars` gives and the same thing
+      // `length` counts. JavaScript's own `split("")` hands back UTF-16
+      // halves instead, which is a unit this language does not have and
+      // which nothing compiled to C could reproduce.
+      if (sep === "") return list(codePoints(s).map((c) => str(c)));
       return list(s.split(sep).map(str));
     }),
     lines: native("lines", 1, 1, (a) => list(needStr(a[0]!, "lines").split("\n").map(str))),
     contains: native("contains", 2, 2, (a) => bool(needStr(a[0]!, "contains").includes(needStr(a[1]!, "contains")))),
     starts_with: native("starts_with", 2, 2, (a) => bool(needStr(a[0]!, "starts_with").startsWith(needStr(a[1]!, "starts_with")))),
     ends_with: native("ends_with", 2, 2, (a) => bool(needStr(a[0]!, "ends_with").endsWith(needStr(a[1]!, "ends_with")))),
-    replace: native("replace", 3, 3, (a) => str(needStr(a[0]!, "replace").split(needStr(a[1]!, "replace")).join(needStr(a[2]!, "replace")))),
+    replace: native("replace", 3, 3, (a) => {
+      const s = needStr(a[0]!, "replace");
+      const from = needStr(a[1]!, "replace");
+      const to = needStr(a[2]!, "replace");
+      // Splitting on an empty separator is the one case where JavaScript's
+      // UTF-16 units show through, and this is `split(from).join(to)`, so
+      // it splits into code points for the same reason `split` does.
+      if (from === "") return str(codePoints(s).join(to));
+      return str(s.split(from).join(to));
+    }),
     index_of: native("index_of", 2, 2, (a) => int(BigInt(needStr(a[0]!, "index_of").indexOf(needStr(a[1]!, "index_of"))))),
     repeat: native("repeat", 2, 2, (a) => str(needStr(a[0]!, "repeat").repeat(Math.max(0, needNum(a[1]!, "repeat"))))),
     chars: native("chars", 1, 1, (a) => list(codePoints(needStr(a[0]!, "chars")).map((c) => ({ t: "char", v: c }) as Value))),

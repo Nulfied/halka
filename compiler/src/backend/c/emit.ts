@@ -113,6 +113,8 @@ export class CEmitter {
   private blockStack: { owned: Set<string>; kinds: Map<string, "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | "struct" | "shared" | "weak">; types: Map<string, Ty | undefined>; declared: Set<string>; optVars: Set<string>; live: Owned[]; caps: number; isLoopBody: boolean }[] = [];
   /** Owning parameters of the current function, freed when it returns. */
   private frameParams: Owned[] = [];
+  /** Declarations by name, so a call can fill in a parameter's default. */
+  private fnDecls = new Map<string, A.FnDecl>();
   /** Values built inside the current statement, freed once it completes. */
   private stmtTemps: Owned[] = [];
   private inMain = false;
@@ -146,6 +148,7 @@ export class CEmitter {
 
   emit(mod: A.Module): EmitResult {
     const fns = mod.stmts.filter((s): s is A.FnDecl => s.kind === "FnDecl" && !!s.body && !s.isMacro && !s.foreign);
+    for (const f of fns) this.fnDecls.set(f.name, f);
     const structs = mod.stmts.filter((s): s is A.StructDecl => s.kind === "StructDecl" && !s.foreign);
     const top = mod.stmts.filter((s) => !DECL_KINDS.has(s.kind));
 
@@ -795,8 +798,9 @@ export class CEmitter {
    */
   private matchOptional(m: A.MatchExpr, o: { cty: string; inner: Ty }): void {
     const subject = this.fresh("opt");
+    const subjectC = this.expr(m.subject);
     this.open("{");
-    this.line(`${o.cty} ${subject} = ${this.expr(m.subject)};`);
+    this.line(`${o.cty} ${subject} = ${subjectC};`);
     // A scope of its own, so an arm's binding is not visible to whatever
     // follows the match.
     this.pushScope();
@@ -864,8 +868,9 @@ export class CEmitter {
    */
   private matchTuple(m: A.MatchExpr, info: { cty: string; elems: Ty[]; ctys: string[]; key: string }): void {
     const subject = this.fresh("mtup");
+    const subjectC = this.expr(m.subject);
     this.open("{");
-    this.line(`${info.cty} ${subject} = ${this.expr(m.subject)};`);
+    this.line(`${info.cty} ${subject} = ${subjectC};`);
     this.pushScope();
     for (const arm of m.arms) {
       if (arm.guard) {
@@ -921,6 +926,15 @@ export class CEmitter {
     if (!here) return;
     here.declared.add(name);
     if (this.optOf(t)) here.optVars.add(name);
+  }
+
+  /** The owned local of this name, if any scope still alive holds one. */
+  private ownedLocal(name: string): Owned | null {
+    for (let i = this.blockStack.length - 1; i >= 0; i--) {
+      const found = this.blockStack[i]!.live.find((o) => o.name === name);
+      if (found) return found;
+    }
+    return null;
   }
 
   /**
@@ -1234,8 +1248,19 @@ export class CEmitter {
     }
     const subject = this.fresh("match");
 
+    // Evaluated *and declared* before the block opens: the subject may need
+    // temporaries of its own, and those are released when the statement
+    // ends, which is after this block has closed.
+    const subjectC = this.expr(m.subject);
+    this.line(`${mangleType(def.key)} ${subject} = ${subjectC};`);
+    // A subject nobody else holds -- `match build(), Ok(xs)` on a call
+    // result -- is this statement's to free, payload and all. Bound to a
+    // name first it always was; matched straight from the call it was not,
+    // and the list inside the Result was simply abandoned.
+    if (this.ownsTemp(m.subject)) {
+      this.stmtTemps.push({ name: subject, kind: "enum", ty: this.tyOf(m.subject) });
+    }
     this.open("{");
-    this.line(`${mangleType(def.key)} ${subject} = ${this.expr(m.subject)};`);
     this.open(`switch (${subject}.tag) {`);
     for (const arm of m.arms) {
       const pat = arm.pattern;
@@ -1457,11 +1482,36 @@ export class CEmitter {
    */
   private giveValue(e: A.Expr): string {
     const base = this.coerce(e, this.fnCtx.retTy, false);
-    if (e.kind !== "Ident" || !this.sharedOf(this.tyOf(e))) return base;
+    if (e.kind !== "Ident") return base;
     const owning = this.fnParams.get(e.name);
     // Not a parameter, or one the caller handed over: the count is ours.
     if (owning === undefined || owning) return base;
-    return `hk_shared_retain(${base})`;
+
+    // A borrowed parameter given straight back is a second reference to
+    // something the caller still owns, and the caller of *this* function
+    // will treat what it gets as its own and free it. csv's
+    //
+    //     quote(field: string, sep: string: ","),
+    //         if not needs,
+    //             give field
+    //
+    // handed back an element of the caller's list, which then went into a
+    // list of its own; releasing that list freed a string the first list
+    // was still holding, and the next read of it was reading freed memory.
+    //
+    // Retaining here is the whole fix: one more count for the reference
+    // being handed out, which the receiver gives back as it would any
+    // other. `shared` has always done this; everything on the heap needs
+    // it for the same reason.
+    const t = this.tyOf(e);
+    if (this.sharedOf(t)) return `hk_shared_retain(${base})`;
+    // A weak handle is taken from the value it watches, not counted up.
+    if (this.weakOf(t)) return `hk_weak_from(${base})`;
+    if (this.isStr(t)) return `hk_str_retain(${base})`;
+    if (this.isList(t)) return `hk_list_retain(${base})`;
+    if (this.isMap(t)) return `hk_map_retain(${base})`;
+    if (this.isJsonDoc(t)) return `hk_json_retain(${base})`;
+    return base;
   }
 
   private releaseLocal(o: Owned): void {
@@ -1676,7 +1726,18 @@ export class CEmitter {
    */
   private holdArgs(e: A.CallExpr, args: string[], owning?: boolean[]): void {
     e.args.forEach((a, i) => {
-      if (owning?.[i]) return; // the callee frees it
+      if (owning?.[i]) {
+        // The callee frees this one, so the caller has to have a count to
+        // hand over -- and reading a name out of a container, or using a
+        // parameter it only borrowed, does not give it one.
+        //
+        // csv's `quote` takes its field as owning, because it can give the
+        // field straight back. `format` calls it with an element of the
+        // caller's row, so the element was freed twice: once by the list
+        // the result went into, once by the list it came from.
+        args[i] = this.retained(a.value, args[i]!);
+        return;
+      }
       const k = a.value.kind;
       if (k === "Ident" || k === "MemberExpr" || k === "IndexExpr") return; // borrowed from elsewhere
       const at = this.tyOf(a.value);
@@ -1688,7 +1749,70 @@ export class CEmitter {
     });
   }
 
+  /**
+   * `c` with a count added, when the expression it came from was borrowed
+   * rather than owned by this frame.
+   *
+   * A local this frame owns is being moved -- ownership analysis has
+   * already stopped claiming it -- so it is handed over as it is. Anything
+   * else belongs to somebody who is still using it.
+   */
+  private retained(e: A.Expr, c: string): string {
+    const k = e.kind;
+    const borrowed = k === "MemberExpr" || k === "IndexExpr"
+      || (k === "Ident" && !this.ownedLocal((e as A.Ident).name));
+    if (!borrowed) return c;
+    const t = this.tyOf(e);
+    if (this.sharedOf(t)) return `hk_shared_retain(${c})`;
+    if (this.isStr(t)) return `hk_str_retain(${c})`;
+    if (this.isList(t)) return `hk_list_retain(${c})`;
+    if (this.isMap(t)) return `hk_map_retain(${c})`;
+    if (this.isJsonDoc(t)) return `hk_json_retain(${c})`;
+    return c;
+  }
+
   /** Bind a freshly built value so the statement can free it again. */
+  /**
+   * A method's receiver, released at the end of the statement when it was
+   * built for this call alone.
+   *
+   * `["a", "b"].join("-")` builds a list nothing else will ever refer to,
+   * and reading it without holding it leaked the list and every string in
+   * it. A name, a field or an element is owned by whoever it belongs to and
+   * is only borrowed here, so it is left alone -- the same rule `holdArgs`
+   * applies to arguments.
+   */
+  private holdReceiver(obj: A.Expr, kind: "str" | "list"): string {
+    return this.holdIfTemp(obj, this.expr(obj), kind);
+  }
+
+  /**
+   * The same decision for an expression already emitted: hold it when it
+   * was built here and nothing else will free it.
+   *
+   * A name, a field or an element belongs to whoever it belongs to and is
+   * only borrowed; a string literal with nothing interpolated is a static
+   * with no refcount. Everything else was built for this use alone.
+   */
+  private holdIfTemp(e: A.Expr, c: string, kind: "str" | "list"): string {
+    return this.ownsTemp(e) ? this.holdTemp(c, kind) : c;
+  }
+
+  /**
+   * Was this expression built here, for this use alone?
+   *
+   * A name, a field or an element belongs to whoever it belongs to and is
+   * only borrowed; a string literal with nothing interpolated is a static
+   * with no refcount. Everything else was built for this use and is this
+   * statement's to free.
+   */
+  private ownsTemp(e: A.Expr): boolean {
+    const k = e.kind;
+    if (k === "Ident" || k === "MemberExpr" || k === "IndexExpr") return false;
+    if (k === "StrLit" && (e as A.StrLit).parts.every((p) => p.kind === "text")) return false;
+    return true;
+  }
+
   private holdTemp(cExpr: string, kind: "str" | "list" | "map" | "json"): string {
     const cty = kind === "str" ? "hk_str *" : kind === "map" ? "hk_map *"
       : kind === "json" ? "hk_json *" : "hk_list *";
@@ -1754,6 +1878,27 @@ export class CEmitter {
           const rebound = this.coerce(s.value, tt);
           if (this.sharedOf(tt)) this.line(`hk_shared_release(${mangle(t.name)});`);
           else if (this.weakOf(tt)) this.line(`hk_weak_release(${mangle(t.name)});`);
+          else {
+            // Overwriting an owned local drops whatever it was holding, and
+            // saying nothing here leaked it. `out: out + "x"` in a loop is
+            // the shape that shows it: one string abandoned per iteration,
+            // so the leak grows with the input rather than being a fixed
+            // cost nobody notices.
+            //
+            // The new value is computed into a temporary *first*: it
+            // usually reads the old one, and releasing before evaluating
+            // would free what the right-hand side is about to use. A bare
+            // name on the right is a move, which is tracked separately.
+            const owned = s.value.kind === "Ident" ? null : this.ownedLocal(t.name);
+            if (owned) {
+              const c = this.cty(tt, "assignment", s.span);
+              const tmp = this.fresh("asg");
+              this.line(`${c} ${tmp} = ${rebound};`);
+              this.releaseLocal(owned);
+              this.line(`${mangle(t.name)} = ${tmp};`);
+              return;
+            }
+          }
           this.line(`${mangle(t.name)} = ${rebound};`);
           return;
         }
@@ -1815,6 +1960,21 @@ export class CEmitter {
           return;
         }
         const value = s.value && !this.fnCtx.isVoid ? this.giveValue(s.value) : null;
+        if (value !== null && keep === undefined) {
+          // Computed before the frame lets go of anything, because the
+          // expression usually reads what is about to be released:
+          // `give lines.join("\n")` was emitted as a release of `lines`
+          // followed by a join over it, which joined freed memory.
+          //
+          // A bare name is the exception -- `keep` already stops the frame
+          // releasing the thing being handed back -- and is left alone so
+          // the common return stays a plain `return x;`.
+          const rv = this.fresh("ret");
+          this.line(`${this.cty(this.fnCtx.retTy, "return", s.span)} ${rv} = ${value};`);
+          this.releaseForReturn(keep);
+          this.line(`return ${rv};`);
+          return;
+        }
         this.releaseForReturn(keep);
         this.line(value !== null ? `return ${value};` : "return;");
         return;
@@ -1842,7 +2002,32 @@ export class CEmitter {
       }
 
       case "WhileStmt": {
-        this.open(`while (${this.cond(s.cond)}) {`);
+        // A condition that needs statements of its own -- an interpolation
+        // builds a string -- has to run them every time round and free what
+        // they built every time round. C's `while (cond)` has nowhere to put
+        // them: emitted before the loop they run once, and the value the
+        // loop then tests never changes again.
+        //
+        // So the loop is turned inside out, but only when there is
+        // something to put inside it. A plain condition still emits a plain
+        // `while`, which is most of them and is easier to read.
+        const mark = this.out.length;
+        const tempMark = this.stmtTemps.length;
+        const c = this.cond(s.cond);
+        const pre = this.out.splice(mark);
+        const temps = this.stmtTemps.splice(tempMark);
+        if (!pre.length) {
+          this.open(`while (${c}) {`);
+          this.suite(s.body, true);
+          this.close();
+          return;
+        }
+        this.open("while (1) {");
+        for (const l of pre) this.out.push("  " + l);
+        const v = this.fresh("cnd");
+        this.line(`hk_bool ${v} = ${c};`);
+        for (const t of temps.slice().reverse()) this.releaseLocal(t);
+        this.line(`if (!${v}) break;`);
         this.suite(s.body, true);
         this.close();
         return;
@@ -2051,8 +2236,14 @@ export class CEmitter {
       // `m.keys()` — belongs to nobody else, so the loop frees it. Reading
       // one from a variable borrows it and must not.
       const owns = !isRead(it);
+      // Evaluated before the block opens. The iterable may need temporaries
+      // of its own -- `for c in (a + b).chars(),` holds the joined string --
+      // and those are released when the statement ends, which is after this
+      // block closes. Declaring them inside it put the declaration and the
+      // release on opposite sides of a brace.
+      const iter = this.expr(it);
       this.open("{");
-      this.line(`hk_list *${lst} = ${this.expr(it)};`);
+      this.line(`hk_list *${lst} = ${iter};`);
       // Recorded on a frame of its own so a `give` out of the loop frees it
       // too. `break` unwinds only as far as the loop body, so it falls out
       // to the release below instead of doing it twice.
@@ -2131,8 +2322,11 @@ export class CEmitter {
           const ct = this.cty(shInner, "shared value", e.span);
           return `HK_SHARED_AS(${this.expr(e.obj)}, ${ct}).${mangle(e.name)}`;
         }
-        if (this.isList(ot) && (e.name === "length" || e.name === "size")) return `(${this.expr(e.obj)})->len`;
-        if (this.isStr(ot) && (e.name === "length" || e.name === "size")) return `hk_str_len_chars(${this.expr(e.obj)})`;
+        // Held for the same reason a method receiver is: `s.chars().length`
+        // builds a list, reads one field of it and would otherwise drop it
+        // on the floor.
+        if (this.isList(ot) && (e.name === "length" || e.name === "size")) return `(${this.holdReceiver(e.obj, "list")})->len`;
+        if (this.isStr(ot) && (e.name === "length" || e.name === "size")) return `hk_str_len_chars(${this.holdReceiver(e.obj, "str")})`;
         const p = ot ? prune(ot) : undefined;
         if (p?.k === "named" && this.structs.has(p.name)) return `(${this.expr(e.obj)}).${mangle(e.name)}`;
         const enumInst = p?.k === "named" ? this.enumOf(p, e.span) : null;
@@ -2393,8 +2587,34 @@ export class CEmitter {
 
     // Strings
     if (this.isStr(lt) || this.isStr(rt)) {
+      if (e.op === "+") {
+        // A join consumes both of its parts, so neither needs holding.
+        return `hk_str_join(2, (hk_str *[]){ ${this.asStrOwned(e.lhs)}, ${this.asStrOwned(e.rhs)} })`;
+      }
+      // A comparison consumes nothing, so an operand built for the
+      // comparison alone belongs to nobody afterwards: `"{ch}" == ","` in a
+      // loop built and abandoned one string per iteration.
+      //
+      // The release happens inside the call rather than by hoisting the
+      // operand into a temporary above the statement. Hoisting evaluates
+      // it unconditionally, and `i + 1 < n and "{chars[i + 1]}" == "\""`
+      // depends on not doing that -- the index is only in range because
+      // the left side said so. Hoisted, it read one past the end.
+      const lo = this.ownsTemp(e.lhs);
+      const ro = this.ownsTemp(e.rhs);
+      if (lo || ro) {
+        const eq = `hk_str_eq_rel(${l}, ${lo}, ${r}, ${ro})`;
+        const cmp = `hk_str_cmp_rel(${l}, ${lo}, ${r}, ${ro})`;
+        switch (e.op) {
+          case "==": return eq;
+          case "!=": return `(!${eq})`;
+          case "<": return `(${cmp} < 0)`;
+          case "<=": return `(${cmp} <= 0)`;
+          case ">": return `(${cmp} > 0)`;
+          case ">=": return `(${cmp} >= 0)`;
+        }
+      }
       switch (e.op) {
-        case "+": return `hk_str_join(2, (hk_str *[]){ ${this.asStrOwned(e.lhs)}, ${this.asStrOwned(e.rhs)} })`;
         case "==": return `hk_str_eq(${l}, ${r})`;
         case "!=": return `(!hk_str_eq(${l}, ${r}))`;
         case "<": return `(hk_str_cmp(${l}, ${r}) < 0)`;
@@ -2539,6 +2759,18 @@ export class CEmitter {
           .map(({ f, a }) => `.as.${mangle(n)}.${mangle(f.name)} = ${a ?? zeroOf(this.cty(f.ty, f.name))}`);
         return `((${mangleType(inst.key)}){ .tag = ${variantTag(inst.key, n)}${payload.length ? ", " + payload.join(", ") : ""} })`;
       }
+      // A parameter with a default is one the caller may leave out, and C
+      // has no such thing -- so the default is emitted here, at the call.
+      // Without it the generated call simply had fewer arguments than the
+      // function it called, and the C compiler was the one to say so.
+      const decl = this.fnDecls.get(n);
+      if (decl) {
+        for (let i = args.length; i < decl.params.length; i++) {
+          const d = decl.params[i]!.default;
+          if (!d) break;
+          args.push(this.expr(d));
+        }
+      }
       this.holdArgs(e, args, this.opts.owningParams?.get(n));
       // Lifting into `T?` happens after holding, not before: it is the inner
       // value that was freshly built and needs freeing, and the wrapper is
@@ -2590,17 +2822,48 @@ export class CEmitter {
         return `${member.c}(${args.join(", ")})`;
       }
       if (this.isMap(ot)) return this.mapMethod(obj, m, e);
+      if (this.isStr(ot)) {
+        const s = this.holdReceiver(obj, "str");
+        switch (m) {
+          case "contains": return `hk_str_contains(${s}, ${args[0]})`;
+          case "starts_with": return `hk_str_starts_with(${s}, ${args[0]})`;
+          case "ends_with": return `hk_str_ends_with(${s}, ${args[0]})`;
+          case "replace": return `hk_str_replace(${s}, ${args[0]}, ${args[1]})`;
+          case "repeat": return `hk_str_repeat(${s}, ${args[0]})`;
+          case "split": return `hk_str_split(${s}, ${args[0] ?? `hk_str_lit(" ")`})`;
+          case "lines": return `hk_str_lines(${s})`;
+          case "chars": return `hk_str_chars(${s})`;
+          case "bytes": return `hk_str_bytes(${s})`;
+          case "is_empty": return `((${s})->len == 0)`;
+          // `upper`, `lower`, `trim*`, `pad_*` and `index_of` are absent on
+          // purpose: their answers come out of Unicode case tables or, for
+          // `index_of`, out of JavaScript's UTF-16 indexing, and a C
+          // version that agreed for ASCII and diverged elsewhere is exactly
+          // the mis-acceptance R23 forbids. Refusing is allowed; being
+          // quietly different is not.
+          default: break;
+        }
+      }
       if (this.isList(ot)) {
         const et = this.cty(this.elemOf(ot), "element", e.span);
         switch (m) {
           case "push": {
             // `push` is an expression here, so it cannot expand to a
             // do/while. Bind the receiver first, then use the comma form.
+            //
+            // A list takes ownership of what is pushed into it, so a value
+            // it only borrowed needs a count of its own. `for part in
+            // text.split(","), rows.push(part)` pushed elements of the
+            // split list and then released that list at the end of the
+            // loop, taking the elements with it -- the list that was built
+            // came back full of freed strings.
             const lv = this.fresh("lst");
             this.line(`hk_list *${lv} = ${this.expr(obj)};`);
-            return `HK_PUSH_E(${lv}, ${et}, ${args[0]})`;
+            const pushed = e.args[0] ? this.retained(e.args[0].value, args[0]!) : args[0];
+            return `HK_PUSH_E(${lv}, ${et}, ${pushed})`;
           }
           case "is_empty": return `((${this.expr(obj)})->len == 0)`;
+          case "join": return `hk_list_join(${this.holdReceiver(obj, "list")}, ${args[0] ?? `hk_str_lit("")`})`;
           default: break;
         }
       }
@@ -2845,6 +3108,10 @@ export class CEmitter {
       else pieces.push(this.asStrOwned(p.expr!));
     }
     if (!pieces.length) return `hk_str_lit("")`;
+    // The result is owned either way -- one piece is `asStrOwned`, more is
+    // a join that consumed them -- and it is the *caller* that has to say
+    // what happens to it. Holding it here was wrong: `let ch: "{c}"` binds
+    // it, so it would have been released twice.
     if (pieces.length === 1) return pieces[0]!;
     return `hk_str_join(${pieces.length}, (hk_str *[]){ ${pieces.join(", ")} })`;
   }

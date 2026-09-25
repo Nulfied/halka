@@ -185,6 +185,42 @@ export async function suitePkgE2E(r: Report): Promise<void> {
       `status ${used.status}\nstdout: ${(used.stdout ?? "").trim()}\nstderr: ${(used.stderr ?? "").trim()}`);
   }
 
+  // ---- a dependency's own body is checked -------------------------------
+
+  // `run` used to infer only the module being run, so a library could ship
+  // with type errors that only `halka build` ever saw -- and the registry's
+  // first package did exactly that. The error here is in a function nothing
+  // calls, so only a static check of the *dependency* can find it: running
+  // the program never reaches it.
+  const brokenDir = join(base, "broken-dep");
+  write(join(brokenDir, "halka.pkg"), "package:\n    name: bapp,\n    version: 0.1.0\n\ndeps:\n    rotten: 1.0.0\n");
+  write(join(brokenDir, "src", "main.hk"), "import rotten\n\nsay rotten.fine()\n");
+  buildFixtureRegistry(registryDir, [
+    { name: "rotten", version: "1.0.0", body: 'broken(): int,\n    give "not an int"\n\nfine(): string,\n    give "ok"\n' },
+  ]);
+  await sync(loadProject(brokenDir), { dev: false, offline: false, update: false, registry: new Registry(registryDir, false) });
+  const ran = spawnSync(process.execPath, [CLI, "run", join(brokenDir, "src", "main.hk")], { encoding: "utf8", env });
+  const built = spawnSync(process.execPath, [CLI, "build", join(brokenDir, "src", "main.hk"), "-o", join(brokenDir, "out")], { encoding: "utf8", env });
+  const ranErr = `${ran.stdout ?? ""}${ran.stderr ?? ""}`;
+  if (ran.status !== 0 && /expected int, found string/.test(ranErr) && /rotten/.test(ranErr)) {
+    r.ok("e2e: `run` type-checks a dependency's own body");
+  } else {
+    r.bad("e2e: `run` type-checks a dependency's own body", `status ${ran.status}\n${ranErr.trim()}`);
+  }
+
+  // And says the same thing `build` says. Two engines that disagree about
+  // whether a program is legal at all is the expensive kind of R23 failure:
+  // it is found by someone whose program compiles and will not run, or the
+  // reverse, long after they wrote it.
+  const buildErr = `${built.stdout ?? ""}${built.stderr ?? ""}`;
+  const firstLine = (s: string) => (s.trim().split(/\r?\n/)[0] ?? "");
+  if (built.status !== 0 && firstLine(buildErr) === firstLine(ranErr)) {
+    r.ok("e2e: and reports it in the same words `build` does");
+  } else {
+    r.bad("e2e: and reports it in the same words `build` does",
+      `run:   ${firstLine(ranErr)}\nbuild: ${firstLine(buildErr)}`);
+  }
+
   // ---- `halka test` checks what `halka run` checks ----------------------
 
   // It looked only for parse errors, so a test file the compiler refuses

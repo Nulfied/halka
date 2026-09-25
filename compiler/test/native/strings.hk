@@ -1,0 +1,93 @@
+# String methods in the compiled backend (R23).
+#
+# The interpreter's string methods are JavaScript's, and JavaScript indexes
+# strings in UTF-16 while this language counts code points. So the split
+# here is deliberate: the backend implements the methods whose answer is the
+# same either way, and refuses the ones whose answer is not.
+#
+# The ones it implements are byte operations, which for UTF-8 give exactly
+# what a code-point operation would: the encoding is self-synchronising, so
+# a valid sequence never appears inside another and a byte search cannot
+# match half a character. The non-ASCII cases below are the ones that would
+# catch it if that reasoning were wrong.
+#
+# Absent on purpose, and reported as such by `halka build`: `upper`,
+# `lower`, `trim`, `trim_start`, `trim_end`, `pad_start`, `pad_end` and
+# `index_of`. Their answers come out of Unicode case and whitespace tables,
+# or out of UTF-16 indexing. A C version agreeing for ASCII and diverging
+# elsewhere is the mis-acceptance R23 forbids; refusing is allowed.
+main(),
+    let s: "a,b,,c",
+    say s.contains(","),
+    say s.contains("z"),
+    say s.contains(""),
+    say s.starts_with("a,"),
+    say s.starts_with(","),
+    say s.ends_with("c"),
+    say s.ends_with(""),
+    say s.is_empty(),
+    say "".is_empty(),
+
+    # Every occurrence, not the first.
+    say s.replace(",", ";"),
+    say s.replace(",", ""),
+    say s.replace("", "X"),
+    say s.replace("zz", "!"),
+    say "aaa".replace("aa", "b"),
+
+    say "ab".repeat(3),
+    say "ab".repeat(0),
+    say "ab".repeat(-2),
+
+    # Splitting, including the empty fields that make it awkward.
+    say s.split(","),
+    say "a".split(","),
+    say "".split(","),
+    say ",a,".split(","),
+    say "a  b".split(),
+    say "one two".split(" "),
+
+    # An empty separator splits into characters, and a character is a code
+    # point -- what `chars` gives and what `length` counts.
+    say "abc".split(""),
+
+    say "x\ny\n".lines(),
+    say "".lines(),
+
+    # Joining back is the other direction, and has to agree.
+    say s.split(",").join("|"),
+    say ["a", "b"].join(),
+    say ["a"].join("-"),
+    say [1, 2, 3].join(","),
+    say [true, false].join(" "),
+
+    # Characters and bytes. `length` counts code points, so a multi-byte
+    # character is one of the first and several of the second.
+    let u: "héllo",
+    say u.length,
+    say u.chars().length,
+    say u.bytes().length,
+    say u.chars(),
+    say u.bytes(),
+    say u.contains("é"),
+    say u.replace("é", "e"),
+    say u.split("é"),
+    say u.split(""),
+
+    # Four-byte characters, where UTF-16 and code points part company: this
+    # is one character, one code point, and four bytes.
+    let wide: "a😀b",
+    say wide.length,
+    say wide.chars().length,
+    say wide.bytes().length,
+    say wide.split(""),
+    say wide.contains("😀"),
+
+    # And the loop the CSV parser actually runs.
+    let out: "",
+    for ch in "a,b".chars(),
+        if "{ch}" == ",",
+            out: out + ";",
+        else,
+            out: out + "{ch}",
+    say out

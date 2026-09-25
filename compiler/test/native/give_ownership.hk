@@ -1,0 +1,78 @@
+# Handing a value back, and who owns it afterwards (M1-M6, R23).
+#
+# Four ways a value could be handed out of a function, each of which the
+# backend got wrong in a way the interpreter could not see -- it is garbage
+# collected, so every one of these ran correctly under `halka run` while the
+# compiled program read or freed memory twice. They were found by compiling
+# the registry's first package, whose whole job is building lists of strings
+# and giving them back.
+#
+# Every case here also has to leak nothing, which is the other half: the
+# first three were *fixed* into leaks before they were fixed properly, and a
+# leak is exactly what a zero-leak assertion is for.
+C:
+    name: string
+
+# 1. A constructor stores what it is given, so `rows` leaves with the
+#    Result. Read as borrowed, the frame released it on the way out and
+#    returned the pointer it had just freed.
+rows_of(text: string): Result<list(string)>,
+    let rows: list(string),
+    rows: [],
+    for part in text.split(","),
+        rows.push(part),
+    give Ok(rows)
+
+# 2. `field` is an owning parameter, because it can be given straight back.
+#    A caller passing something it only borrowed -- an element of its own
+#    list -- has no count to hand over, and the element was then freed by
+#    both lists.
+tag(field: string): string,
+    if field == "",
+        give field,
+    give "<" + field + ">"
+
+# 3. `give` over an expression that reads a local: the frame used to let go
+#    of `parts` and then join over it.
+joined(text: string): string,
+    let parts: text.split(","),
+    give parts.join("|")
+
+# 4. A Result matched straight from the call, with nobody holding it. Bound
+#    to a name first it was always released; matched from the call, the list
+#    inside it was abandoned.
+main(),
+    match rows_of("a,b,c"),
+        Ok(rows),
+            say rows,
+            say rows.length,
+        Error(message),
+            say message,
+    # The same, bound first, which has to agree with it.
+    let held: rows_of("d,e"),
+    match held,
+        Ok(rows),
+            say rows,
+        Error(message),
+            say message,
+    # An owning parameter fed from a list the caller keeps using. Reading
+    # the list again afterwards is the point: it must still be intact.
+    let fields: ["x", "", "y"],
+    let tagged: [],
+    for f in fields,
+        tagged.push(tag(f)),
+    say tagged,
+    say fields,
+
+    say joined("p,q,r"),
+
+    # And a loop of all of it, so anything unbalanced accumulates rather
+    # than hiding in a single pass.
+    let total: 0,
+    for i in 0..20,
+        match rows_of("m,n"),
+            Ok(rows),
+                total: total + rows.length,
+            Error(message),
+                say message,
+    say total

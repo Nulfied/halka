@@ -60,6 +60,8 @@ class EscapeAnalysis {
   private structFields: Map<string, Ty[]>;
   private owningParams: Map<string, boolean[]>;
   private enumsWithHeap = new Set<string>();
+  /** Variant constructors by name -- `Ok`, `Error`, and every user one. */
+  private variantNames = new Set<string>();
   private fns = new Map<string, A.FnDecl>();
   readonly stackable = new Set<A.Expr>();
   readonly blocks = new Map<A.Block, Owned[]>();
@@ -83,7 +85,10 @@ class EscapeAnalysis {
     this.owningParams = owningParams;
     for (const [name, variants] of enumVariants ?? []) {
       if (EscapeAnalysis.carriesHeap(variants)) this.enumsWithHeap.add(name);
+      for (const v of variants.keys()) this.variantNames.add(v);
     }
+    // `Result` is built in, so it is not in the table (#22).
+    for (const v of ["Ok", "Error", "Cancelled"]) this.variantNames.add(v);
   }
 
   private kind(n: A.Node): OwnershipKind {
@@ -242,9 +247,18 @@ class EscapeAnalysis {
           }
           if (e.callee.kind === "MemberExpr") visit(e.callee.obj, "read");
           const flags = callee ? this.owningParams.get(callee) : undefined;
+          // A constructor stores what it is given: `Ok(rows)` and
+          // `Point(a, b)` both put the argument inside the value they
+          // build, so it leaves this frame with it. Reading it as borrowed
+          // meant `give Ok(rows)` released `rows` on the way out and
+          // returned the pointer it had just freed -- a function that
+          // returned a list inside a Result handed back freed memory, and
+          // printing the result printed whatever had landed there.
+          const stores = callee !== null
+            && (this.variantNames.has(callee) || this.structFields.has(callee));
           e.args.forEach((a, i) => {
             // An argument the callee keeps leaves this frame for good.
-            const keeps = !!flags?.[i] || (method !== null && GROWING.has(method));
+            const keeps = stores || !!flags?.[i] || (method !== null && GROWING.has(method));
             visit(a.value, keeps ? "escape" : "read");
           });
           return;
@@ -314,8 +328,16 @@ class EscapeAnalysis {
               break;
             }
             const hk = this.heapKind(this.types.get(s.pattern as unknown as A.Node) ?? this.types.get(s.value));
+            // A plain string literal is static, so releasing it is a no-op
+            // -- and owning the local anyway is what lets a later
+            // assignment give back what it drops. `let out: ""` followed by
+            // `out: out + x` in a loop abandoned one string per iteration,
+            // because a local whose *first* value does not allocate was
+            // never owned at all, so nothing was ever released for it.
+            const staticStr = hk === "str" && s.value.kind === "StrLit"
+              && !s.value.parts.some((p) => p.kind === "expr");
             // Only claim a value the frame demonstrably owns.
-            if (hk && this.producesOwned(s.value)) {
+            if (hk && (this.producesOwned(s.value) || staticStr)) {
               const ty = this.types.get(s.pattern as unknown as A.Node) ?? this.types.get(s.value);
               declare(s.pattern.name, { kind: hk, ty, init: s.value, block: current });
             }
@@ -330,11 +352,39 @@ class EscapeAnalysis {
               markEscape(s.value);
             } else {
               const k = this.heapKind(this.types.get(s.target));
-              // A handle is the exception: rebinding one releases the handle
-              // it held and takes the new one, so the frame still knows what
-              // it owns and still has to give it back. For anything else the
-              // frame loses track and stops claiming it.
-              if (k !== "shared" && k !== "weak") escaped.add(s.target.name);
+              // Rebinding releases what the name held and takes the new
+              // value, so the frame still knows what it owns and still has
+              // to give it back. That has always been true of a handle; it
+              // is now true of anything, because the emitter gives the old
+              // value back at the point of assignment.
+              //
+              // Giving up instead -- which is what this did -- meant
+              // `out: out + x` in a loop owned nothing at all, so every
+              // string it built was abandoned, and the leak grew with the
+              // input. A string accumulator is not an exotic shape.
+              //
+              // The claim is only kept when the new value is one this frame
+              // demonstrably owns. A bare name on the right is a move, and
+              // moves are tracked separately; anything else the frame
+              // cannot vouch for, it still stops claiming.
+              // Rebinding releases what the name held and takes the new
+              // value, so the frame still knows what it owns and still has
+              // to give it back. That has always been true of a handle; it
+              // is now true of anything, because the emitter gives the old
+              // value back at the point of assignment.
+              //
+              // Giving up instead meant `out: out + x` in a loop owned
+              // nothing at all, so every string it built was abandoned and
+              // the leak grew with the input. A string accumulator is not
+              // an exotic shape.
+              //
+              // The claim is only kept when the new value is one this frame
+              // demonstrably owns. A bare name on the right is a move, and
+              // moves are tracked separately; anything else the frame
+              // cannot vouch for, it still stops claiming.
+              const keeps = k === "shared" || k === "weak"
+                || (s.value.kind !== "Ident" && this.producesOwned(s.value));
+              if (!keeps) escaped.add(s.target.name);
             }
             break;
           case "GiveStmt":

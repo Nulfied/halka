@@ -7,6 +7,13 @@
       "deps": {},
       "description": "Reading and writing comma-separated values, with the quoting rules (RFC 4180)",
       "license": "MIT OR Apache-2.0"
+    },
+    {
+      "version": "0.1.1",
+      "sha256": "c804c6638ff689801a3e14f22cb4aa755b53d9fb5b483b9ef71b8935fb1cd9a9",
+      "deps": {},
+      "description": "Reading and writing comma-separated values, with the quoting rules (RFC 4180)",
+      "license": "MIT OR Apache-2.0"
     }
   ]
 }

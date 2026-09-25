@@ -83,7 +83,7 @@ parse(text: string, sep: string: ","),
     give Ok(rows)
 
 # Write rows back out. The result parses back to what went in.
-format(rows, sep: string: ","),
+format(rows: list(list(string)), sep: string: ","),
     let lines: [],
     for row in rows,
         let cells: [],
@@ -127,7 +127,7 @@ parse_records(text: string, sep: string: ","),
             give Ok(out)
 
 # The `c`th field of `row`, or "" when the row stops short of it.
-cell(row, c: int),
+cell(row: list(string), c: int),
     if c < row.length,
         give row[c],
     give ""
