@@ -40,6 +40,16 @@ export interface EscapeInfo {
   topLevel: Owned[];
   /** List literals that can live on the stack: they neither escape nor grow. */
   stackable: Set<A.Expr>;
+  /**
+   * Reads where ownership genuinely transfers, so the receiver takes the
+   * frame's count instead of adding one of its own.
+   *
+   * Storing a value somewhere is a move only when the frame is finished
+   * with the name. A name it assigns again afterwards is not finished with
+   * -- it still holds a value, and still has to give that one back -- so
+   * those reads are copies, and every one of them retains.
+   */
+  moves: Set<A.Expr>;
 }
 
 /** Prelude and method calls that return a freshly allocated container. */
@@ -64,6 +74,7 @@ class EscapeAnalysis {
   private variantNames = new Set<string>();
   private fns = new Map<string, A.FnDecl>();
   readonly stackable = new Set<A.Expr>();
+  readonly moves = new Set<A.Expr>();
   readonly blocks = new Map<A.Block, Owned[]>();
   readonly params = new Map<string, Owned[]>();
   /** The module's top level, treated as one block. */
@@ -179,6 +190,7 @@ class EscapeAnalysis {
       params: this.params,
       topLevel: this.blocks.get(top) ?? [],
       stackable: this.stackable,
+      moves: this.moves,
     };
   }
 
@@ -204,6 +216,18 @@ class EscapeAnalysis {
     const escaped = new Set<string>();
     const movedAway = new Set<string>();
     const grown = new Set<string>();
+    /** Names this function assigns to, so a read of one is never a move. */
+    const assigned = new Set<string>();
+    /**
+     * Reads that would hand ownership over, held until the whole function
+     * has been walked: whether one is a move depends on what happens to the
+     * name *after* it, and that is not known yet. A name assigned again
+     * later still holds something afterwards, so giving its count away at
+     * the store leaves the frame releasing a value it no longer has.
+     */
+    const pending: { name: string; expr: A.Expr; kind: "escape" | "move" }[] = [];
+    /** Names stored into something longer-lived, which cannot be on the stack. */
+    const stored = new Set<string>();
 
     // An owning parameter arrives owned, so this frame must release it (M2.2).
     if (fn) {
@@ -219,18 +243,25 @@ class EscapeAnalysis {
 
     const markEscape = (e: A.Expr): void => {
       const n = rootIdent(e);
-      if (n) escaped.add(n);
+      if (n) { stored.add(n); pending.push({ name: n, expr: e, kind: "escape" }); }
     };
 
     const visit = (e: A.Expr, position: "value" | "escape" | "read"): void => {
       switch (e.kind) {
         case "Ident":
-          if (position === "escape") escaped.add(e.name);
-          else if (position === "value" && this.kind(e) === "owned") movedAway.add(e.name);
+          if (position === "escape") {
+            stored.add(e.name);
+            pending.push({ name: e.name, expr: e, kind: "escape" });
+          } else if (position === "value" && this.kind(e) === "owned") {
+            pending.push({ name: e.name, expr: e, kind: "move" });
+          }
           return;
 
         case "MoveExpr":
           if (e.expr.kind === "Ident") {
+            // Written out by hand, so it is a move whatever else happens
+            // to the name.
+            this.moves.add(e.expr);
             if (position === "escape") escaped.add(e.expr.name);
             else movedAway.add(e.expr.name);
             return;
@@ -382,13 +413,33 @@ class EscapeAnalysis {
               // demonstrably owns. A bare name on the right is a move, and
               // moves are tracked separately; anything else the frame
               // cannot vouch for, it still stops claiming.
+              // A plain string literal is a static: releasing it is a
+              // no-op, so owning the name through one is safe and is what
+              // lets `field: ""` sit between two owned values.
+              const staticStr = s.value.kind === "StrLit"
+                && !s.value.parts.some((p) => p.kind === "expr");
               const keeps = k === "shared" || k === "weak"
-                || (s.value.kind !== "Ident" && this.producesOwned(s.value));
+                || (s.value.kind !== "Ident" && (this.producesOwned(s.value) || staticStr));
               if (!keeps) escaped.add(s.target.name);
+              else assigned.add(s.target.name);
             }
             break;
           case "GiveStmt":
-            if (s.value) { visit(s.value, "escape"); markEscape(s.value); }
+            if (s.value) {
+              // A bare name handed back is already handled per path: the
+              // emitter skips releasing exactly that one on the way out, so
+              // its count passes to the caller here and the frame still
+              // gives it back on every other path.
+              //
+              // Marking it escaped instead dropped it from the frame
+              // altogether, so a function that gives the name back on one
+              // path and builds something else on another released it on
+              // neither. csv's `quote` does that -- it gives its field
+              // straight back when no quoting is needed -- and leaked the
+              // field once per quoted value.
+              if (s.value.kind === "Ident") visit(s.value, "read");
+              else { visit(s.value, "escape"); markEscape(s.value); }
+            }
             break;
           case "ExprStmt": visit(s.expr, "read"); break;
           case "SayStmt": for (const a of s.args) visit(a, "read"); break;
@@ -424,6 +475,31 @@ class EscapeAnalysis {
     walk(body.stmts);
 
     const paramOwned: Owned[] = [];
+    // Now that the whole function has been walked, each deferred read can
+    // be settled. A name this function assigns to still holds a value after
+    // the store, and the frame still has to give that one back -- so the
+    // store takes a count of its own and the name stays owned. csv's
+    //
+    //     row.push(field),
+    //     field: "",
+    //
+    // is the shape: handing the count over at the push left `field` holding
+    // a string nobody would ever release, once per field in the document.
+    //
+    // A name it never assigns again is finished with, so the store takes
+    // the frame's count and the frame stops claiming it -- which is what
+    // keeps `give Ok(rows)` a move rather than an extra count nobody drops.
+    for (const { name, expr, kind } of pending) {
+      if (assigned.has(name)) continue;
+      // Only a name this frame owns has a count to hand over. A loop
+      // variable, or a parameter it borrowed, has none -- reading one is a
+      // second reference however it is used, so the store still has to take
+      // a count of its own.
+      if (owns.some((o) => o.name === name)) this.moves.add(expr);
+      if (kind === "escape") escaped.add(name);
+      else movedAway.add(name);
+    }
+
     for (const info of owns) {
       const name = info.name;
       if (escaped.has(name) || movedAway.has(name)) continue;
@@ -436,7 +512,11 @@ class EscapeAnalysis {
         this.blocks.set(info.block, list);
       }
       // M4 — a list that neither escapes nor grows can live on the stack.
-      if (info.kind === "list" && info.init?.kind === "ListExpr" && !grown.has(name)) {
+      // `stored` covers the case the escape set used to: a list put inside
+      // something longer-lived outlives this frame even when the frame goes
+      // on using the name, so it cannot be a local array.
+      if (info.kind === "list" && info.init?.kind === "ListExpr"
+        && !grown.has(name) && !stored.has(name)) {
         this.stackable.add(info.init);
       }
     }

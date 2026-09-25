@@ -1,0 +1,91 @@
+# Storing a value, then using the name again (M1-M6, R23).
+#
+# Putting a value in a container is a move when the frame is finished with
+# the name, and a copy when it is not. The difference is invisible at the
+# store itself -- `row.push(field)` and `rows.push(row)` are the same three
+# tokens -- and shows up in what happens afterwards: a name assigned again
+# still holds something, and the frame still has to give that one back.
+#
+# Reading it as a move both ways leaked one value per store. That is the
+# shape every parser has, so csv leaked a string per field, and the leak
+# grew with the document rather than being a fixed cost nobody would
+# notice. Reading it as a copy both ways would double-free instead.
+#
+# Everything here is in a loop on purpose: an imbalance of one accumulates
+# into something the zero-leak assertion can see, where a single pass could
+# hide it.
+
+# An owning parameter given straight back on one path and not on another.
+# The frame has to release it on the second path and must not on the first,
+# which is one name needing two answers in one function.
+# Which path it takes is decided by the value, so both run. The field must
+# also be a *built* string: a literal is a static with no count on it, and
+# retaining or releasing one is a no-op that hides the whole question.
+wrap(field: string): string,
+    if field.length > 1,
+        give field,
+    give "<" + field + ">"
+
+main(),
+    # The parser shape: accumulate into a name, store it, start again.
+    let rows: [],
+    let row: [],
+    let field: "",
+    for ch in "ab,cd\nef,gh\nij,kl".chars(),
+        if "{ch}" == ",",
+            row.push(field),
+            field: "",
+        else if "{ch}" == "\n",
+            row.push(field),
+            field: "",
+            rows.push(row),
+            row: [],
+        else,
+            field: field + "{ch}",
+    row.push(field),
+    rows.push(row),
+    say rows,
+    say rows.length,
+
+    # The stored values must be intact, not just present: reading them back
+    # is what catches a release that went one too far.
+    for r in rows,
+        say r.join("|"),
+    # The same name stored and reassigned many times over.
+    let acc: [],
+    let piece: "",
+    for i in 0..40,
+        piece: piece + "x",
+        acc.push(piece),
+        piece: "",
+    say acc.length,
+    say acc[0],
+    say acc[39],
+
+    # A list stored and then rebuilt, which is the other half of the shape.
+    let groups: [],
+    let group: [],
+    for i in 0..30,
+        group.push("{i}"),
+        if i % 3 == 2,
+            groups.push(group),
+            group: [],
+    say groups.length,
+    say groups[0],
+    say groups[9],
+
+    # And the owning parameter, fed from a list the caller keeps -- built
+    # here rather than written as literals, so every string in it carries a
+    # count that has to come back.
+    let fields: [],
+    for i in 0..4,
+        fields.push("{i}"),
+        fields.push("{i}{i}"),
+    let wrapped: [],
+    for i in 0..25,
+        for f in fields,
+            wrapped.push(wrap(f)),
+    say wrapped.length,
+    say wrapped[0],
+    say wrapped[1],
+    say fields

@@ -1758,10 +1758,14 @@ export class CEmitter {
    * else belongs to somebody who is still using it.
    */
   private retained(e: A.Expr, c: string): string {
-    const k = e.kind;
-    const borrowed = k === "MemberExpr" || k === "IndexExpr"
-      || (k === "Ident" && !this.ownedLocal((e as A.Ident).name));
-    if (!borrowed) return c;
+    // Escape analysis decides which reads hand ownership over; everything
+    // else is a second reference and needs a count of its own. Guessing
+    // from the expression's shape here is what got `field` wrong: it looks
+    // exactly like `row` at the point of the push, and the difference is
+    // what happens to the name afterwards.
+    // Built right here, so it belongs to nobody yet and the store takes it.
+    if (this.ownsTemp(e)) return c;
+    if (this.opts.escapes?.moves.has(e)) return c;
     const t = this.tyOf(e);
     if (this.sharedOf(t)) return `hk_shared_retain(${c})`;
     if (this.isStr(t)) return `hk_str_retain(${c})`;
