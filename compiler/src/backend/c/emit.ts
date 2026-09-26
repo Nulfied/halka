@@ -2896,7 +2896,15 @@ export class CEmitter {
             const lv = this.fresh("lst");
             this.line(`hk_list *${lv} = ${this.expr(obj)};`);
             const pushed = e.args[0] ? this.retained(e.args[0].value, args[0]!) : args[0];
-            return `HK_PUSH_E(${lv}, ${et}, ${pushed})`;
+            // Bound before the macro touches the list. Left inline, the
+            // value and the `len++` that stores it are unsequenced, so
+            // `xs.push(f(xs))` read one element past the end under gcc and
+            // not under MSVC -- a program whose answer came from the C
+            // compiler. Found by the ownership fuzzer, on CI, on the two
+            // platforms this machine is not.
+            const pv = this.fresh("pv");
+            this.line(`${et} ${pv} = ${pushed};`);
+            return `HK_PUSH_E(${lv}, ${et}, ${pv})`;
           }
           case "is_empty": return `((${this.expr(obj)})->len == 0)`;
           case "join": return `hk_list_join(${this.holdReceiver(obj, "list")}, ${args[0] ?? `hk_str_lit("")`})`;

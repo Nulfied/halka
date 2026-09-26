@@ -67,4 +67,18 @@ main(),
         a: b,
         b: "round-{i}",
     say a,
-    say b
+    say b,
+
+    # Pushing something computed *from* the list being pushed into. The
+    # store and the value that fills it are unsequenced in C unless the
+    # value is bound first, so this read one element past the end under gcc
+    # and not under MSVC -- the same program, two answers, decided by the C
+    # compiler. Found by the fuzzer, on CI, on the platforms this machine
+    # is not.
+    let grow: [],
+    grow.push("first"),
+    for i in 0..6,
+        grow.push(grow.join("/")),
+    say grow.length,
+    say grow[1],
+    say grow[2]

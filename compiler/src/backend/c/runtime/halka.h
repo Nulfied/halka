@@ -250,14 +250,25 @@ static inline hk_int hk_list_at(hk_list *l, hk_int i, const char *file, hk_int l
 #define HK_AT(l, T, i)  (((T *)(l)->data)[(i)])
 #define HK_IDX(l, T, i) (((T *)(l)->data)[hk_list_at((l), (i), __FILE__, __LINE__)])
 
+/* The value is evaluated into a local *before* the list is touched.
+ *
+ * Written as `((T *)l->data)[l->len++] = (v)`, the `l->len++` and the `v`
+ * are unsequenced: C does not say which happens first, and the two answers
+ * differ whenever `v` reads the list. `xs.push(f(xs))` worked under MSVC,
+ * which evaluated `v` first, and read one element past the end under gcc,
+ * which did not -- the same program, two answers, decided by the C
+ * compiler rather than by Halka. Evaluating `v` first also stops it
+ * reallocating the storage the assignment is about to write through. */
 #define HK_PUSH(l, T, v) do {                 \
+    T hk__v = (v);                            \
     hk_list *hk__l = (l);                     \
     hk_list_reserve(hk__l, hk__l->len + 1);   \
-    ((T *)hk__l->data)[hk__l->len++] = (v);   \
+    ((T *)hk__l->data)[hk__l->len++] = hk__v; \
   } while (0)
 
-/* Expression form, for a push used where a value is expected. `l` is
-   evaluated more than once, so the generated code binds it to a temporary. */
+/* Expression form, for a push used where a value is expected. Both `l` and
+   `v` are evaluated in an order C does not fix, so the generated code binds
+   each to a temporary of its own first. */
 #define HK_PUSH_E(l, T, v) \
   (hk_list_reserve((l), (l)->len + 1), ((T *)(l)->data)[(l)->len++] = (v), 0)
 
