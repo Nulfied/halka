@@ -42,6 +42,7 @@ import { suiteCross } from "./cross.ts";
 import { suiteIncremental } from "./incremental.ts";
 import { suiteFuzz, shapeOf } from "./fuzz.ts";
 import { suiteRegistry } from "./registry.ts";
+import { suiteFuzzMemory } from "./fuzz-memory.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -590,6 +591,7 @@ suiteCross(ok, bad);
 suiteIncremental(ok, bad);
 suiteFuzz(ok, bad);
 suiteRegistry(ok, bad);
+suiteFuzzMemory(ok, bad);
 await runKernelTests(ok, bad);
 const ms = Date.now() - t0;
 

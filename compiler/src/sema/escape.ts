@@ -418,8 +418,13 @@ class EscapeAnalysis {
               // lets `field: ""` sit between two owned values.
               const staticStr = s.value.kind === "StrLit"
                 && !s.value.parts.some((p) => p.kind === "expr");
+              // A bare name on the right is included: the emitter retains
+              // it unless escape analysis called that read a move, so the
+              // name ends up owning a count either way. Excluding it left
+              // `x: y` releasing nothing at all, so whatever `x` held
+              // before was abandoned.
               const keeps = k === "shared" || k === "weak"
-                || (s.value.kind !== "Ident" && (this.producesOwned(s.value) || staticStr));
+                || this.producesOwned(s.value) || staticStr;
               if (!keeps) escaped.add(s.target.name);
               else assigned.add(s.target.name);
             }
@@ -453,7 +458,22 @@ class EscapeAnalysis {
             for (const e of s.elifs) { visit(e.cond, "read"); inBlock(e.block, () => walk(e.block.stmts)); }
             if (s.else) inBlock(s.else, () => walk(s.else!.stmts));
             break;
-          case "ForStmt": visit(s.iter, "read"); inBlock(s.body, () => walk(s.body.stmts)); break;
+          case "ForStmt": {
+            visit(s.iter, "read");
+            inBlock(s.body, () => walk(s.body.stmts));
+            // A loop variable is an element of the list, borrowed for the
+            // iteration -- until the body assigns to it, and then it holds
+            // something of its own that nobody was releasing. Claiming it
+            // makes the loop retain the element on the way in, so the
+            // assignment has a count to give back and the end of the
+            // iteration has one too.
+            if (s.pattern.kind === "BindPat" && assigned.has(s.pattern.name)) {
+              const ty = this.types.get(s.pattern as unknown as A.Node);
+              const hk = this.heapKind(ty);
+              if (hk) declare(s.pattern.name, { kind: hk, ty, init: null, block: s.body });
+            }
+            break;
+          }
           case "WhileStmt": visit(s.cond, "read"); inBlock(s.body, () => walk(s.body.stmts)); break;
           case "MatchStmt":
             visit(s.expr.subject, "read");

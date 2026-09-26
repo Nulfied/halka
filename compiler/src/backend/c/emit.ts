@@ -1757,6 +1757,17 @@ export class CEmitter {
    * already stopped claiming it -- so it is handed over as it is. Anything
    * else belongs to somebody who is still using it.
    */
+  /** `c` with a count added, for a C type that carries one. */
+  private retainFor(cty: string, c: string): string {
+    switch (cty) {
+      case "hk_str *": return `hk_str_retain(${c})`;
+      case "hk_list *": return `hk_list_retain(${c})`;
+      case "hk_map *": return `hk_map_retain(${c})`;
+      case "hk_json *": return `hk_json_retain(${c})`;
+      default: return c;
+    }
+  }
+
   private retained(e: A.Expr, c: string): string {
     // Escape analysis decides which reads hand ownership over; everything
     // else is a second reference and needs a count of its own. Guessing
@@ -1893,11 +1904,16 @@ export class CEmitter {
             // usually reads the old one, and releasing before evaluating
             // would free what the right-hand side is about to use. A bare
             // name on the right is a move, which is tracked separately.
-            const owned = s.value.kind === "Ident" ? null : this.ownedLocal(t.name);
+            const owned = this.ownedLocal(t.name);
             if (owned) {
               const c = this.cty(tt, "assignment", s.span);
               const tmp = this.fresh("asg");
-              this.line(`${c} ${tmp} = ${rebound};`);
+              // `retained` decides whether the right-hand side hands its
+              // count over or lends it: `x: y` where `y` is a loop variable
+              // or is used again afterwards is a second reference, and
+              // taking it without a count left `x` releasing something it
+              // did not own.
+              this.line(`${c} ${tmp} = ${this.retained(s.value, rebound)};`);
               this.releaseLocal(owned);
               this.line(`${mangle(t.name)} = ${tmp};`);
               return;
@@ -2210,7 +2226,8 @@ export class CEmitter {
       this.err("E0702", "the native backend does not support destructuring in a for loop yet", s.span);
       return;
     }
-    const v = mangle(s.pattern.name);
+    const loopName = s.pattern.name;
+    const v = mangle(loopName);
     const it = s.iter;
 
     // `for i in a..b` lowers to a plain C for loop — no iterator, no allocation.
@@ -2256,8 +2273,23 @@ export class CEmitter {
         this.blockStack[this.blockStack.length - 1]!.live.push({ name: lst, kind: "list" });
       }
       this.open(`for (hk_int ${i} = 0; ${i} < ${lst}->len; ${i}++) {`);
-      this.line(`${et} ${v} = HK_AT(${lst}, ${et}, ${i});`);
+      // The loop variable borrows its element, so binding it costs nothing
+      // -- unless the body assigns to it, and then it holds something of
+      // its own. Escape analysis says which, and when it does the element
+      // is retained on the way in so the assignment has a count to give
+      // back and the end of the iteration has one too.
+      const ownsVar = (this.opts.escapes?.blocks.get(s.body) ?? []).find((o) => o.name === loopName);
+      const bound = ownsVar ? this.retainFor(et, `HK_AT(${lst}, ${et}, ${i})`) : `HK_AT(${lst}, ${et}, ${i})`;
+      this.line(`${et} ${v} = ${bound};`);
+      if (ownsVar) {
+        this.pushScope();
+        this.blockStack[this.blockStack.length - 1]!.live.push({ name: loopName, kind: ownsVar.kind, ty: ownsVar.ty });
+      }
       this.suite(s.body, true);
+      if (ownsVar) {
+        this.popScope();
+        this.releaseLocal(ownsVar);
+      }
       this.close();
       if (owns) {
         this.popScope();

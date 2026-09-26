@@ -1,0 +1,70 @@
+# Assigning to a loop variable (M1-M6, R23).
+#
+# A loop variable is an element of the list, borrowed for the iteration, so
+# binding it costs nothing and releasing it would free something the list
+# still holds. That stops being true the moment the body assigns to it: from
+# then on it holds a value of its own, and nobody was giving that one back.
+#
+# Found by the ownership fuzzer on its first real run, which is the argument
+# for having one -- the shape is ordinary, and no test anybody had written
+# by hand contained it.
+main(),
+    # The elements have to be built rather than written: a string literal is
+    # a static with no count on it, so retaining or releasing one is a no-op
+    # that hides the whole question.
+    let names: [],
+    for i in 0..6,
+        names.push("n{i}"),
+    # Assigned on one path and left alone on the other, so both the borrowed
+    # element and a replacement have to be handled in one loop.
+    let seen: [],
+    for n in names,
+        if n.length > 2,
+            n: "long-{n}",
+        seen.push(n),
+    say seen,
+    say names,
+
+    # Assigned unconditionally, and repeatedly, so an imbalance accumulates.
+    let out: [],
+    for round in 0..15,
+        for n in names,
+            n: n + "!",
+            n: n + "?",
+            out.push(n),
+    say out.length,
+    say out[0],
+    say names.length,
+
+    # A list of lists, where the loop variable is itself a container.
+    let groups: [],
+    for i in 0..4,
+        let g: [],
+        g.push("g{i}"),
+        groups.push(g),
+    let rebuilt: [],
+    for g in groups,
+        g: ["replaced"],
+        rebuilt.push(g),
+    say rebuilt,
+    say groups.length,
+
+    # And the other direction: an owned name taking a borrowed one. `held`
+    # owns whatever it holds, so the assignment has to give the old value
+    # back and take a count on the new -- a bare name on the right looks
+    # like a move and is not one when the loop variable goes on living.
+    let held: "start",
+    for n in names,
+        held: n,
+        held: held + "+",
+    say held,
+
+    # The same where the right-hand side is a name the frame owns and is
+    # finished with, which *is* a move: no count is added and none is lost.
+    let a: "one",
+    let b: "two",
+    for i in 0..8,
+        a: b,
+        b: "round-{i}",
+    say a,
+    say b
