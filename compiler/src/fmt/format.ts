@@ -631,9 +631,42 @@ function escape(s: string): string {
   // the start of one: `"a {{b} c"` became `"a {b} c"`, which interpolates a
   // variable instead of printing a brace. `}` is only special after a `{`,
   // so it is left as it is.
-  return s.replace(/[\\"\n\t\r{]/g, (c) =>
-    ({ "\\": "\\\\", '"': '\\"', "\n": "\\n", "\t": "\\t", "\r": "\\r", "{": "\\{" })[c] ?? c);
+  const text = s.replace(/[\\\"\n\t\r{]/g, (c) =>
+    ({ "\\": "\\\\", '"': "\\\"", "\n": "\\n", "\t": "\\t", "\r": "\\r", "{": "\\{" })[c] ?? c);
+  // And a character nobody can see goes back as the escape it was written
+  // as, rather than as the byte the lexer decoded it to.
+  return [...text].map((c) => {
+    const cp = c.codePointAt(0)!;
+    if (!isInvisible(cp)) return c;
+    return `${BACKSLASH}u{${cp.toString(16).padStart(4, "0")}}`;
+  }).join("");
 }
+
+/**
+ * Characters with no visible form: the C0 and C1 controls, the whitespace
+ * that is not a plain space, the zero-width marks, and the byte-order mark.
+ *
+ * The lexer decodes an escape, so reprinting the character it decoded to
+ * puts an invisible one in the middle of the source: a file that reads as
+ * `"bom"`, is not, and shows no reason why. Letters are left alone --
+ * `e` with an accent and an emoji are perfectly readable, and escaping
+ * those would make every string in a non-English program unreadable
+ * instead.
+ */
+function isInvisible(cp: number): boolean {
+  if (cp <= 0x1f) return true;                 // C0 controls
+  if (cp >= 0x7f && cp <= 0x9f) return true;   // delete and the C1 controls
+  return INVISIBLE_POINTS.has(cp);
+}
+
+const INVISIBLE_POINTS = new Set([
+  0x00a0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006,
+  0x2007, 0x2008, 0x2009, 0x200a, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f,
+  0x2028, 0x2029, 0x202f, 0x205f, 0x2060, 0x3000, 0xfeff,
+]);
+
+/** A single backslash, spelled so nothing downstream can eat it. */
+const BACKSLASH = String.fromCharCode(92);
 
 /** Commands whose second argument is written with the `:` association form. */
 function isAssocCommand(name: string): boolean {

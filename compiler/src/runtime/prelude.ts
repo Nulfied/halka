@@ -49,6 +49,26 @@ function needStr(v: Value, who: string): string {
   fail(`${who} expects a string, found ${typeNameOf(v)}`);
 }
 
+/**
+ * `pad_start` / `pad_end`, measured in code points.
+ *
+ * JavaScript's `padStart` counts UTF-16 units, so a string holding one
+ * emoji counted as two and came out a character short of the width asked
+ * for -- and nothing compiled to C could reproduce that, because a unit
+ * this language does not have is not a unit C can count in.
+ */
+function pad(a: Value[], who: string, atStart: boolean): string {
+  const s = needStr(a[0]!, who);
+  const width = needNum(a[1]!, who);
+  const fill = a[2] ? needStr(a[2], who) : " ";
+  const have = codePoints(s).length;
+  const fillLen = codePoints(fill).length;
+  if (have >= width || fillLen === 0) return s;
+  const want = width - have;
+  const repeated = codePoints(fill.repeat(Math.ceil(want / fillLen))).slice(0, want).join("");
+  return atStart ? repeated + s : s + repeated;
+}
+
 function numLike(a: Value, n: number): Value {
   return a.t === "int" && Number.isInteger(n) ? int(BigInt(Math.trunc(n))) : float(n);
 }
@@ -388,12 +408,24 @@ const METHODS: Record<string, Record<string, NativeV> | undefined> = {
       if (from === "") return str(codePoints(s).join(to));
       return str(s.split(from).join(to));
     }),
-    index_of: native("index_of", 2, 2, (a) => int(BigInt(needStr(a[0]!, "index_of").indexOf(needStr(a[1]!, "index_of"))))),
+    // A code-point index, not JavaScript's UTF-16 one. It is the unit
+    // `length` reports and `chars` produces, and a string method that
+    // measured in one unit and indexed in another would be wrong in a way
+    // that only showed up on somebody else's alphabet -- and could not be
+    // reproduced by anything compiled to C.
+    index_of: native("index_of", 2, 2, (a) => {
+      const s = needStr(a[0]!, "index_of");
+      const at = s.indexOf(needStr(a[1]!, "index_of"));
+      return int(at < 0 ? -1n : BigInt(codePoints(s.slice(0, at)).length));
+    }),
     repeat: native("repeat", 2, 2, (a) => str(needStr(a[0]!, "repeat").repeat(Math.max(0, needNum(a[1]!, "repeat"))))),
     chars: native("chars", 1, 1, (a) => list(codePoints(needStr(a[0]!, "chars")).map((c) => ({ t: "char", v: c }) as Value))),
     bytes: native("bytes", 1, 1, (a) => list([...new TextEncoder().encode(needStr(a[0]!, "bytes"))].map((b) => int(BigInt(b))))),
-    pad_start: native("pad_start", 2, 3, (a) => str(needStr(a[0]!, "pad_start").padStart(needNum(a[1]!, "pad_start"), a[2] ? needStr(a[2], "pad_start") : " "))),
-    pad_end: native("pad_end", 2, 3, (a) => str(needStr(a[0]!, "pad_end").padEnd(needNum(a[1]!, "pad_end"), a[2] ? needStr(a[2], "pad_end") : " "))),
+    // `width` counts code points, for the same reason as `index_of`:
+    // JavaScript's `padStart` counts UTF-16 units, so one emoji counted as
+    // two and the result came out a character short.
+    pad_start: native("pad_start", 2, 3, (a) => str(pad(a, "pad_start", true))),
+    pad_end: native("pad_end", 2, 3, (a) => str(pad(a, "pad_end", false))),
     is_empty: native("is_empty", 1, 1, (a) => bool(needStr(a[0]!, "is_empty").length === 0)),
   },
 

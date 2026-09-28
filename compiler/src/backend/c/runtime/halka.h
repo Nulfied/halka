@@ -191,6 +191,23 @@ hk_str  *hk_list_join(struct hk_list *l, hk_str *sep);
 hk_bool hk_str_eq_rel(hk_str *a, hk_bool ra, hk_str *b, hk_bool rb);
 int     hk_str_cmp_rel(hk_str *a, hk_bool ra, hk_str *b, hk_bool rb);
 
+/* Trimming, indexing and padding.
+ *
+ * These three used to be absent for the same reason as the case mappings:
+ * the interpreter's are JavaScript's, and JavaScript indexes and measures
+ * strings in UTF-16 while this language counts code points. Two of them
+ * are settled by saying so -- `index_of` gives a code-point index and
+ * `pad_*` count code points, which is what `length` and `chars` already
+ * do, and the interpreter was changed to match. `trim` needed nothing
+ * settled: the set of characters it removes is twenty-five code points
+ * long and is written out below. */
+hk_str *hk_str_trim(hk_str *s);
+hk_str *hk_str_trim_start(hk_str *s);
+hk_str *hk_str_trim_end(hk_str *s);
+hk_int  hk_str_index_of(hk_str *s, hk_str *needle);
+hk_str *hk_str_pad_start(hk_str *s, hk_int width, hk_str *fill);
+hk_str *hk_str_pad_end(hk_str *s, hk_int width, hk_str *fill);
+
 /* ---- lists -------------------------------------------------------------- */
 
 /* Unboxed storage: `data` is a flat array of `esz`-byte elements, so an

@@ -489,6 +489,118 @@ hk_str *hk_list_join(hk_list *l, hk_str *sep) {
   return out;
 }
 
+/* Exactly the code points the interpreter's `trim` removes, which is
+ * JavaScript's WhiteSpace plus LineTerminator. Twenty-five of them, so they
+ * are written out rather than derived from a category table: a list this
+ * short is checked by reading it. */
+static hk_bool hk_is_space(hk_char c) {
+  switch (c) {
+    case 0x0009: case 0x000A: case 0x000B: case 0x000C: case 0x000D:
+    case 0x0020: case 0x00A0: case 0x1680:
+    case 0x2000: case 0x2001: case 0x2002: case 0x2003: case 0x2004:
+    case 0x2005: case 0x2006: case 0x2007: case 0x2008: case 0x2009:
+    case 0x200A: case 0x2028: case 0x2029: case 0x202F: case 0x205F:
+    case 0x3000: case 0xFEFF:
+      return true;
+    default:
+      return false;
+  }
+}
+
+/* The byte offset just past the leading whitespace. */
+static hk_int hk_trim_from(hk_str *s) {
+  const unsigned char *p = (const unsigned char *)s->data;
+  hk_int i = 0;
+  while (i < s->len) {
+    hk_int w = hk_utf8_width(p + i, s->len - i);
+    if (!hk_is_space(hk_utf8_decode(p + i, w))) break;
+    i += w;
+  }
+  return i;
+}
+
+/* The byte offset where the trailing whitespace begins. */
+static hk_int hk_trim_to(hk_str *s, hk_int from) {
+  const unsigned char *p = (const unsigned char *)s->data;
+  hk_int end = s->len;
+  while (end > from) {
+    /* Walk back to the start of the last character: a continuation byte is
+     * 10xxxxxx, and a character is at most four bytes. */
+    hk_int start = end - 1;
+    while (start > from && (p[start] & 0xC0) == 0x80 && end - start < 4) start--;
+    hk_int w = hk_utf8_width(p + start, end - start);
+    if (start + w != end || !hk_is_space(hk_utf8_decode(p + start, w))) break;
+    end = start;
+  }
+  return end;
+}
+
+hk_str *hk_str_trim(hk_str *s) {
+  hk_int from = hk_trim_from(s);
+  hk_int to = hk_trim_to(s, from);
+  return hk_str_new(s->data + from, to - from);
+}
+
+hk_str *hk_str_trim_start(hk_str *s) {
+  hk_int from = hk_trim_from(s);
+  return hk_str_new(s->data + from, s->len - from);
+}
+
+hk_str *hk_str_trim_end(hk_str *s) {
+  hk_int to = hk_trim_to(s, 0);
+  return hk_str_new(s->data, to);
+}
+
+/* The index of `needle` in code points, or -1.
+ *
+ * Code points, not bytes and not UTF-16 units: it is the unit `length`
+ * reports and `chars` produces, and a string method that measured in one
+ * unit and indexed in another would be wrong in a way that only showed up
+ * on somebody else's alphabet. */
+hk_int hk_str_index_of(hk_str *s, hk_str *needle) {
+  hk_int at = hk_bytes_find(s->data, s->len, needle->data, needle->len, 0);
+  if (at < 0) return -1;
+  hk_int n = 0;
+  for (hk_int i = 0; i < at; i++) {
+    if (((unsigned char)s->data[i] & 0xC0) != 0x80) n++;
+  }
+  return n;
+}
+
+/* `width` counts code points, for the same reason. */
+static hk_str *hk_pad(hk_str *s, hk_int width, hk_str *fill, hk_bool atStart) {
+  hk_int have = hk_str_len_chars(s);
+  hk_int fillLen = hk_str_len_chars(fill);
+  if (have >= width || fillLen == 0) return hk_str_retain(s);
+
+  /* Repeat the filler and cut it to length, which is what the interpreter
+   * does -- a partial filler at the end is kept, not dropped. */
+  hk_int want = width - have;
+  hk_int copies = (want + fillLen - 1) / fillLen;
+  hk_str *repeated = hk_str_repeat(fill, copies);
+  hk_int keep = 0, seen = 0;
+  while (keep < repeated->len && seen < want) {
+    hk_int w = hk_utf8_width((const unsigned char *)repeated->data + keep, repeated->len - keep);
+    keep += w;
+    seen++;
+  }
+
+  hk_str *out = hk_str_new(NULL, keep + s->len);
+  if (atStart) {
+    memcpy(out->data, repeated->data, (size_t)keep);
+    memcpy(out->data + keep, s->data, (size_t)s->len);
+  } else {
+    memcpy(out->data, s->data, (size_t)s->len);
+    memcpy(out->data + s->len, repeated->data, (size_t)keep);
+  }
+  out->data[keep + s->len] = '\0';
+  hk_str_release(repeated);
+  return out;
+}
+
+hk_str *hk_str_pad_start(hk_str *s, hk_int width, hk_str *fill) { return hk_pad(s, width, fill, true); }
+hk_str *hk_str_pad_end(hk_str *s, hk_int width, hk_str *fill) { return hk_pad(s, width, fill, false); }
+
 hk_bool hk_str_eq_rel(hk_str *a, hk_bool ra, hk_str *b, hk_bool rb) {
   hk_bool r = hk_str_eq(a, b);
   if (ra) hk_str_release(a);

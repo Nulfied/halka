@@ -1,0 +1,81 @@
+### Trimming, indexing and padding (R23).
+
+These three were refused by the backend for the same reason as the case
+mappings: the interpreter's are JavaScript's, and JavaScript indexes and
+measures strings in UTF-16 while this language counts code points. Two were
+settled by saying which unit wins.
+
+`index_of` gives a code-point index and `pad_*` count code points, which is
+what `length` and `chars` already do. A string method that measured in one
+unit and indexed in another would be wrong in a way that only showed up on
+somebody else's alphabet -- and could not be compiled, because a unit this
+language does not have is not a unit C can count in.
+
+`trim` needed nothing settled. The set of characters it removes is
+twenty-five code points long, and short enough to write out and read.
+
+Still refused: `upper` and `lower`, whose answers come out of Unicode case
+tables.
+###
+main(),
+    # Trimming, including the whitespace that is not a space.
+    say "  padded  ".trim(),
+    say "  padded  ".trim_start(),
+    say "  padded  ".trim_end(),
+    say "\tmixed\n".trim(),
+    say "\u{00a0}nbsp\u{00a0}".trim(),
+    say "\u{2003}emsp\u{2003}".trim(),
+    say "\u{feff}bom\u{feff}".trim(),
+    say "nothing to trim".trim(),
+    say "".trim(),
+    say "   ".trim(),
+    say "   ".trim().is_empty(),
+
+    # A character that is *not* whitespace must survive, including ones
+    # that look like it: U+200B is a zero-width space and JavaScript does
+    # not trim it, so neither does this.
+    say "\u{200b}zwsp\u{200b}".trim().length,
+
+    # Trimming leaves the middle alone.
+    say "  a  b  ".trim(),
+
+    # Indexing, in code points.
+    say "hello".index_of("l"),
+    say "hello".index_of("z"),
+    say "hello".index_of(""),
+    say "hello".index_of("hello"),
+
+    # The part before the match is multi-byte, so a byte index would say 3
+    # and a UTF-16 index would say 2. Code points say 2.
+    say "héllo".index_of("l"),
+    say "aé😀b".index_of("b"),
+    say "aé😀b".length,
+
+    # Padding, in code points.
+    say "7".pad_start(3),
+    say "7".pad_end(3),
+    say "7".pad_start(3, "0"),
+    say "ab".pad_start(6, "12"),
+    say "ab".pad_end(6, "12"),
+
+    # A filler wider than the gap is cut, and the cut is on a character.
+    say "ab".pad_start(5, "xyz"),
+    say "ab".pad_end(5, "xyz"),
+
+    # Already long enough, so nothing happens.
+    say "abcdef".pad_start(3),
+    say "abcdef".pad_end(3),
+
+    # And the case the UTF-16 count gets wrong: one emoji is one code
+    # point, so this needs two more to reach three.
+    say "😀".pad_start(3, "-"),
+    say "😀".pad_start(3, "-").length,
+    say "é".pad_end(4, "."),
+    say "é".pad_end(4, ".").length,
+
+    # Built rather than written, so the strings carry counts to give back.
+    let acc: "",
+    for i in 0..6,
+        acc: acc + "{i}",
+    say acc.pad_start(10, ".").trim(),
+    say acc.index_of("3")
