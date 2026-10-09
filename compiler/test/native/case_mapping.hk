@@ -1,0 +1,81 @@
+### Upper and lower case (R23).
+
+These were the last two string methods the backend refused, and the reason
+was never that they are hard -- it is that getting them nearly right is
+worse than refusing. A version agreeing on ASCII and diverging on Greek
+would make `halka run` and `halka build` two different languages for anyone
+not writing in English.
+
+The tables are generated from the same JavaScript the interpreter runs on
+(tools/gen-unicase.mjs), so the two engines agree by construction rather
+than by inspection. That was checked exhaustively once, over all 1,112,064
+code points, by summing every mapping in both engines and comparing: they
+match. What is here is the part worth reading -- the cases that are not a
+simple one-to-one shift, and a sweep dense enough to catch a table that
+drifted.
+###
+main(),
+    # The easy half.
+    say "hello".upper(),
+    say "WORLD".lower(),
+    say "MiXeD".upper(),
+    say "MiXeD".lower(),
+    say "".upper(),
+    say "123 !?".upper(),
+
+    # Mappings that grow. German sharp s becomes two letters, so the result
+    # is longer than the input -- which is why the C side measures before it
+    # fills rather than assuming the length.
+    say "Straße".upper(),
+    say "Straße".upper().length,
+    say "ﬁ".upper(),
+    say "ﬄ".upper(),
+    say "ﬄ".upper().length,
+
+    # And one that grows going *down*: a capital I with a dot above becomes
+    # an i plus a combining dot.
+    say "İ".lower().length,
+
+    # Final sigma, the one place the answer depends on where the character
+    # sits rather than on what it is. A capital sigma ending a word becomes
+    # the final form; anywhere else it becomes the ordinary one.
+    say "ΑΣ".lower(),
+    say "ΑΣΒ".lower(),
+    say "Σ".lower(),
+    say "ΟΔΟΣ".lower(),
+    say "ΟΔΟΣ ΤΗΣ".lower(),
+
+    # An accent between the sigma and the letter before it is ignored when
+    # deciding, which is what makes the rule more than "is the next
+    # character a letter".
+    say "ΆΣ".lower(),
+
+    # Alphabets that case in blocks, which is what the run table is for.
+    say "ΑΒΓΔΕΖΗΘ".lower(),
+    say "абвгде".upper(),
+    say "ԱԲԳԴ".lower(),
+    say "ⓐⓑⓒ".upper(),
+
+    # Outside the basic plane, where a code point is four bytes.
+    say "𐐀".lower(),
+    say "𐒰".lower(),
+    say "𞤀".lower(),
+
+    # Round trips that are not round trips, which is Unicode being itself
+    # rather than anything going wrong.
+    say "ß".upper().lower(),
+    say "İ".lower().upper(),
+
+    # A sweep over the dense region, reduced to one number. A table that
+    # drifted by a single entry changes it.
+    let up: 0,
+    let lo: 0,
+    for cp in 0..8192,
+        if cp < 55296 or cp > 57343,
+            let s: "{cp as char}",
+            for c in s.upper().chars(),
+                up: (up + c as int) % 1000000007,
+            for c in s.lower().chars(),
+                lo: (lo + c as int) % 1000000007,
+    say up,
+    say lo

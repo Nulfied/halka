@@ -2871,15 +2871,14 @@ export class CEmitter {
           case "chars": return `hk_str_chars(${s})`;
           case "bytes": return `hk_str_bytes(${s})`;
           case "is_empty": return `((${s})->len == 0)`;
+          case "upper": return `hk_str_upper(${s})`;
+          case "lower": return `hk_str_lower(${s})`;
           case "trim": return `hk_str_trim(${s})`;
           case "trim_start": return `hk_str_trim_start(${s})`;
           case "trim_end": return `hk_str_trim_end(${s})`;
           case "index_of": return `hk_str_index_of(${s}, ${args[0]})`;
           case "pad_start": return `hk_str_pad_start(${s}, ${args[0]}, ${args[1] ?? `hk_str_lit(" ")`})`;
           case "pad_end": return `hk_str_pad_end(${s}, ${args[0]}, ${args[1] ?? `hk_str_lit(" ")`})`;
-          // `upper` and `lower` are still absent: their answers come out of
-          // Unicode case tables, and a C version agreeing for ASCII and
-          // diverging elsewhere is exactly the mis-acceptance R23 forbids.
           default: break;
         }
       }

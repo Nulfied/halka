@@ -201,6 +201,12 @@ int     hk_str_cmp_rel(hk_str *a, hk_bool ra, hk_str *b, hk_bool rb);
  * do, and the interpreter was changed to match. `trim` needed nothing
  * settled: the set of characters it removes is twenty-five code points
  * long and is written out below. */
+/* Case mapping, from tables generated out of the same JavaScript the
+ * interpreter runs on -- see tools/gen-unicase.mjs. `lower` applies
+ * Unicode's final-sigma rule, which is the one place where the answer
+ * depends on where a character sits rather than on what it is. */
+hk_str *hk_str_upper(hk_str *s);
+hk_str *hk_str_lower(hk_str *s);
 hk_str *hk_str_trim(hk_str *s);
 hk_str *hk_str_trim_start(hk_str *s);
 hk_str *hk_str_trim_end(hk_str *s);

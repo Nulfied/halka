@@ -56,6 +56,13 @@ jobs:
         if: runner.os == 'Linux'
         run: node --experimental-strip-types tools/check-packages.mjs
 
+      # The case tables are asked of the same JavaScript the interpreter
+      # runs on, so the two engines agree by construction. A Node upgrade
+      # that changed one mapping should be a red build here rather than a
+      # quiet divergence between `halka run` and `halka build`.
+      - name: Check the Unicode case tables match this Node
+        run: node tools/gen-unicase.mjs --check
+
       - name: Check STATUS.md's counts match its own table
         if: runner.os == 'Linux'
         run: node tools/status-counts.mjs --check

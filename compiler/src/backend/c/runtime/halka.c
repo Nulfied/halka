@@ -7,6 +7,7 @@
 #endif
 
 #include "halka.h"
+#include "unicase.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -600,6 +601,140 @@ static hk_str *hk_pad(hk_str *s, hk_int width, hk_str *fill, hk_bool atStart) {
 
 hk_str *hk_str_pad_start(hk_str *s, hk_int width, hk_str *fill) { return hk_pad(s, width, fill, true); }
 hk_str *hk_str_pad_end(hk_str *s, hk_int width, hk_str *fill) { return hk_pad(s, width, fill, false); }
+
+/* Case mapping. The tables are in unicase.h, generated from the same
+ * JavaScript the interpreter runs on.
+ *
+ * `upper` and `lower` were the last methods the backend refused, and the
+ * reason was never that they are hard -- it is that getting them nearly
+ * right is worse than refusing. A version that agreed on ASCII and
+ * diverged on Greek would make `halka run` and `halka build` two different
+ * languages for anyone not writing in English, and R23 exists to stop
+ * exactly that. */
+
+static hk_bool hk_in_runs(const hk_char_run *runs, int n, hk_char c) {
+  int lo = 0, hi = n - 1;
+  while (lo <= hi) {
+    int mid = lo + (hi - lo) / 2;
+    if (c < runs[mid].lo) hi = mid - 1;
+    else if (c > runs[mid].hi) lo = mid + 1;
+    else return true;
+  }
+  return false;
+}
+
+static hk_char hk_map_run(const hk_case_run *runs, int n, hk_char c) {
+  int lo = 0, hi = n - 1;
+  while (lo <= hi) {
+    int mid = lo + (hi - lo) / 2;
+    if (c < runs[mid].lo) hi = mid - 1;
+    else if (c > runs[mid].hi) lo = mid + 1;
+    else return (hk_char)((int32_t)c + runs[mid].d);
+  }
+  return c;
+}
+
+static const hk_case_multi *hk_map_multi(const hk_case_multi *table, int n, hk_char c) {
+  int lo = 0, hi = n - 1;
+  while (lo <= hi) {
+    int mid = lo + (hi - lo) / 2;
+    if (c < table[mid].from) hi = mid - 1;
+    else if (c > table[mid].from) lo = mid + 1;
+    else return &table[mid];
+  }
+  return NULL;
+}
+
+/* Appending one code point as UTF-8 is wanted here and by the JSON writer
+ * further down, which is where it lives. */
+static hk_int hk_utf8_put(char *out, unsigned long cp);
+
+/*
+ * Final_Sigma: a capital sigma lowercases to the final form when it ends a
+ * word, and to the ordinary one otherwise -- `ΑΣ` is `ας`, `ΑΣΒ` is `ασβ`.
+ *
+ * "Ends a word" is Unicode's definition, not a guess at one: there is a
+ * cased character somewhere before it and none after it, with characters
+ * carrying no case of their own -- accents, joiners -- ignored on both
+ * sides. It is the only place in this file where the answer depends on
+ * where the character sits rather than on what it is.
+ */
+static hk_bool hk_final_sigma(hk_str *s, hk_int at, hk_int width) {
+  const unsigned char *p = (const unsigned char *)s->data;
+
+  hk_bool casedBefore = false;
+  hk_int i = at;
+  while (i > 0) {
+    hk_int start = i - 1;
+    while (start > 0 && (p[start] & 0xC0) == 0x80 && i - start < 4) start--;
+    hk_int w = hk_utf8_width(p + start, i - start);
+    if (start + w != i) break;
+    hk_char c = hk_utf8_decode(p + start, w);
+    if (hk_in_runs(HK_CASE_IGNORABLE, HK_CASE_IGNORABLE_N, c)) { i = start; continue; }
+    casedBefore = hk_in_runs(HK_CASED, HK_CASED_N, c);
+    break;
+  }
+  if (!casedBefore) return false;
+
+  for (hk_int j = at + width; j < s->len;) {
+    hk_int w = hk_utf8_width(p + j, s->len - j);
+    hk_char c = hk_utf8_decode(p + j, w);
+    if (hk_in_runs(HK_CASE_IGNORABLE, HK_CASE_IGNORABLE_N, c)) { j += w; continue; }
+    return !hk_in_runs(HK_CASED, HK_CASED_N, c);
+  }
+  return true;
+}
+
+#define HK_CAPITAL_SIGMA 0x03A3
+#define HK_FINAL_SIGMA   0x03C2
+#define HK_SMALL_SIGMA   0x03C3
+
+static hk_str *hk_case_map(hk_str *s, hk_bool up) {
+  /* Two passes: measure, then fill. A mapping can grow -- the German sharp
+   * s becomes two letters -- so the length is not known until the mapping
+   * has been done once. */
+  const unsigned char *p = (const unsigned char *)s->data;
+  const hk_case_multi *multi = up ? HK_UPPER_MULTI : HK_LOWER_MULTI;
+  int multiN = up ? HK_UPPER_MULTI_N : HK_LOWER_MULTI_N;
+  const hk_case_run *runs = up ? HK_UPPER_RUNS : HK_LOWER_RUNS;
+  int runsN = up ? HK_UPPER_RUNS_N : HK_LOWER_RUNS_N;
+
+  hk_int need = 0;
+  char scratch[4];
+  for (hk_int i = 0; i < s->len;) {
+    hk_int w = hk_utf8_width(p + i, s->len - i);
+    hk_char c = hk_utf8_decode(p + i, w);
+    const hk_case_multi *m = hk_map_multi(multi, multiN, c);
+    if (m) {
+      for (int k = 0; k < m->n; k++) need += hk_utf8_put(scratch, m->to[k]);
+    } else {
+      need += hk_utf8_put(scratch, hk_map_run(runs, runsN, c));
+    }
+    i += w;
+  }
+
+  hk_str *out = hk_str_new(NULL, need);
+  hk_int at = 0;
+  for (hk_int i = 0; i < s->len;) {
+    hk_int w = hk_utf8_width(p + i, s->len - i);
+    hk_char c = hk_utf8_decode(p + i, w);
+    const hk_case_multi *m = hk_map_multi(multi, multiN, c);
+    if (m) {
+      for (int k = 0; k < m->n; k++) at += hk_utf8_put(out->data + at, m->to[k]);
+    } else if (!up && c == HK_CAPITAL_SIGMA) {
+      at += hk_utf8_put(out->data + at,
+        hk_final_sigma(s, i, w) ? HK_FINAL_SIGMA : HK_SMALL_SIGMA);
+    } else {
+      at += hk_utf8_put(out->data + at, hk_map_run(runs, runsN, c));
+    }
+    i += w;
+  }
+  out->data[need] = '\0';
+  return out;
+}
+
+hk_str *hk_str_upper(hk_str *s) { return hk_case_map(s, true); }
+hk_str *hk_str_lower(hk_str *s) { return hk_case_map(s, false); }
 
 hk_bool hk_str_eq_rel(hk_str *a, hk_bool ra, hk_str *b, hk_bool rb) {
   hk_bool r = hk_str_eq(a, b);
