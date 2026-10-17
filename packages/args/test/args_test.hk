@@ -1,0 +1,132 @@
+### Tests for the args package.
+
+Each case here is one of the things a hand-written argument loop gets
+wrong: `--out x` and `--out=x` handled differently, `-abc` as one switch
+instead of three, `--` forgotten, a value asked for and not supplied read
+as the next flag.
+###
+
+from testing import section, check_equal, check
+import args
+
+# The parse, or a failure the test can see rather than a silent empty one.
+parsed_of(argv, valued),
+    match args.parse(argv, valued),
+        Ok(got),
+            give got,
+        Error(message),
+            panic "expected a parse, got: {message}"
+
+section "positionals"
+check_equal(parsed_of(["build"], []).rest, ["build"], "one word")
+check_equal(parsed_of([], []).rest, [], "nothing at all")
+check_equal(parsed_of(["a", "b"], []).rest, ["a", "b"], "order is kept")
+
+section "switches"
+check_equal(parsed_of(["--verbose"], []).switches, ["verbose"], "a long switch")
+check_equal(parsed_of(["-v"], []).switches, ["v"], "a short one")
+check_equal(parsed_of(["-abc"], []).switches, ["a", "b", "c"], "short ones bundle")
+check_equal(parsed_of(["-v", "-q"], []).switches, ["v", "q"], "two shorts")
+check_equal(args.has(parsed_of(["--dry-run"], []), "dry-run"), true, "has finds one")
+check_equal(
+    args.has(parsed_of(["--dry-run"], []), "wet-run"),
+    false,
+    "and not one absent"
+)
+
+section "options with values"
+let out: parsed_of(["--out", "app"], ["out"])
+check_equal(out.options["out"] or "", "app", "`--name value` when the name takes one")
+check_equal(out.rest, [], "and the value is not a positional")
+
+# The `=` form carries its own value, so it works whether or not the name
+# was listed -- which is the whole reason people write it.
+check_equal(
+    parsed_of(["--out=app"], []).options["out"] or "",
+    "app",
+    "`--name=value` needs no list"
+)
+check_equal(
+    parsed_of(["--out=app"], ["out"]).options["out"] or "",
+    "app",
+    "and still works listed"
+)
+check_equal(
+    parsed_of(["--out="], []).options["out"] or "unset",
+    "",
+    "an empty value is a value"
+)
+check_equal(
+    parsed_of(["--path=a=b"], []).options["path"] or "",
+    "a=b",
+    "only the first `=` splits"
+)
+
+# A name that was not listed is a switch, and what follows it is a
+# positional. This is the case no spec-less parser can get right.
+let bare: parsed_of(["--verbose", "app"], ["out"])
+check_equal(bare.switches, ["verbose"], "an unlisted name is a switch")
+check_equal(bare.rest, ["app"], "and the next word is a positional")
+
+section "short options with values"
+check_equal(
+    parsed_of(["-o", "app"], ["o"]).options["o"] or "",
+    "app",
+    "a short option takes a value"
+)
+check_equal(parsed_of(["-o", "app"], []).switches, ["o"], "unlisted, it is a switch")
+check_equal(parsed_of(["-o", "app"], []).rest, ["app"], "and the word is a positional")
+
+section "the `--` separator"
+let after: parsed_of(["--out", "x", "--", "--not-an-option", "-n"], ["out"])
+check_equal(after.options["out"] or "", "x", "options before it still parse")
+check_equal(after.rest, ["--not-an-option", "-n"], "and nothing after it is an option")
+check_equal(after.switches, [], "including things that look like switches")
+check_equal(parsed_of(["--"], []).rest, [], "on its own it adds nothing")
+check_equal(
+    parsed_of(["--", "--"], []).rest,
+    ["--"],
+    "and a second one is a positional"
+)
+
+section "what is refused"
+check(args.parse(["--out"], ["out"]) is error, "a value asked for and not supplied")
+check(args.parse(["-o"], ["o"]) is error, "the same, short")
+check(args.parse(["--=x"], []) is error, "a value with no name")
+check(args.parse(["--out", "x"], ["out"]) is ok, "and a sound command line is not")
+
+section "a single dash"
+
+# `-` on its own means standard input to most tools, so it is a positional
+# rather than an empty switch.
+check_equal(parsed_of(["-"], []).rest, ["-"], "`-` is a positional")
+check_equal(parsed_of(["-"], []).switches, [], "and not a switch")
+
+section "option helper"
+let o: parsed_of(["--out", "app"], ["out"])
+check_equal(args.option(o, "out", "default"), "app", "the value when given")
+check_equal(args.option(o, "mode", "default"), "default", "the fallback when not")
+
+section "a whole command line"
+let full: parsed_of(
+    ["push", "--remote", "origin", "-fv", "--tags", "branch", "--", "-x"],
+    ["remote"]
+)
+check_equal(full.options["remote"] or "", "origin", "the option")
+check_equal(full.switches, ["f", "v", "tags"], "the switches, in order")
+check_equal(full.rest, ["push", "branch", "-x"], "and everything else")
+
+section "characters beyond ASCII"
+
+# The slicing counts code points, so a name or value outside ASCII survives
+# with its length intact.
+check_equal(
+    parsed_of(["--née=Ада"], []).options["née"] or "",
+    "Ада",
+    "a name and value in other alphabets"
+)
+check_equal(
+    parsed_of(["--k=😀"], []).options["k"] or "",
+    "😀",
+    "and one outside the basic plane"
+)

@@ -109,6 +109,11 @@ type Rename = Map<string, string>;
 
 export function linkProgram(input: LinkInput): LinkResult {
   const origins = new Map<string, { module: string; name: string }>();
+  /**
+   * Prelude imports already carried over from a dependency. Three packages
+   * importing `maps` should bind the name once, not three times.
+   */
+  const preludeImports = new Set<string>();
 
   // What each module exports, and what each export was renamed to.
   const exportsOf = new Map<string, Map<string, string>>();
@@ -140,7 +145,21 @@ export function linkProgram(input: LinkInput): LinkResult {
     }
     const top = new Scope();
     for (const s of mod.stmts) {
-      if (s.kind === "ImportDecl") continue; // a dependency's imports are resolved above
+      if (s.kind === "ImportDecl") {
+        // A prelude module is not a file to link in -- it is provided by
+        // the runtime -- so its import has to survive here for the same
+        // reason it survives for main below. Dropping it meant a package
+        // that imported `maps` or `math` compiled to a module where that
+        // name was bound to nothing, and the backend refused
+        // `maps.from_entries` as an unknown member. Which made every
+        // prelude module unusable from a package: `halka run` was happy
+        // and `halka build` was not.
+        if (!s.foreign && isPreludeModule(s.path) && !preludeImports.has(importKey(s))) {
+          preludeImports.add(importKey(s));
+          stmts.push(s);
+        }
+        continue; // everything else a dependency imports is resolved above
+      }
       if (declName(s) === null) continue; // top-level code is not imported
       stmts.push(rewrite(s, rename, top) as A.Stmt);
     }
@@ -162,6 +181,11 @@ export function linkProgram(input: LinkInput): LinkResult {
   }
 
   return { module: { ...input.main, stmts }, origins };
+}
+
+/** What an import binds, for keeping one of each. */
+function importKey(s: A.ImportDecl): string {
+  return `${s.form}:${s.path}:${s.alias ?? ""}:${s.names.map((n) => n.alias ?? n.name).join(",")}`;
 }
 
 /** `alias -> module path` for every whole-module import in a module. */

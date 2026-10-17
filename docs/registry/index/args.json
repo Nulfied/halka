@@ -1,0 +1,12 @@
+{
+  "name": "args",
+  "versions": [
+    {
+      "version": "0.1.0",
+      "sha256": "76f59009ae122cf1238d631d3e076973f58456a8973527ade9d0255d6ceb0f71",
+      "deps": {},
+      "description": "Parsing command-line arguments, including the parts everyone gets wrong",
+      "license": "MIT OR Apache-2.0"
+    }
+  ]
+}

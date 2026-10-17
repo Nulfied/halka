@@ -85,6 +85,24 @@ export class Inferencer {
     this.collectSignatures(mod.stmts, global);
     this.checkStmts(mod.stmts, global);
 
+    // Then again, because the first pass reads the module in the order it
+    // was written and a function may be called before it is declared. Its
+    // return type is a variable until its own body is checked, so a caller
+    // that came first recorded that variable rather than what it stood for
+    // -- and the backend, which needs a concrete type, refused a program
+    // the interpreter ran happily. The file had to be sorted so that
+    // everything was declared before its first use.
+    //
+    // Unification only ever binds more, so a second pass can resolve what
+    // the first left open and can never un-resolve anything. It is cheap,
+    // and `note` overwrites each node's type with the better answer.
+    //
+    // Diagnostics come from the first pass alone: the second sees the same
+    // program and would say everything twice.
+    const found = this.diags.items.length;
+    this.checkStmts(mod.stmts, global);
+    this.diags.items.length = found;
+
     const structFields = new Map<string, Ty[]>();
     for (const [name, info] of this.structs) structFields.set(name, info.order.map((f) => info.fields.get(f)!));
     const enumVariants = new Map<string, Map<string, { fields: Ty[]; names: string[] }>>();

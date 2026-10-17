@@ -1561,9 +1561,8 @@ export class CEmitter {
     const arms: string[] = [];
     for (const v of inst.variants) {
       const frees = v.fields
-        .map((f) => ({ f, c: this.cty(f.ty, f.name) }))
-        .filter(({ c }) => c === "hk_str *" || c === "hk_list *")
-        .map(({ f, c }) => `${c === "hk_str *" ? "hk_str_release" : "hk_list_release"}(v.as.${mangle(v.name)}.${mangle(f.name)});`);
+        .map((f) => this.freeField(f.ty, f.name, `v.as.${mangle(v.name)}.${mangle(f.name)}`))
+        .filter((x): x is string => x !== null);
       if (frees.length) arms.push(`    case ${variantTag(inst.key, v.name)}: ${frees.join(" ")} break;`);
     }
     if (!arms.length) return null;
@@ -1597,20 +1596,38 @@ export class CEmitter {
 
     const frees: string[] = [];
     for (const f of def.fields) {
-      const c = this.cty(f.ty, f.name);
-      if (c === "hk_str *") frees.push(`  hk_str_release(v->${mangle(f.name)});`);
-      else if (c === "hk_list *") frees.push(`  hk_list_release(v->${mangle(f.name)});`);
-      else if (c === "hk_map *") frees.push(`  hk_map_release(v->${mangle(f.name)});`);
-      else {
-        const inner = this.structReleaser(this.structNameOf(f.ty) ?? "");
-        if (inner) frees.push(`  ${inner}(&v->${mangle(f.name)});`);
-      }
+      const free = this.freeField(f.ty, f.name, `v->${mangle(f.name)}`);
+      if (free) frees.push(`  ${free}`);
     }
     if (!frees.length) return null;
 
     this.wrappers.add(fn);
     this.aux.push(`static void ${fn}(${mangleType(name)} *v) {`, ...frees, "}", "");
     return fn;
+  }
+
+  /**
+   * How to give back one field of a struct or variant, or null when it owns
+   * nothing.
+   *
+   * One rule for both, because they were two: the struct releaser knew
+   * about maps and nested structs and the enum one did not, so a `Result`
+   * carrying a struct generated a releaser with no case for `Ok` at all --
+   * `give Ok(Parsed(...))` leaked the struct and everything in it. Any
+   * field type either releaser learns about, both now know.
+   */
+  private freeField(ty: Ty | undefined, name: string, lvalue: string): string | null {
+    switch (this.cty(ty, name)) {
+      case "hk_str *": return `hk_str_release(${lvalue});`;
+      case "hk_list *": return `hk_list_release(${lvalue});`;
+      case "hk_map *": return `hk_map_release(${lvalue});`;
+      case "hk_json *": return `hk_json_release(${lvalue});`;
+      default: break;
+    }
+    const structFn = this.structReleaser(this.structNameOf(ty) ?? "");
+    if (structFn) return `${structFn}(&${lvalue});`;
+    const enumFn = this.enumOf(ty) ? this.enumReleaser(ty) : null;
+    return enumFn ? `${enumFn}(${lvalue});` : null;
   }
 
   /** The payload type of a `shared(T)`, if this is one. */
@@ -2910,6 +2927,24 @@ export class CEmitter {
           }
           case "is_empty": return `((${this.expr(obj)})->len == 0)`;
           case "join": return `hk_list_join(${this.holdReceiver(obj, "list")}, ${args[0] ?? `hk_str_lit("")`})`;
+          case "contains": case "index_of": {
+            // Compared the way `==` compares, which for a list of strings
+            // means by contents rather than by pointer. One runtime
+            // function per element type, taking the needle by value: a
+            // named temporary here would be declared in the wrong block
+            // when the call sits in an `else if` condition.
+            const find = et === "hk_str *" ? "hk_list_find_str"
+              : et === "hk_float" ? "hk_list_find_float"
+              : et === "hk_int" || et === "hk_char" || et === "hk_bool" ? "hk_list_find_int"
+              : null;
+            if (!find) {
+              this.err("E0711", `the native backend cannot search a list of ${show(prune(this.elemOf(ot) ?? ({ k: "any" } as Ty)))} yet`, e.span,
+                "run it with `halka run` while the backend catches up");
+              return "0";
+            }
+            const at = `${find}(${this.holdReceiver(obj, "list")}, ${args[0]})`;
+            return m === "contains" ? `(${at} >= 0)` : at;
+          }
           default: break;
         }
       }

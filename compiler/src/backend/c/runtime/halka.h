@@ -181,6 +181,17 @@ struct hk_list *hk_str_chars(hk_str *s);
 struct hk_list *hk_str_bytes(hk_str *s);
 hk_str  *hk_list_join(struct hk_list *l, hk_str *sep);
 
+/* The index of `needle` in `l`, or -1, comparing the way `==` compares: a
+ * list of strings is searched by contents and not by pointer.
+ *
+ * One entry point per element type, taking the needle by value. Taking it
+ * through a pointer would need a named temporary at the call site, and a
+ * `contains` inside an `else if` would then declare that temporary in the
+ * branch above the one that uses it. */
+hk_int hk_list_find_str(struct hk_list *l, hk_str *needle);
+hk_int hk_list_find_int(struct hk_list *l, hk_int needle);
+hk_int hk_list_find_float(struct hk_list *l, hk_float needle);
+
 /* Compare, then release whichever side was built for the comparison.
  *
  * A comparison consumes nothing, so an operand built for it alone has to be

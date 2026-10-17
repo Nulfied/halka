@@ -453,6 +453,43 @@ hk_list *hk_str_bytes(hk_str *s) {
   return out;
 }
 
+/* Searching a list.
+ *
+ * `contains` and `index_of` compare the way `==` does, which for strings is
+ * by contents: a list built from interpolation holds different pointers to
+ * equal text, and a pointer comparison would say the text is not there.
+ *
+ * The needle comes by value, one function per element type. Through a
+ * pointer it would need a named temporary at the call site, and a
+ * `contains` inside an `else if` declares that temporary in the branch
+ * above the one that reads it -- which compiles to a C file naming a
+ * variable that is not in scope. */
+hk_int hk_list_find_str(hk_list *l, hk_str *needle) {
+  for (hk_int i = 0; i < l->len; i++) {
+    if (hk_str_eq(((hk_str **)l->data)[i], needle)) return i;
+  }
+  return -1;
+}
+
+hk_int hk_list_find_int(hk_list *l, hk_int needle) {
+  /* Characters and booleans are narrower than `hk_int`, so the element is
+   * read at its own width and then widened to compare. */
+  for (hk_int i = 0; i < l->len; i++) {
+    hk_int at = l->ekind == HK_E_CHAR ? (hk_int)((hk_char *)l->data)[i]
+      : l->ekind == HK_E_BOOL ? (hk_int)((hk_bool *)l->data)[i]
+      : ((hk_int *)l->data)[i];
+    if (at == needle) return i;
+  }
+  return -1;
+}
+
+hk_int hk_list_find_float(hk_list *l, hk_float needle) {
+  for (hk_int i = 0; i < l->len; i++) {
+    if (((hk_float *)l->data)[i] == needle) return i;
+  }
+  return -1;
+}
+
 hk_str *hk_list_join(hk_list *l, hk_str *sep) {
   /* Elements are rendered the way `say` renders them, which for a list of
    * strings is the string itself and for anything else is its display form

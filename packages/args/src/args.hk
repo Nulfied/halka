@@ -1,0 +1,129 @@
+### args — parsing command-line arguments.
+
+Every program that takes a flag ends up writing this, and ends up writing
+it slightly wrong: `--out` and `--out=x` handled differently, `-abc` either
+three switches or one, `--` forgotten, a missing value read as the next
+flag. This does it once.
+
+    from args import parse
+
+    match parse(["build", "--out", "app", "-v", "--", "-x"], ["out"]),
+        Ok(got),
+            say got.options["out"] or "",
+            say got.switches,
+            say got.rest,
+        Error(message),
+            say "bad arguments: {message}"
+
+The second argument names the options that take a value. Without it there
+is no way to tell `--out app` (an option and its value) from `--verbose
+app` (a switch and a positional), and every parser that pretends otherwise
+guesses wrong on one of them.
+
+Parsing is fallible, so it gives a `Result` (#22, #23): a value that was
+asked for and not supplied is an Error, not a silent empty string.
+###
+
+import maps
+
+Parsed:
+    options: map(string, string),
+    switches: list(string),
+    rest: list(string)
+
+# `--name value` and `--name=value`, keyed by name without the dashes.
+
+# `--name` and `-n`, in the order they appeared.
+
+# Everything that was not an option, plus everything after `--`.
+
+# Parse `argv`. `valued` names the options that consume the next argument.
+parse(argv: list(string), valued: list(string)),
+    # Collected as entries and turned into a map at the end: Halka has no
+    # spelling for an empty map literal, so there is nothing to start from
+    # and add to.
+    let entries: [],
+    let switches: [],
+    let rest: [],
+    let i: 0,
+
+    # After `--`, nothing is an option however it is spelled.
+    let literal: false,
+
+    while i < argv.length,
+        let arg: argv[i],
+        if literal,
+            rest.push(arg),
+            i: i + 1,
+        else if arg == "--",
+            literal: true,
+            i: i + 1,
+        else if arg.starts_with("--") and arg.length > 2,
+            let body: without_prefix(arg, 2),
+            let at: body.index_of("="),
+            if at == 0,
+                give Error("`{arg}` has no name before the `=`"),
+            else if at > 0,
+                # `--name=value`, which carries its own value whether or not
+                # the name was listed as taking one.
+                entries.push((slice(body, 0, at), slice(body, at + 1, body.length))),
+                i: i + 1,
+            else if valued.contains(body),
+                if i + 1 >= argv.length,
+                    give Error("`{arg}` needs a value"),
+                entries.push((body, argv[i + 1])),
+                i: i + 2,
+            else,
+                switches.push(body),
+                i: i + 1,
+        else if arg.starts_with("-") and arg.length > 1,
+            # A short option. `-abc` is three switches, which is what every
+            # tool that takes short options does -- and `-o value` still
+            # works when `o` was listed as taking a value.
+            let body: without_prefix(arg, 1),
+            if valued.contains(body),
+                if i + 1 >= argv.length,
+                    give Error("`{arg}` needs a value"),
+                entries.push((body, argv[i + 1])),
+                i: i + 2,
+            else,
+                for c in body.chars(),
+                    switches.push("{c}"),
+                i: i + 1,
+        else,
+            rest.push(arg),
+            i: i + 1,
+    give Ok(Parsed(maps.from_entries(entries), switches, rest))
+
+# Whether a switch was given, by name. `-v` and `--verbose` are different
+# switches, because they are different text; a program that wants both
+# should ask for both.
+has(parsed: Parsed, name: string),
+    give parsed.switches.contains(name)
+
+# An option's value, or `fallback` when it was not given.
+option(parsed: Parsed, name: string, fallback: string),
+    give parsed.options[name] or fallback
+
+# `text` without its first `n` characters.
+#
+# There is no slicing method on a string, so this walks the characters. It
+# counts code points rather than bytes, which is what the rest of the
+# language counts.
+without_prefix(text: string, n: int),
+    give slice(text, n, text.length)
+
+# The characters of `text` from `lo` up to `hi`, counted in code points.
+#
+# Named `lo` and `hi` because `from`, `to` and `start` are all keywords --
+# `from x import y`, the fallible cast, and starting a task. The first two
+# were a parse error; `start` was worse, because `i >= start and ...` read
+# `start and ...` as a task being started and reported the `and`.
+slice(text: string, lo: int, hi: int),
+    let out: "",
+    let i: 0,
+    for c in text.chars(),
+        if i >= lo and i < hi,
+            out: out + "{c}",
+        i: i + 1,
+    give out

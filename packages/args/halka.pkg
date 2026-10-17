@@ -1,0 +1,5 @@
+package:
+    name: args,
+    version: 0.1.0,
+    license: MIT OR Apache-2.0,
+    description: Parsing command-line arguments, including the parts everyone gets wrong
