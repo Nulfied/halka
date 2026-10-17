@@ -87,6 +87,8 @@ not match is refused rather than used.
 
 | Package | Version | What it is |
 |---|---|---|
-| [csv](pkg/csv/) | 0.1.0 | Reading and writing comma-separated values (RFC 4180) |
+| [args](pkg/args/) | 0.1.0 | Parsing command-line arguments |
+| [csv](pkg/csv/) | 0.1.1 | Reading and writing comma-separated values (RFC 4180) |
 
-Its source is in [`packages/csv`](https://github.com/Nulfied/halka/tree/main/packages/csv).
+Their source is in [`packages/`](https://github.com/Nulfied/halka/tree/main/packages),
+and CI checks that each one still packs to the archive served here.
