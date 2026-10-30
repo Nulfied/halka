@@ -773,6 +773,106 @@ static hk_str *hk_case_map(hk_str *s, hk_bool up) {
 hk_str *hk_str_upper(hk_str *s) { return hk_case_map(s, true); }
 hk_str *hk_str_lower(hk_str *s) { return hk_case_map(s, false); }
 
+/* Reading a number out of a string.
+ *
+ * This is parsing, not casting. Written as a C cast -- which is how the
+ * backend used to emit `int(x)` -- it takes the string's pointer: the
+ * program compiled without a warning and printed 2625844349633, while
+ * `"42" as int` refused the same conversion two functions away. One
+ * operation with two implementations had one of them silently wrong.
+ *
+ * The accepted shape is the same text a literal may have: optional sign,
+ * digits, an optional fraction, an optional exponent, with surrounding
+ * whitespace allowed. Deliberately narrower than what JavaScript's `Number`
+ * takes -- it reads `0x10` as 16 and `Infinity` as infinity -- because a
+ * conversion the two engines spell differently is one R23 forbids, and
+ * because `float("0x10")` is surprising in either direction. The
+ * interpreter was narrowed to match. */
+
+/* The text between the leading and trailing whitespace. Returns the length
+ * and moves `*at` to the first byte. */
+static hk_int hk_trimmed(hk_str *s, const char **at) {
+  hk_int from = hk_trim_from(s);
+  hk_int to = hk_trim_to(s, from);
+  *at = s->data + from;
+  return to - from;
+}
+
+HK_NORETURN static void hk_not_a_number(hk_str *s, const char *what, const char *file, hk_int line) {
+  /* The same words the interpreter uses, so a program that fails does so
+   * identically whichever engine ran it. */
+  /* The interpreter quotes the text as it was given, so this does too
+   * rather than escaping it. */
+  char msg[256];
+  snprintf(msg, sizeof msg, "\"%.160s\" is not %s", s->data, what);
+  hk_panic(msg, file, line);
+}
+
+hk_int hk_str_to_int(hk_str *s, const char *file, hk_int line) {
+  const char *p;
+  hk_int n = hk_trimmed(s, &p);
+  hk_int i = 0;
+  if (i < n && (p[i] == '+' || p[i] == '-')) i++;
+  hk_int digits = 0;
+  while (i < n && p[i] >= '0' && p[i] <= '9') { i++; digits++; }
+  if (!digits || i != n) hk_not_a_number(s, "a whole number", file, line);
+
+  /* Parsed by hand rather than with strtoll, which saturates at the limits
+   * and would turn a number too large into the largest one instead of
+   * saying so. */
+  hk_bool neg = p[0] == '-';
+  unsigned long long acc = 0;
+  for (hk_int k = (p[0] == '+' || p[0] == '-') ? 1 : 0; k < n; k++) {
+    unsigned d = (unsigned)(p[k] - '0');
+    if (acc > (0x7FFFFFFFFFFFFFFFull - d) / 10ull) {
+      if (!(neg && acc == 922337203685477580ull && d == 8)) {
+        hk_panic("that whole number does not fit in an int", file, line);
+      }
+    }
+    acc = acc * 10ull + d;
+  }
+  return neg ? -(hk_int)acc : (hk_int)acc;
+}
+
+hk_float hk_str_to_float(hk_str *s, const char *file, hk_int line) {
+  const char *p;
+  hk_int n = hk_trimmed(s, &p);
+  hk_int i = 0;
+  if (i < n && (p[i] == '+' || p[i] == '-')) i++;
+  hk_int whole = 0;
+  while (i < n && p[i] >= '0' && p[i] <= '9') { i++; whole++; }
+  hk_int frac = 0;
+  if (i < n && p[i] == '.') {
+    i++;
+    while (i < n && p[i] >= '0' && p[i] <= '9') { i++; frac++; }
+  }
+  if (!whole && !frac) hk_not_a_number(s, "a number", file, line);
+  if (i < n && (p[i] == 'e' || p[i] == 'E')) {
+    i++;
+    if (i < n && (p[i] == '+' || p[i] == '-')) i++;
+    hk_int exp = 0;
+    while (i < n && p[i] >= '0' && p[i] <= '9') { i++; exp++; }
+    if (!exp) hk_not_a_number(s, "a number", file, line);
+  }
+  if (i != n) hk_not_a_number(s, "a number", file, line);
+
+  /* The shape is checked, so `strtod` is only being asked to do the
+   * arithmetic -- and it needs a terminated string, which the trimmed span
+   * is not. */
+  char buf[64];
+  if (n >= (hk_int)sizeof buf) hk_panic("that number is too long to read", file, line);
+  memcpy(buf, p, (size_t)n);
+  buf[n] = '\0';
+  return (hk_float)strtod(buf, NULL);
+}
+
+hk_char hk_str_to_char(hk_str *s, const char *file, hk_int line) {
+  if (s->len == 0) hk_panic("cannot convert an empty string to char", file, line);
+  hk_int w = hk_utf8_width((const unsigned char *)s->data, s->len);
+  if (w != s->len) hk_panic("cannot convert a string of more than one character to char", file, line);
+  return hk_utf8_decode((const unsigned char *)s->data, w);
+}
+
 hk_bool hk_str_eq_rel(hk_str *a, hk_bool ra, hk_str *b, hk_bool rb) {
   hk_bool r = hk_str_eq(a, b);
   if (ra) hk_str_release(a);

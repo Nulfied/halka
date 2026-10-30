@@ -188,6 +188,15 @@ hk_str  *hk_list_join(struct hk_list *l, hk_str *sep);
  * through a pointer would need a named temporary at the call site, and a
  * `contains` inside an `else if` would then declare that temporary in the
  * branch above the one that uses it. */
+/* Reading a number out of a string, which is parsing and not casting: a C
+ * cast would take the pointer. The accepted shape is a sign, digits, an
+ * optional fraction and an optional exponent -- the same text a literal may
+ * have -- with surrounding whitespace allowed. Anything else stops the
+ * program with the message the interpreter gives. */
+hk_int   hk_str_to_int(hk_str *s, const char *file, hk_int line);
+hk_float hk_str_to_float(hk_str *s, const char *file, hk_int line);
+hk_char  hk_str_to_char(hk_str *s, const char *file, hk_int line);
+
 hk_int hk_list_find_str(struct hk_list *l, hk_str *needle);
 hk_int hk_list_find_int(struct hk_list *l, hk_int needle);
 hk_int hk_list_find_float(struct hk_list *l, hk_float needle);

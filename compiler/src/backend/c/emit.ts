@@ -115,6 +115,11 @@ export class CEmitter {
   private frameParams: Owned[] = [];
   /** Declarations by name, so a call can fill in a parameter's default. */
   private fnDecls = new Map<string, A.FnDecl>();
+  /**
+   * Names the backend may call without having a body for: a `c` function
+   * reached through FFI, whose symbol comes from the linker.
+   */
+  private callableByName = new Set<string>();
   /** Values built inside the current statement, freed once it completes. */
   private stmtTemps: Owned[] = [];
   private inMain = false;
@@ -183,6 +188,7 @@ export class CEmitter {
     // prototype, so a symbol without a header can still be called (#35).
     for (const s of mod.stmts) {
       if (s.kind !== "FnDecl" || s.foreign !== "c" || !s.retType) continue;
+      this.callableByName.add(s.name);
       const sig = this.types.get(s);
       if (!sig) continue; // never guess a prototype — a wrong one is worse than none
       const ret = this.cty(retOf(sig), "return", s.span);
@@ -774,7 +780,11 @@ export class CEmitter {
       this.err("E0701", "the native backend cannot build this tuple yet", e.span);
       return "0";
     }
-    const parts = e.elements.map((x, i) => `.f${i} = ${this.coerce(x, info.elems[i])}`);
+    // A tuple keeps what it is given, like every other store: each field
+    // takes a count of its own unless the value was built for it. Without
+    // this the tuple took the frame's count and the frame released it too,
+    // which freed a string twice as soon as both happened.
+    const parts = e.elements.map((x, i) => `.f${i} = ${this.retained(x, this.coerce(x, info.elems[i]))}`);
     return `((${info.cty}){ ${parts.join(", ")} })`;
   }
 
@@ -2779,8 +2789,25 @@ export class CEmitter {
           this.line(`const hk_float ${t} = pow(10.0, (hk_float)(${args[1]}));`);
           return `(floor((hk_float)(${args[0]}) * ${t} + 0.5) / ${t})`;
         }
-        case "int": return `((hk_int)(${args[0]}))`;
-        case "float": return `((hk_float)(${args[0]}))`;
+        // `int(x)` is the same conversion as `x as int`, so it goes
+        // through the same code. Written as its own blind C cast it turned
+        // `int("42")` into a cast of the string's *pointer* to an integer:
+        // it compiled without a warning and printed 2625844349633, while
+        // `"42" as int` refused the same conversion two functions away.
+        // One operation with two implementations had one of them silently
+        // wrong, which is the mis-acceptance R23 forbids.
+        case "int": case "float": case "char": case "bool":
+          return this.convert(e.args[0]!.value, n, e.span);
+        // The empty containers. `[]` is a list literal and there is no
+        // literal for an empty map, so `map()` is the only way to write
+        // one -- which both packages in the registry wanted and neither
+        // could compile.
+        case "map": case "list": case "array": case "set": {
+          if (e.args.length) break; // copying one is a different question
+          const made = this.emptyContainer(this.tyOf(e), n, e.span);
+          if (made) return made;
+          return "0";
+        }
         case "string": return this.asStr(e.args[0]!.value);
         case "print": return `(hk_say(${args.length ? this.asStr(e.args[0]!.value) : "hk_str_lit(\"\")"}), 0)`;
         case "panic": return `(hk_panic(${this.asStr(e.args[0]!.value)}->data, ${this.loc(e.span)}), 0)`;
@@ -2793,7 +2820,12 @@ export class CEmitter {
 
       if (this.structs.has(n)) {
         const def = this.structs.get(n)!;
-        return `((${mangleType(n)}){ ${def.fields.map((f, i) => `.${mangle(f.name)} = ${args[i] ?? zeroOf(this.cty(f.ty, f.name))}`).join(", ")} })`;
+        // A struct keeps what it is given, so each field takes a count
+        // of its own unless the value was built for it.
+        return `((${mangleType(n)}){ ${def.fields.map((f, i) => {
+          const a = e.args[i] ? this.retained(e.args[i]!.value, args[i]!) : undefined;
+          return `.${mangle(f.name)} = ${a ?? zeroOf(this.cty(f.ty, f.name))}`;
+        }).join(", ")} })`;
       }
 
       if (this.variantOwner.has(n)) {
@@ -2809,7 +2841,12 @@ export class CEmitter {
         const payload = v.fields
           .map((f, i) => ({ f, a: args[i] }))
           .filter(({ f }) => this.cty(f.ty, f.name) !== "void")
-          .map(({ f, a }) => `.as.${mangle(n)}.${mangle(f.name)} = ${a ?? zeroOf(this.cty(f.ty, f.name))}`);
+          .map(({ f, a }, i) => {
+            // Same for a variant: `Ok(rows)` holds its own count, so the
+            // frame can still release the `rows` it had.
+            const held = a !== undefined && e.args[i] ? this.retained(e.args[i]!.value, a) : a;
+            return `.as.${mangle(n)}.${mangle(f.name)} = ${held ?? zeroOf(this.cty(f.ty, f.name))}`;
+          });
         return `((${mangleType(inst.key)}){ .tag = ${variantTag(inst.key, n)}${payload.length ? ", " + payload.join(", ") : ""} })`;
       }
       // A parameter with a default is one the caller may leave out, and C
@@ -2823,6 +2860,19 @@ export class CEmitter {
           if (!d) break;
           args.push(this.expr(d));
         }
+      }
+      // Everything the backend knows how to call has been tried by now: a
+      // user function, a struct, a variant, a prelude function with a case
+      // above. Emitting `${mangle(n)}(...)` for anything else writes a call
+      // to a symbol that does not exist, and the C compiler says
+      // "assuming extern returning int" and carries on -- so the program
+      // built, ran, and printed whatever an int-shaped reading of the
+      // return register happened to be. A warning from the C compiler is
+      // not a safety net; R23 wants a refusal.
+      if (!this.fnDecls.has(n) && !this.callableByName.has(n)) {
+        this.err("E0707", `the native backend does not implement \`${n}\` yet`, e.span,
+          "run it with `halka run` while the backend catches up");
+        return "0";
       }
       this.holdArgs(e, args, this.opts.owningParams?.get(n));
       // Lifting into `T?` happens after holding, not before: it is the inner
@@ -2957,6 +3007,34 @@ export class CEmitter {
   }
 
   /** `["a": 1, "b": 2]` — built in order, because the map keeps that order. */
+  /**
+   * `map()`, `list()` and friends with no arguments: an empty container of
+   * whatever type the context asks for.
+   *
+   * The type has to come from the annotation, since the call itself says
+   * nothing about what goes in it. `let m: map(string, string): map()`.
+   */
+  private emptyContainer(t: Ty | undefined, name: string, span: Span): string | null {
+    const p = t ? prune(t) : undefined;
+    if (p?.k === "map") {
+      const kc = this.cty(p.key, "map key", span);
+      const vc = this.cty(p.val, "map value", span);
+      const v = this.fresh("map");
+      this.line(`hk_map *${v} = hk_map_new(sizeof(${kc}), sizeof(${vc}), ${ekindOf(kc)}, ${ekindOf(vc)}, 0);`);
+      return v;
+    }
+    if (p?.k === "list" || p?.k === "array") {
+      const et = this.cty(p.elem, "element", span);
+      const v = this.fresh("lit");
+      this.line(`hk_list *${v} = hk_list_new(sizeof(${et}), 0, ${this.elemKind(p.elem, et)});`);
+      this.attachDesc(v, p.elem);
+      return v;
+    }
+    this.err("E0701", `the native backend cannot tell what \`${name}()\` builds here`, span,
+      "annotate it, as in `let m: map(string, string): map()`");
+    return null;
+  }
+
   private mapLit(e: A.MapExpr): string {
     const t = this.tyOf(e);
     const p = t ? prune(t) : undefined;
@@ -2971,7 +3049,7 @@ export class CEmitter {
       const k = this.fresh("mk");
       const val = this.fresh("mv");
       this.line(`${kc} ${k} = ${this.coerce(en.key, kt)};`);
-      this.line(`${vc} ${val} = ${this.coerce(en.value, vt)};`);
+      this.line(`${vc} ${val} = ${this.retained(en.value, this.coerce(en.value, vt))};`);
       this.line(`hk_map_set(${v}, &${k}, &${val});`);
       // The map retained what it kept, so a freshly built key or value is
       // still this statement's to free.
@@ -3007,7 +3085,9 @@ export class CEmitter {
     // A list of tuples has to carry the layout, or releasing it would leak
     // every owning field and printing it would render a pointer as an int.
     this.attachDesc(v, elemTy);
-    for (const x of e.elements) this.line(`HK_PUSH(${v}, ${et}, ${this.coerce(x, elemTy)});`);
+    // Each element takes a count of its own: a list literal built from
+    // names the frame goes on using is a copy, not a handover.
+    for (const x of e.elements) this.line(`HK_PUSH(${v}, ${et}, ${this.retained(x, this.coerce(x, elemTy))});`);
     return v;
   }
 
@@ -3040,12 +3120,50 @@ export class CEmitter {
     }
 
     if (target === "hk_str *") return this.asStr(e.expr);
-    if (this.isStr(src)) {
-      this.err("E0713", "converting a string with `as` is not supported by the native backend yet", e.span,
-        "use `to int` / `to float`, which yields a Result");
-      return "0";
+    return this.convertTo(e.expr, target, e.span);
+  }
+
+  /** `int(x)` and friends, named by the target type rather than a C type. */
+  private convert(value: A.Expr, to: string, span: Span): string {
+    const target = to === "int" ? "hk_int" : to === "float" ? "hk_float"
+      : to === "char" ? "hk_char" : "hk_bool";
+    return this.convertTo(value, target, span);
+  }
+
+  /**
+   * One conversion, whichever spelling asked for it.
+   *
+   * Reading a number out of a string is parsing, not casting: the C cast
+   * would take the pointer. `strtoll` and `strtod` do it, and the
+   * interpreter's answer is JavaScript's `Number`, so the runtime matches
+   * that -- including that trailing text makes it a failure rather than a
+   * prefix to be read and the rest ignored.
+   */
+  private convertTo(value: A.Expr, target: string, span: Span): string {
+    const src = this.tyOf(value);
+    const p = src ? prune(src) : undefined;
+
+    // `bool` follows the language's own notion of truth, which is not C's:
+    // only `false`, `null` and nothing are false, so `bool(0)` is true and
+    // so is `bool("")`. A C cast would have made both false. It comes
+    // first because it needs no parsing even from a string.
+    if (target === "hk_bool") {
+      if (p?.k === "prim" && p.name === "bool") return this.expr(value);
+      return `(((void)(${this.expr(value)})), true)`;
     }
-    return `((${target})(${this.expr(e.expr)}))`;
+
+    if (this.isStr(src)) {
+      const read = target === "hk_int" ? "hk_str_to_int"
+        : target === "hk_float" ? "hk_str_to_float"
+        : target === "hk_char" ? "hk_str_to_char" : null;
+      if (!read) {
+        this.err("E0713", `the native backend cannot read ${target} out of a string yet`, span,
+          "convert to int, float, bool or char");
+        return "0";
+      }
+      return `${read}(${this.expr(value)}, ${this.loc(span)})`;
+    }
+    return `((${target})(${this.expr(value)}))`;
   }
 
   /**

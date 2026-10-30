@@ -206,13 +206,45 @@ class EscapeAnalysis {
      * double-free one.
      */
     const owns: { name: string; kind: "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | "struct" | "shared" | "weak"; ty?: Ty; init: A.Expr | null; block: A.Block | null }[] = [];
+    /**
+     * Which block each visible name was declared in.
+     *
+     * Needed because `escaped` and `movedAway` were keyed by name alone,
+     * and two blocks may declare the same one. args has a `body` in its
+     * long-option branch and another in its short-option branch: storing
+     * the first disowned the second, so the second was never released and
+     * leaked once per short option. Two different locals, one entry.
+     */
+    const scopes: Map<string, A.Block | null>[] = [new Map()];
+    const blockIds = new Map<A.Block, number>();
+    const blockId = (b: A.Block | null): number => {
+      const key = b ?? body;
+      let id = blockIds.get(key);
+      if (id === undefined) { id = blockIds.size + 1; blockIds.set(key, id); }
+      return id;
+    };
+    const declaringBlock = (name: string): A.Block | null | undefined => {
+      for (let i = scopes.length - 1; i >= 0; i--) {
+        if (scopes[i]!.has(name)) return scopes[i]!.get(name);
+      }
+      return undefined;
+    };
+    /** The key a name's ownership is tracked under: the name and its block. */
+    const ownerKey = (name: string): string => {
+      const b = declaringBlock(name);
+      // A name with no declaration in sight is a parameter or a loop
+      // variable: one key for it, since there is only one of it.
+      return b === undefined ? `?:${name}` : `${blockId(b)}:${name}`;
+    };
     const declare = (name: string, d: { kind: "str" | "list" | "enum" | "opt" | "map" | "tuple" | "json" | "struct" | "shared" | "weak"; ty?: Ty; init: A.Expr | null; block: A.Block | null }) => {
       // One release per (block, name); a block cannot free the same C
       // variable twice however many times the source rebinds it.
       const at = owns.findIndex((o) => o.name === name && o.block === d.block);
       if (at >= 0) owns[at] = { name, ...d };
       else owns.push({ name, ...d });
+      scopes[scopes.length - 1]!.set(name, d.block);
     };
+    // Keyed by block and name, not by name: see `scopes` above.
     const escaped = new Set<string>();
     const movedAway = new Set<string>();
     const grown = new Set<string>();
@@ -225,7 +257,7 @@ class EscapeAnalysis {
      * later still holds something afterwards, so giving its count away at
      * the store leaves the frame releasing a value it no longer has.
      */
-    const pending: { name: string; expr: A.Expr; kind: "escape" | "move" }[] = [];
+    const pending: { key: string; name: string; expr: A.Expr; kind: "escape" | "move" }[] = [];
     /** Names stored into something longer-lived, which cannot be on the stack. */
     const stored = new Set<string>();
 
@@ -243,7 +275,7 @@ class EscapeAnalysis {
 
     const markEscape = (e: A.Expr): void => {
       const n = rootIdent(e);
-      if (n) { stored.add(n); pending.push({ name: n, expr: e, kind: "escape" }); }
+      if (n) { stored.add(n); pending.push({ key: ownerKey(n), name: n, expr: e, kind: "escape" }); }
     };
 
     const visit = (e: A.Expr, position: "value" | "escape" | "read"): void => {
@@ -251,9 +283,9 @@ class EscapeAnalysis {
         case "Ident":
           if (position === "escape") {
             stored.add(e.name);
-            pending.push({ name: e.name, expr: e, kind: "escape" });
+            pending.push({ key: ownerKey(e.name), name: e.name, expr: e, kind: "escape" });
           } else if (position === "value" && this.kind(e) === "owned") {
-            pending.push({ name: e.name, expr: e, kind: "move" });
+            pending.push({ key: ownerKey(e.name), name: e.name, expr: e, kind: "move" });
           }
           return;
 
@@ -262,8 +294,8 @@ class EscapeAnalysis {
             // Written out by hand, so it is a move whatever else happens
             // to the name.
             this.moves.add(e.expr);
-            if (position === "escape") escaped.add(e.expr.name);
-            else movedAway.add(e.expr.name);
+            if (position === "escape") escaped.add(ownerKey(e.expr.name));
+            else movedAway.add(ownerKey(e.expr.name));
             return;
           }
           visit(e.expr, position);
@@ -335,7 +367,9 @@ class EscapeAnalysis {
     const inBlock = (b: A.Block, f: () => void): void => {
       const prev = current;
       current = b;
+      scopes.push(new Map());
       f();
+      scopes.pop();
       current = prev;
     };
 
@@ -351,11 +385,16 @@ class EscapeAnalysis {
             if (!s.value) {
               // `let w: weak(C)` with nothing in it yet still owns whatever
               // it is assigned later, and something has to give that back.
+              // `let w: weak(C)` with nothing in it yet still owns
+              // whatever it is assigned later, and something has to give
+              // that back. The same is true of anything on the heap:
+              // `let rows: list(string)` then `rows: []` owned nothing at
+              // all, so the list it was given was never released. The
+              // release functions all ignore a null, which is what the
+              // variable holds until the assignment.
               const declared = this.types.get(s.pattern as unknown as A.Node);
               const dk = this.heapKind(declared);
-              if (dk === "shared" || dk === "weak") {
-                declare(s.pattern.name, { kind: dk, ty: declared, init: null, block: current });
-              }
+              if (dk) declare(s.pattern.name, { kind: dk, ty: declared, init: null, block: current });
               break;
             }
             const hk = this.heapKind(this.types.get(s.pattern as unknown as A.Node) ?? this.types.get(s.value));
@@ -425,8 +464,8 @@ class EscapeAnalysis {
               // before was abandoned.
               const keeps = k === "shared" || k === "weak"
                 || this.producesOwned(s.value) || staticStr;
-              if (!keeps) escaped.add(s.target.name);
-              else assigned.add(s.target.name);
+              if (!keeps) escaped.add(ownerKey(s.target.name));
+              else assigned.add(ownerKey(s.target.name));
             }
             break;
           case "GiveStmt":
@@ -460,14 +499,22 @@ class EscapeAnalysis {
             break;
           case "ForStmt": {
             visit(s.iter, "read");
-            inBlock(s.body, () => walk(s.body.stmts));
+            inBlock(s.body, () => {
+              // The loop declares its variable, so it belongs to the body's
+              // scope -- otherwise an assignment to it is keyed as if the
+              // name had no declaration at all.
+              if (s.pattern.kind === "BindPat") {
+                scopes[scopes.length - 1]!.set(s.pattern.name, s.body);
+              }
+              walk(s.body.stmts);
+            });
             // A loop variable is an element of the list, borrowed for the
             // iteration -- until the body assigns to it, and then it holds
             // something of its own that nobody was releasing. Claiming it
             // makes the loop retain the element on the way in, so the
             // assignment has a count to give back and the end of the
             // iteration has one too.
-            if (s.pattern.kind === "BindPat" && assigned.has(s.pattern.name)) {
+            if (s.pattern.kind === "BindPat" && assigned.has(`${blockId(s.body)}:${s.pattern.name}`)) {
               const ty = this.types.get(s.pattern as unknown as A.Node);
               const hk = this.heapKind(ty);
               if (hk) declare(s.pattern.name, { kind: hk, ty, init: null, block: s.body });
@@ -509,20 +556,31 @@ class EscapeAnalysis {
     // A name it never assigns again is finished with, so the store takes
     // the frame's count and the frame stops claiming it -- which is what
     // keeps `give Ok(rows)` a move rather than an extra count nobody drops.
-    for (const { name, expr, kind } of pending) {
-      if (assigned.has(name)) continue;
-      // Only a name this frame owns has a count to hand over. A loop
-      // variable, or a parameter it borrowed, has none -- reading one is a
-      // second reference however it is used, so the store still has to take
-      // a count of its own.
+    for (const { key, name, expr, kind } of pending) {
+      if (assigned.has(key)) continue;
+      // Putting a value inside something is a *copy*: the store takes a
+      // count of its own and the frame goes on owning what it had.
+      //
+      // Treating it as a move needed to know whether the store happens,
+      // and on a branch it does not: `let body: mk(), if c, sink.push(body)
+      // else say body.length` abandoned `body` on the second path, because
+      // the first path had already said the frame was finished with it. One
+      // name, two paths, one answer -- and the wrong one half the time.
+      //
+      // A count each is right on every path and costs one retain and one
+      // release. Every store site retains; see `retained` in the emitter.
+      if (kind === "escape") continue;
+
+      // A bare name read as a value is still a move -- `let y: x` hands
+      // over what `x` had, and `x` is not read again.
       if (owns.some((o) => o.name === name)) this.moves.add(expr);
-      if (kind === "escape") escaped.add(name);
-      else movedAway.add(name);
+      movedAway.add(key);
     }
 
     for (const info of owns) {
       const name = info.name;
-      if (escaped.has(name) || movedAway.has(name)) continue;
+      const key = `${blockId(info.block)}:${name}`;
+      if (escaped.has(key) || movedAway.has(key)) continue;
       const owned: Owned = { name, kind: info.kind, ty: info.ty };
       if (info.block === null) {
         paramOwned.push(owned);              // an owning parameter

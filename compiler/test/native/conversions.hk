@@ -1,0 +1,85 @@
+### Conversions, and the empty containers (R23).
+
+`int(x)` is the same conversion as `x as int` and now goes through the same
+code. Written as its own blind C cast, `int("42")` became a cast of the
+string's *pointer* to an integer: it compiled without a warning and printed
+2625844349633, while `"42" as int` refused the same conversion two
+functions away. One operation with two implementations had one of them
+silently wrong, which is the one thing R23 forbids.
+
+Reading a number out of a string is parsing. The accepted shape is the same
+text a literal may have -- sign, digits, optional fraction, optional
+exponent -- and the interpreter was narrowed to match: JavaScript's
+`Number` also reads `0x10` as 16, which nothing compiled to C would
+reproduce.
+
+`bool` follows the language's own notion of truth rather than C's. Only
+`false`, `null` and nothing are false, so `bool(0)` is true and so is
+`bool("")`.
+
+And `map()` is the only way to write an empty map -- `[]` is a list -- so
+both packages in the registry wanted it and neither could compile.
+###
+main(),
+    # Out of a string, which is parsing and not casting.
+    say int("42") + 1,
+    say int("-7"),
+    say int("+7"),
+    say int("  12  "),
+    say int("0"),
+    say float("1.5") + 0.5,
+    say float("-2e3"),
+    say float(".5"),
+    say float("3."),
+    say float("1E2"),
+    say char("x"),
+    say char("é"),
+
+    # From numbers, where a C cast is the right answer. Truncation is
+    # toward zero, so a negative one rounds up.
+    say int(3.9),
+    say int(-3.9),
+    say int(true),
+    say float(true),
+    say float(7),
+    say char(65),
+    say char(946),
+    say string(42),
+    say string(1.5),
+    say string(true),
+
+    # Truth, which is the language's and not C's.
+    say bool(0),
+    say bool(1),
+    say bool(""),
+    say bool("x"),
+    say bool(0.0),
+    say bool(false),
+    say bool(true),
+
+    # The empty containers. The type comes from the annotation, since the
+    # call itself says nothing about what goes in.
+    let m: map(string, string): map(),
+    say len(m),
+    m["k"]: "v",
+    say m,
+    say m["k"] or "?",
+    say m["nope"] or "fallback",
+
+    let xs: list(string): list(),
+    say xs.length,
+    xs.push("a"),
+    xs.push("b"),
+    say xs,
+
+    # Built up in a loop, so the counts have to balance.
+    let counts: map(string, int): map(),
+    for i in 0..8,
+        counts["k{i}"]: i * 2,
+    say len(counts),
+    say counts["k3"] or -1,
+
+    let acc: list(string): list(),
+    for i in 0..5,
+        acc.push("{i}"),
+    say acc.join("-")

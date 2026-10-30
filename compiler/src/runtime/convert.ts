@@ -89,9 +89,16 @@ export function convert(v: Value, target: string): { ok: true; value: Value } | 
       if (v.t === "int") return { ok: true, value: float(Number(v.v)) };
       if (v.t === "bool") return { ok: true, value: float(v.v ? 1 : 0) };
       if (v.t === "string") {
-        const n = Number(v.v.trim());
-        if (v.v.trim() === "" || Number.isNaN(n)) return { ok: false, error: `"${v.v}" is not a number` };
-        return { ok: true, value: float(n) };
+        // The shape a float literal may have, and only that. JavaScript's
+        // `Number` also reads `0x10` as 16 and `Infinity` as infinity,
+        // which is both surprising and more than anything compiled to C
+        // reproduces -- and a conversion the two engines spell differently
+        // is one R23 forbids.
+        const s = v.v.trim();
+        if (!/^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(s)) {
+          return { ok: false, error: `"${v.v}" is not a number` };
+        }
+        return { ok: true, value: float(Number(s)) };
       }
       return { ok: false, error: `cannot convert ${typeNameOf(v)} to float` };
     }
